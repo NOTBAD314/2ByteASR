@@ -221,6 +221,7 @@ class StudioSentenceRefineMixin(StudioSubtitleTaskMixin):
             from ..subtitle_rules.segmentation_profiles import project_language_tag
             cues = include_adjacent_context(cues, self.project, project_language_tag(self.project))
         task = self._new_subtitle_task('AI 断句', cues)
+        task.is_retry = bool(retry_failed or retry_ids)
         task.historical_windows = history
         task.configuration = self._refine_configuration()
         self._refine_task = task

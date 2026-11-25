@@ -152,7 +152,12 @@ def test_result_project_replaces_only_the_stretch(tmp_path):
     project = _project(tmp_path)
     snapshot = capture_recognition_snapshot(project, str(tmp_path / "studio.2byteproj"), range_ms=(9500, 15500))
     snapshot["requested_range_ms"] = [10000, 14000]
+    snapshot["request_fingerprint"] = snapshot["fingerprint"]
+    snapshot["fingerprint"] = "execution-identity-with-audio-hash"
     result = attach_timeline_result(_recognized(6000), snapshot)
+    delivery = result.generation_metadata["timeline_recognition"]
+    assert delivery["request_fingerprint"] == snapshot["request_fingerprint"]
+    assert delivery["fingerprint"] == "execution-identity-with-audio-hash"
     by_id = {cue.id: cue for cue in result.cues}
     # Outside the stretch: the same captions, ids and speakers.
     assert [(c.id, c.text) for c in result.cues if c.id in {"a", "e"}] == [("a", "前面不动"), ("e", "后面不动")]
@@ -370,6 +375,7 @@ def test_sheet_names_the_stretch_and_confirms_edited_captions(tmp_path, monkeypa
 
 def test_finished_range_replaces_the_stretch_as_one_undo_step(tmp_path, monkeypatch):
     page = _page(tmp_path, monkeypatch)
+    page.project.cues[1].transform.update(display_break=True, no_display_extension=True)
     snapshot, result, _plan = _plan_from_result(page.project, tmp_path)
     path = save_project(result, tmp_path / "studio" / "recognition-results" / "job" / "识别结果.2byteproj")
     before = [cue.text for cue in page.project.cues]
@@ -401,6 +407,19 @@ def test_finished_range_replaces_the_stretch_as_one_undo_step(tmp_path, monkeypa
         QTest.qWait(10)
     assert not queue_for(page).busy
     assert {s.id for s in load_project(page.project_path).speakers} == {'HOST','GUEST'}
+    page.close_page()
+
+
+def test_finished_range_keeps_captions_confirmed_while_running(tmp_path, monkeypatch):
+    page = _page(tmp_path, monkeypatch)
+    snapshot, result, _plan = _plan_from_result(page.project, tmp_path)
+    path = save_project(result, tmp_path / "studio" / "recognition-results" / "job" / "识别结果.2byteproj")
+    page.project.studio_state["review_confirmations"] = {page.project.cues[1].id: True}
+    before = tuple((cue.id, cue.text, cue.start_ms, cue.end_ms) for cue in page.project.cues)
+    undo = page.undo_stack.count()
+    assert not page.apply_range_recognition_result(str(path), snapshot)
+    assert tuple((cue.id, cue.text, cue.start_ms, cue.end_ms) for cue in page.project.cues) == before
+    assert page.undo_stack.count() == undo
     page.close_page()
 
 

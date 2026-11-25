@@ -292,6 +292,12 @@ def retry_delay(error, attempt):
     if getattr(response, 'status_code', None) in {400, 401, 403, 404, 426}:
         return None
     hint = getattr(response, 'headers', {}).get('Retry-After') if response is not None else None
+    if hint is None and failure_category(error) in {'rate_limit', 'rate_limited'}:
+        # 2026-11-25 (Ninja Spy, DeepSeek "concurrency limit of 14"): a 1-second
+        # retry met the same full account. The shared account limiter halves the
+        # concurrency at the same time; give in-flight requests time to finish.
+        import random
+        return min(30.0, 4.0 * 2 ** (attempt - 1)) + random.uniform(0.0, 1.5)
     try:
         return min(30.0, max(0.0, float(hint))) if hint is not None else min(8, 2 ** (attempt - 1))
     except (ValueError, TypeError):

@@ -845,13 +845,7 @@ class _MpvCommandActor:
         self._connection_generation += 1
         self._read_buffer = b''
         try:
-            for observer_id, name in enumerate(self.OBSERVED_PROPERTIES, start=1):
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise MpvIPCTimeoutError('mpv connection handshake timed out')
-                self._exchange_on_pipe(
-                    ["observe_property", observer_id, name], timeout=remaining,
-                )
+            self._subscribe_properties(deadline)
             if self._ever_connected:
                 self.controller._restore_desired_state(self, deadline=deadline)
             self._ever_connected = True
@@ -872,6 +866,35 @@ class _MpvCommandActor:
         except BaseException:
             self._drop_pipe()
             raise
+
+    def _subscribe_properties(self, deadline):
+        """Submit one observer batch, verifying every acknowledgement on this pipe."""
+        pending = {}
+        messages = []
+        for observer_id, name in enumerate(self.OBSERVED_PROPERTIES, start=1):
+            self.controller._request_id += 1
+            request_id = self.controller._request_id
+            command = ["observe_property", observer_id, name]
+            pending[request_id] = command
+            messages.append(json.dumps({"command": command, "request_id": request_id}).encode("utf-8") + b"\n")
+        if not messages:
+            return
+        self._pipe.write(b"".join(messages))
+        while pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise MpvIPCTimeoutError("mpv connection handshake timed out")
+            line = self._readline_with_timeout(remaining, deadline=deadline)
+            if not line:
+                raise BrokenPipeError("mpv IPC pipe closed during connection")
+            payload = json.loads(line.decode("utf-8"))
+            request = pending.pop(payload.get("request_id"), None)
+            if request is not None:
+                self.mark_exchange_ok()
+                if payload.get("error") not in {None, "success"}:
+                    raise MpvCommandError(request, payload.get("error"))
+            elif "event" in payload:
+                self._handle_event(payload)
 
     def _drop_pipe(self) -> None:
         pipe = self._pipe

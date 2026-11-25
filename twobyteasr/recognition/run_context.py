@@ -78,6 +78,7 @@ class RuntimeContext:
     language_decision: dict[str, Any] = field(default_factory=dict)
     transcript_acceptance: dict[str, Any] = field(default_factory=dict)
     language_recovery_result: Any | None = field(default=None, repr=False)
+    language_guard_repair: bool = False
     # Requested subtitle output (original/translation/bilingual) and translation
     # target (zh-Hans / zh-Hant / en / ja / ko; the name predates non-Chinese targets).
     subtitle_output: str = "original"

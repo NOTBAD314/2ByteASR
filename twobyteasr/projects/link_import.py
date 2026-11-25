@@ -272,11 +272,12 @@ def prepare_import(project, bundle, media_result=None, *, position_ms=0, clip_id
 
 
 class LinkImportCommand(QUndoCommand):
-    def __init__(self, project, bundle, media_result=None, **options):
+    def __init__(self, project, bundle, media_result=None, *, prepared=None, **options):
         super().__init__("导入下载视频与字幕")
         self.project = project
         self.before = _snapshot(project)
-        self.after, self.result = prepare_import(project, bundle, media_result, **options)
+        self.after, self.result = (prepared if prepared is not None
+                                   else prepare_import(project, bundle, media_result, **options))
         if self.after is None:
             self.setObsolete(True)
 

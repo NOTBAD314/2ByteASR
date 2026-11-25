@@ -4,6 +4,7 @@ from __future__ import annotations
 import heapq
 from bisect import bisect_left, bisect_right
 from dataclasses import replace
+from time import perf_counter
 from PySide6.QtCore import QRectF
 
 from ..subtitle_rules.display_continuity import continuity_successors, chain_key, MAX_DISPLAY_MS
@@ -92,9 +93,13 @@ class ContinuityLayout:
         return [replace(snapshot,collision_bounds=(box.x(),box.y(),box.width(),box.height()))
                 for snapshot in self.load(key)]
 
-    def advance(self,target):
+    def ready_through(self, target):
+        return self.cursor == len(self.rows) or self.rows[self.cursor].start_ms > target
+
+    def advance(self,target,*,work_ms=None):
         from .collision_layout import solve_layout
-        while self.cursor<len(self.rows) and self.rows[self.cursor].start_ms<=target:
+        deadline = perf_counter() + work_ms / 1000 if work_ms is not None else None
+        while not self.ready_through(target):
             at=self.rows[self.cursor].start_ms
             while self.endings and self.endings[0][0]<=at:
                 _,key=heapq.heappop(self.endings)
@@ -129,4 +134,6 @@ class ContinuityLayout:
                 end=successor.start_ms if successor else self.by_id[key].end_ms
                 heapq.heappush(self.endings,(end,key))
             self.cursor=stop
+            if deadline is not None and perf_counter() >= deadline:
+                break
         return self.offsets

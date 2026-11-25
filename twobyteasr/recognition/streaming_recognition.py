@@ -56,6 +56,14 @@ def eligible(context, legacy, seconds):
         return False, 'selected_global_analysis'
     if context.recognition_snapshot.get('language_recovery_policy'):
         return False, 'explicit_language_recovery'
+    from .language_guard import settings_policy
+    guard = settings_policy(context.asr_settings_snapshot, context.requested_language)
+    # Ready shards can finish grouping before the task-wide guard runs.
+    # This matters even without a configured backup: a primary retry may be
+    # adopted with independent acoustic evidence. Keep MOSI request
+    # concurrency, but finalize captions only from the guarded task draft.
+    if guard['repair']:
+        return False, 'language_guard_requires_task_wide_repair_budget'
     if str(getattr(legacy,'QWEN_ASR_BACKEND','off')) != 'off' and getattr(legacy,'USE_QWEN_ASR_REFERENCE',False):
         return False, 'independent_asr_review_not_shard_ready'
     timeline=str(getattr(legacy,'FIRERED_ASR_BACKEND',''))
@@ -218,6 +226,7 @@ class LongMediaPipeline:
             switches.pop('background_lyrics', None)  # classified after all shards are merged
             if switches.get('grouping_ai_editor') is False:
                 switches.pop('grouping_ai_editor')
+        from .language_guard import settings_policy
         version = _digest(dict(version=VERSION, media=self.cache_context['identity'], index=index,
             rows=[{key:row.get(key) for key in ('start','end','text','speaker','source','tokens','cloud_gap')}
                   for row in rows], language=self.context.requested_language,
@@ -227,6 +236,7 @@ class LongMediaPipeline:
             switches=switches,
             timing_policy=getattr(self.legacy,'TIMING_LOGIC_VERSION',None),
             alignment_identity=cache_identity(self.context.asr_settings_snapshot),
+            language_guard=settings_policy(self.context.asr_settings_snapshot, self.context.requested_language),
             vad_mode='owned-shard-v1' if self.piece_vad else 'full-stage-v1',
             game_name=self.context.game_name,
             glossary=getattr(self.context.glossary_snapshot,'digest',None),
@@ -455,6 +465,7 @@ class LongMediaPipeline:
     def _process(self,index,version,primary,context):
         from .asr import transcribe_qwen_aligner_reference
         from .language_diagnostics import audit_primary_language
+        from .language_guard import audit_cues, protect_fusion, settings_policy, snapshot_text, validate_edits
         from .transcript_acceptance import gate_primary
         from .cue_forced_alignment import align_final_cues
         from .pipeline_runtime import finalize_cues, finalize_english_cues, normalize_delivered_cue_text
@@ -488,10 +499,13 @@ class LongMediaPipeline:
             self.legacy.record_run_event('MODEL_RESULT_AVAILABLE',model_id=timeline,backend=timeline,
                 role='timeline_alignment',segment_count=len(tokens),execution='validated_alignment_receipt')
         segments=self.pipeline.build_alternate_primary_segments(primary,tokens,self.legacy,'api')
+        guard = settings_policy(context.asr_settings_snapshot, context.requested_language)
         if context.task_language=='zh':
+            before_fusion = [copy.copy(row) for row in segments] if guard['strict'] else segments
             segments=self.pipeline.apply_alternate_dialogue_coverage(segments,primary,tokens,
                 self.speech_regions,self.seconds,self.legacy,'api',runtime_context=context)
             segments=self.pipeline.reconcile_firered_moss_qwen(segments,self.legacy)
+            segments=protect_fusion(before_fusion, segments, guard, self.legacy.record_run_event)
             for segment in segments:
                 segment.caption_arbitration=dict(segment.caption_arbitration or {})
                 segment.caption_arbitration['acoustic_words']=[dict(text=str(t.get('text') or ''),
@@ -513,13 +527,15 @@ class LongMediaPipeline:
         speech=[row for row in self.speech_regions if float(row['end'])>=left and float(row['start'])<=right]
         from ..glossary.multilingual_terms import apply_source_terms
         from ..glossary.source_review_policy import preserve_source_for_delivery
-        import copy
         source_segments = segments
         segments = copy.deepcopy(segments)
         segments=apply_source_terms(segments,self.legacy)
+        validate_edits(snapshot_text(source_segments, guard), segments, guard, 'source_glossary', self.legacy.record_run_event)
         if self.text_plan.polish:
+            before_polish = snapshot_text(segments, guard)
             segments=self._step(index,'polished','校对',lambda:self.legacy.polish_subtitles(segments,
                 Path(self.media_path).stem,cache))
+            validate_edits(before_polish, segments, guard, 'ai_proofread', self.legacy.record_run_event)
         else:
             self._step(index,'polished','保留原文',lambda:None)
         if context.task_language=='zh':
@@ -527,9 +543,18 @@ class LongMediaPipeline:
         segments=apply_source_terms(segments,self.legacy)
         segments=preserve_source_for_delivery(source_segments,segments,record=self.legacy.record_run_event,
                                               summary=context.polishing_summary)
+        if context.task_language=='ja':
+            # 2026-11-25 (Ninja Spy): shards never tagged their texts, so every
+            # character gap was offered as a bunsetsu boundary. Same engine as
+            # the normal pipeline, installed on this shard's own context.
+            from ..subtitle_rules import japanese_morphology
+            japanese_morphology.prepare_task_document([segment.text for segment in segments],
+                self.legacy.record_run_event,scope=context.shard_id or f'r{index+1:03}')
         cues=self._step(index,'grouped','断句',lambda:self.legacy.group_subtitles(segments,
             firered_tokens=tokens,speech_regions=speech,protect_all_source_boundaries=False,
             cache_context=cache,use_ai=self.text_plan.group,provider_snapshot=context.provider_snapshot))
+        audit_cues(cues, segments, guard, 'ai_grouping' if self.text_plan.group else 'local_grouping',
+                   self.legacy.record_run_event)
         if context.task_language in {'zh','ja'}:
             cues=self._step(index,'text-stable','整理最终原文',lambda:finalize_cues(
                 cues,segments,tokens,speech,shard_end,self.fps,self.legacy))

@@ -158,3 +158,10 @@ def test_a_one_word_automatic_row_is_that_word():
     cue = next(c for c in project.cues if c.text == "wearing")
     words, reason = cue_words(project, cue)
     assert reason == DOWNLOADED_WORD_ONSETS and [(w.start_ms, w.end_ms) for w in words] == [(7000, 7600)]
+
+
+def test_downloaded_onsets_stay_available_without_claiming_an_acoustic_span():
+    from twobyteasr.recognition.word_timing_provenance import (
+        ESTIMATED_TIME, WEBSITE_ONSET, WordClock, word_clock,
+    )
+    assert word_clock({"link_source": {"task_id": "fixture"}}) == WordClock(WEBSITE_ONSET, ESTIMATED_TIME)

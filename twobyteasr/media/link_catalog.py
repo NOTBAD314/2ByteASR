@@ -10,7 +10,7 @@ import json
 import re
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
-FORMATS = ("json3", "vtt", "srt")
+FORMATS = ("json3", "vtt", "ttml", "srt")
 SOURCES = {"manual": "人工字幕", "automatic": "原语言自动字幕",
            "translated": "自动翻译字幕", "unknown": "来源待确认"}
 
@@ -104,7 +104,7 @@ def subtitle_tracks(info: dict) -> list[dict]:
     groups = {}
     for container in ("subtitles", "automatic_captions"):
         for key, entries in (info.get(container) or {}).items():
-            if key == "live_chat" or not isinstance(entries, list):
+            if key.lower() == "live_chat" or not isinstance(entries, list):
                 continue
             for entry in entries:
                 if not isinstance(entry, dict) or entry.get("ext") not in FORMATS:
@@ -221,9 +221,12 @@ def video_catalog(info: dict, *, subtitle_warning: bool = False, source_url: str
 
 def preferred_track(catalog: dict, preferences=()) -> str:
     tracks = catalog["tracks"]
-    for lang in (catalog.get("language", ""), *preferences):
-        candidates = [t for t in tracks if language_matches(t["language"], lang)
+    for lang in (*preferences, catalog.get("language", "")):
+        candidates = [t for t in tracks if t["language"].lower() == lang.lower()
                       and t["source"] in ("manual", "automatic")]
+        if not candidates and lang and "-" not in lang:
+            candidates = [t for t in tracks if language_matches(t["language"], lang)
+                          and t["source"] in ("manual", "automatic")]
         if candidates:
             return min(candidates, key=lambda t: t["source"] != "manual")["track_id"]
     original = [t for t in tracks if t["source"] == "automatic"]

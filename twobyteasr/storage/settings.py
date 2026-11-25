@@ -16,6 +16,9 @@ DEFAULT_SETTINGS = {
     "models": {
         "primary_asr_backend": "moss",
         "qwen_asr_backend": "api",
+        "haas_quantization": "q8_0",
+        "haas_device": "cpu",
+        "haas_diarization": False,
         "qwen_asr_model": "Qwen/Qwen3-ASR-1.7B",
         "qwen_asr_api_provider": "qwen31_filetrans",
         "qwen_asr_api_protocol": "dashscope_filetrans",
@@ -125,6 +128,14 @@ DEFAULT_SETTINGS = {
     # Spoken language of the media and the subtitles to produce (not the UI language).
     "subtitle_language": {
         "recognition_language": "auto",
+        "strict_language": True,
+        "auto_language_repair": True,
+        "language_backup_review": False,
+        "repair_profile": "normal",
+        "repair_max_requests": 12,
+        "repair_max_audio_seconds": 120,
+        "repair_max_elapsed_seconds": -1,
+        "repair_max_cost_cents": -1,
         "output": "original",
         # Translation target (kept under its old name): zh-Hans, zh-Hant, en, ja
         # or ko since 2026-10-14; before only the two Chinese scripts.
@@ -286,10 +297,12 @@ def _merge_known_settings(defaults, payload):
                 else:
                     warnings.append(f"{section}.{key} must be a JSON object; default was used")
             elif isinstance(default, int):
-                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                lower = {'repair_max_requests': 0, 'repair_max_audio_seconds': 0,
+                         'repair_max_elapsed_seconds': -1, 'repair_max_cost_cents': -1}.get(key, 1)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= lower:
                     result[section][key] = value
                 else:
-                    warnings.append(f"{section}.{key} must be a positive integer; default was used")
+                    warnings.append(f"{section}.{key} must be an integer >= {lower}; default was used")
             elif isinstance(default, list):
                 # 多词库等 list[str] 字段：只接受非空字符串元素，去重保序。
                 if isinstance(value, list):
@@ -341,6 +354,7 @@ def _merge_known_settings(defaults, payload):
             "sensevoice",
             "paraformer",
             "funasr_nano",
+            "haas_ja",
             "glm_asr_nano",
             "canary_qwen",
             "mlx_qwen3_asr",
@@ -349,11 +363,13 @@ def _merge_known_settings(defaults, payload):
             "none",
         },
         "qwen_asr_backend": {
-            "api", "local", "firered", "firered_llm", "whisper_turbo", "sensevoice", "funasr_nano", "off"
+            "api", "local", "firered", "firered_llm", "whisper_turbo", "sensevoice", "funasr_nano", "haas_ja", "off"
         },
-        "firered_asr_backend": {"local", "qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head", "mlx_qwen_aligner", "mfa_aligner", "whisper_turbo", "paraformer", "off"},
+        "firered_asr_backend": {"local", "qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head", "mlx_qwen_aligner", "mfa_aligner", "whisper_turbo", "paraformer", "haas_native", "off"},
     }
     allowed_backends["qwen_alignment_profile"]={"official-v1","ultra-v5"}
+    allowed_backends["haas_quantization"] = {"q8_0", "f16", "q4_k"}
+    allowed_backends["haas_device"] = {"cpu", "cuda"}
     for key, allowed in allowed_backends.items():
         value = result["models"][key]
         if value not in allowed:

@@ -544,11 +544,13 @@ def save_spark_credentials(url: str, **values) -> Path:
 
 def validate_qwen_asr_endpoint(endpoint: dict, *, require_key: bool = True) -> None:
     model = str(endpoint.get('model') or '')
-    from .qwen31_asr import is_filetrans_model
+    from .qwen31_asr import FLASH_MODELS, is_filetrans_model
     if model.startswith('qwen3-asr-flash') and not is_filetrans_model(model):
         from ..i18n import tr
         raise RuntimeError(tr('Qwen3-ASR-Flash 短音频聊天接口不回传可用时间戳，请选择 Qwen3-ASR-Flash 录音文件识别（Filetrans）。'))
-    if model.startswith('qwen-audio-') and not is_filetrans_model(model):
+    if (model in FLASH_MODELS) != (endpoint.get('protocol') == 'dashscope_asr_flash'):
+        raise RuntimeError('Qwen Audio Flash 必須使用原生 Flash HTTP 協定。')
+    if model.startswith('qwen-audio-') and model not in FLASH_MODELS and not is_filetrans_model(model):
         raise RuntimeError('此 Qwen Audio 旧版本或短音频入口已移除，请选择 Qwen Audio 3.1 长音频转写。')
     if is_filetrans_model(model) and endpoint.get('protocol') != 'dashscope_filetrans':
         raise RuntimeError('百炼录音文件识别必须使用异步 Filetrans 协议。')

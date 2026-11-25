@@ -1,4 +1,8 @@
 {
+  "兔白助手": "2ByteASR Helper",
+  "使用兔白助手…": "Use 2ByteASR Helper…",
+  "已接收兔白助手任务，可在队列中查看。": "Received from 2ByteASR Helper. See the download queue.",
+  "兔白助手任务未完成": "The helper request did not complete",
   "支持 Bilibili、YouTube 等视频链接；尝试获取字幕并导入工作台": "Bilibili, YouTube and other video links; fetch available subtitles for the Studio",
   "粘贴 Bilibili、YouTube 或其他网站的单个视频链接": "Paste a single video link from Bilibili, YouTube or another website",
   "未发现可下载字幕；画面内嵌字幕不能直接提取。仍可下载视频后选择识别。": "No downloadable subtitles found. Burned-in text cannot be extracted directly; download the video and transcribe it if needed.",
@@ -6052,6 +6056,7 @@
   "复用第 {index} / {total} 段": "Reusing part {index} / {total}",
   "复用已有结果": "Reusing the finished result",
   "排队中": "Queued",
+  "网络中断，重新查询原任务": "Connection lost, checking the same task again",
   "云端识别中": "Recognizing in the cloud",
   "正在取回结果": "Fetching the result",
   "重新上传": "Uploading again",
@@ -10504,5 +10509,6 @@
   "每条都能撤回。": "Each can be undone.",
   "没修成": "Not fixed",
   "原因写在每一类下面。": "The reasons are under each kind.",
-  "说话人和其他，兔白没碰。": "Speakers and others; Tubai left them alone."
+  "说话人和其他，兔白没碰。": "Speakers and others; Tubai left them alone.",
+  "Chrome 和 Brave 共用本机通信。修复或解除连接会同时作用于两者。": "Chrome and Brave share the native connection. Repairing or disconnecting affects both browsers."
 }

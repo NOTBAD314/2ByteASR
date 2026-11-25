@@ -1070,7 +1070,6 @@ class StudioProjectController:
                     project_id=project_id,
                     media_path=str(project.media.path),
                 ):
-                    page._studio_mark_startup_milestone("MPV_LOADFILE_SENT", media_path=str(project.media.path))
                     # Establish the new project's primary source clock BEFORE
                     # load() publishes its initial position. A previous V2
                     # mapping would interpret a deep source offset as project
@@ -1115,12 +1114,17 @@ class StudioProjectController:
                         sequence=sequence_of(project).id if hasattr(sequence_of(project), "id") else "",
                         media_path=str(playable_source),
                     )
-                    page._loading_project_media = True
-                    try:
-                        page.video.load(playable_source, "", start_seconds=restore_seconds)
-                    finally:
-                        page._loading_project_media = False
-                page._studio_mark_startup_milestone("MPV_LOAD_REQUEST_QUEUED", media_path=str(getattr(page.video, "_media_path", "") or project.media.path))
+                    if target and target.get("mode") == "audio_only":
+                        page._studio_mark_startup_milestone("AUDIO_GRAPH_PREVIEW_REQUESTED", media_path=str(playable_source))
+                    else:
+                        page._studio_mark_startup_milestone("MPV_LOADFILE_SENT", media_path=str(project.media.path))
+                        page._loading_project_media = True
+                        try:
+                            page.video.load(playable_source, "", start_seconds=restore_seconds)
+                        finally:
+                            page._loading_project_media = False
+                        page._studio_mark_startup_milestone(
+                            "MPV_LOAD_REQUEST_QUEUED", media_path=str(getattr(page.video, "_media_path", "") or project.media.path))
                 page._studio_trace("P74C_T4_MPV_PATH", media_path=str(getattr(page.video, "_media_path", "") or project.media.path))
                 page._preview_timer.start(0)
                 if hasattr(page, "_reload_edit_playback"):

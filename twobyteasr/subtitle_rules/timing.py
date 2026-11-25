@@ -644,6 +644,17 @@ def relock_display_timing(cues, audio_seconds, timeline_fps=TIMELINE_FPS, *, sta
     moved = lock_cue_endpoints_to_frames(cues, timeline_fps)
     gaps_before = _display_flicker_gaps(cues, timeline_fps)
     bridge_short_display_gaps(cues,audio_seconds,timeline_fps)
+    for cue in cues:
+        receipt = (getattr(cue, "grouping_boundary_receipt", None) or {}).get("measured_english_break")
+        if not receipt:
+            continue
+        start = receipt["start_ms"] / 1000 if "start_ms" in receipt else cue.start
+        end = receipt["end_ms"] / 1000 if "end_ms" in receipt else cue.end
+        if end <= start:
+            first, last = receipt["source_interval_ms"]
+            start, end = first / 1000, last / 1000
+        if end > start:
+            cue.start, cue.end = start, end
     gaps_after = _display_flicker_gaps(cues, timeline_fps)
     if moved or gaps_before:
         record_run_event(

@@ -1007,6 +1007,9 @@ class SubtitleTranslationDialog(QDialog):
         QApplication.clipboard().setText(str(redact_diagnostics(text)))
 
     def _on_finished(self, result) -> None:
+        from ..storage.project_stage_history import record_stage
+
+        project_id = getattr(self.project, "project_id", "")
         self._thread = None
         self._set_phase('done')
         self.script.setEnabled(True)
@@ -1015,6 +1018,7 @@ class SubtitleTranslationDialog(QDialog):
             button.setEnabled(key != 'selected' or bool(self._selected))
         if not self._owns_project():
             self._log_disowned_result(result)
+            record_stage(project_id, "translation", "failed")
             self._result = None
             self.start_button.setEnabled(False)
             self.accept_suggestions_button.hide()
@@ -1032,6 +1036,7 @@ class SubtitleTranslationDialog(QDialog):
             from ..diagnostics.event_log import emit, exception_info
             background_result(getattr(self,"_diagnostic",{}),self.page.project,decision="failed",cancelled=self._cancel.is_set())
             emit("translation.failed",level="ERROR",result="failed",exception=exception_info(result),**getattr(self,"_diagnostic",{}))
+            record_stage(project_id, "translation", "cancelled" if self._cancel.is_set() else "failed")
             from ..providers.provider_diagnostics import redact_diagnostics
             from .translation_actions import failure_hint
             error = failure_hint(getattr(result, 'category', '')) + str(redact_diagnostics(str(result)))
@@ -1044,6 +1049,7 @@ class SubtitleTranslationDialog(QDialog):
         from ..diagnostics.studio_events import background_result
         self._result = result
         if result.target != self._target():
+            record_stage(project_id, "translation", "failed")
             background_result(getattr(self,"_diagnostic",{}), self.project,
                               decision="discarded_target_changed", cancelled=result.cancelled, applied_count=0)
             bind_text(self.status, '目标语言已变化，迟到的翻译结果没有写入。')
@@ -1076,6 +1082,7 @@ class SubtitleTranslationDialog(QDialog):
                     from ..diagnostics.event_log import emit, exception_info
                     error = outcome["error"] or RuntimeError("translation transaction was not committed")
                     emit("translation.failed", level="ERROR", result="failed", exception=exception_info(error))
+                    record_stage(project_id, "translation", "failed")
                     bind_text(self.status, "翻译结果未写入：{error}", error=str(error))
                     self._show_result('bad', '结果没有写入')
                     self.translation_finished.emit(False, {})
@@ -1089,6 +1096,15 @@ class SubtitleTranslationDialog(QDialog):
                               cancelled=result.cancelled, stale_ids=result.discarded,
                               applied_count=len(result.translations) if before != after else 0,
                               discard_reasons=result.discarded)
+        written = len(result.translations) if before != after else 0
+        incomplete = len(result.failed) + len(result.discarded) + len(result.suggestions)
+        outcome = ("cancelled" if result.cancelled and not written else
+                   "partial" if written and (incomplete or result.cancelled) else
+                   "completed" if written else "suggestion" if result.suggestions else
+                   "failed" if incomplete else "unchanged")
+        record_stage(project_id, "translation", outcome,
+                     applied=written, failed=len(result.failed), stale=len(result.discarded),
+                     suggested=len(result.suggestions))
         parts = [tr("成功 {count} 条", count=len(result.translations))]
         if result.terminology_warnings:
             parts.append(tr('译名或语境需核对 {count} 条；可打开AI词库校对，选择译文', count=len(result.terminology_warnings)))

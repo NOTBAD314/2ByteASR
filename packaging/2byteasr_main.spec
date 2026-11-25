@@ -230,6 +230,15 @@ def distributable(entry):
     return True
 
 a.datas = [entry for entry in a.datas if distributable(entry)]
+# Keep the independent executable and its private dependencies together.
+# PyInstaller's Analysis would otherwise scan these binaries as dependencies
+# of the GUI and place a second OpenBLAS DLL in its global load directory.
+sys.path.insert(0, str(ROOT))
+from twobyteasr.local_models.haas_runtime import BUNDLED_CPU_FILES, CRT_FILES, verify_bundled_cpu
+_crispasr_root = verify_bundled_cpu(ROOT)
+for _name in {**BUNDLED_CPU_FILES, **CRT_FILES}:
+    _file = _crispasr_root / _name
+    a.datas.append((_file.relative_to(ROOT).as_posix(), str(_file), 'DATA'))
 # QtGui's hook sweeps platforminputcontexts, including an unused GPL-only
 # virtual keyboard. Keep Windows native IME and every other Qt plugin intact.
 # These four precise files were absent in the independently verified payload copy.
@@ -274,7 +283,11 @@ if _pin_root:
                 else:
                     a.datas.append((_destination, str(_resource), 'DATA'))
                 _known.add(_destination)
-    for _retained_name in ('_tkinter.pyd', 'tcl86t.dll', 'tk86t.dll', '2ByteASRUpdater.exe'):
+    _retained_native = ['_tkinter.pyd', 'tcl86t.dll', 'tk86t.dll']
+    if build_metadata.resolve().is_relative_to(ROOT.resolve()):
+        _retained_native.append('2ByteASRUpdater.exe')
+    # The release pipeline compiles the updater from the staged sources.
+    for _retained_name in _retained_native:
         _retained_file = _pin_root / _retained_name
         if _retained_name not in _known and _retained_file.is_file():
             a.binaries.append((_retained_name, str(_retained_file), 'BINARY'))

@@ -519,6 +519,7 @@ LOCAL_REVIEW = {"local", "firered", "firered_llm", "whisper_turbo", "sensevoice"
 
 
 def selected_local_runtime_components(settings: dict) -> list[str]:
+    """Selected components that use the managed Torch environment."""
     models = settings.get("models", {}) if isinstance(settings, dict) else {}
     selected = []
     primary = str(models.get("primary_asr_backend", "moss"))
@@ -530,14 +531,15 @@ def selected_local_runtime_components(settings: dict) -> list[str]:
         selected.append(f"字级时间轴：{timeline}")
     if review in LOCAL_REVIEW and review != primary:
         selected.append(f"文字复核：{review}")
+    if primary == "haas_ja" and models.get("haas_diarization"):
+        selected.append("说话人分轨：ECAPA")
     return selected
 
 
 def require_local_torch_runtime(settings: dict) -> TorchAudioRuntimeStatus | None:
-    """Check torch/torchaudio only when a selected stage runs locally.
+    """Check torch/torchaudio only for stages that use the Torch environment.
 
-    A cloud-only plan never starts the torch probe (a child process that
-    imports torch; 2-6 s on machines without CUDA, where it is not cached).
+    Cloud stages and native CrispASR inference have their own runtime checks.
     """
     if not selected_local_runtime_components(settings):
         return None

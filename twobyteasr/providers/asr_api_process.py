@@ -40,10 +40,13 @@ def cloud_request_hints(endpoint, settings, requested_language=None):
     from .qwen31_asr import filetrans_hints_for_model, is_filetrans_model
     from .mosi_asr import MODEL as MOSI_MODEL, keyterm_hints
     from ..glossary.terminology import recognition_hotwords, runtime_snapshot
+    from ..recognition.language_guard import settings_policy
     models = (settings or {}).get('models', {})
+    guard = settings_policy(settings, requested_language)
     if is_filetrans_model(endpoint.get('model')):
         hints = filetrans_hints_for_model(endpoint['model'], recognition_hotwords(runtime_snapshot()),
-                                          vocabulary_id=models.get('asr_vocabulary_id', ''),
+                                          vocabulary_id=(models.get('asr_vocabulary_id', '')
+                                                         if not guard['strict'] or guard['language'] == 'zh' else ''),
                                           vocabulary_model=models.get('asr_vocabulary_model', ''),
                                           language=requested_language)
         hints.update(qwen_diarize_hint(endpoint, settings))
@@ -72,14 +75,15 @@ def qwen_diarize_hint(endpoint, settings):
 def cache_hint_signature(endpoint, settings, requested_language=None):
     """Cache identity of the new hint keys only (empty for routes that predate them)."""
     import hashlib
-    from .qwen31_asr import QWEN3_FILETRANS
+    from .qwen31_asr import is_filetrans_model
     from .mosi_asr import MODEL as MOSI_MODEL
     from .asr_language_control import policy
     language_control=policy(endpoint,requested_language)
-    if endpoint.get('model') not in {QWEN3_FILETRANS, MOSI_MODEL, MAI_TRANSCRIBE_2}:
+    if is_filetrans_model(endpoint.get('model')):
+        hints = cloud_request_hints(endpoint, settings, requested_language)
+        return {'api_hints_v2': hashlib.sha256(json.dumps(hints, ensure_ascii=False, sort_keys=True).encode('utf8')).hexdigest()}
+    if endpoint.get('model') not in {MOSI_MODEL, MAI_TRANSCRIBE_2}:
         signature = {'source_language_constraint':language_control['request_language']} if language_control['parameter_sent'] else {}
-        # A result asked without speakers must not be reused for one with them (and back).
-        signature.update(qwen_diarize_hint(endpoint, settings))
         return signature
     hints = cloud_request_hints(endpoint, settings, requested_language)
     keep = {k: hints.get(k) for k in ('filetrans_language', 'mosi_keyterms', 'mosi_diarize', 'azure_phrases') if k in hints}
@@ -101,9 +105,22 @@ def transcribe(audio_path,chunks,*,publish_primary=False,cache_root=None,storage
     endpoint=dict(context.asr_endpoint_snapshot or qwen_asr_endpoint_from_settings(settings))
     validate_qwen_asr_endpoint(endpoint)
     endpoint['speaker_source']=context.speaker_source or 'single'
+    from ..recognition.language_guard import settings_policy
+    language_guard = settings_policy(settings, context.requested_language)
+    if language_guard['language'] != 'auto':
+        endpoint.update(requested_language=language_guard['language'], strict_language=language_guard['strict'])
     from .qwen31_asr import is_filetrans_model
     from .mosi_asr import MODEL as MOSI_MODEL
-    endpoint.update(cloud_request_hints(endpoint, settings, context.requested_language))
+    if context.language_guard_repair:
+        # A repair owns only this audio window and its original language.
+        endpoint['language_guard_repair'] = True
+        endpoint['speaker_source'] = 'single'
+        endpoint.pop('keep_dialect', None)
+        if is_filetrans_model(endpoint['model']):
+            from .qwen31_asr import filetrans_hints_for_model
+            endpoint.update(filetrans_hints_for_model(endpoint['model'], (), language=context.requested_language))
+    else:
+        endpoint.update(cloud_request_hints(endpoint, settings, context.requested_language))
     from .asr_language_control import hints as language_hints,policy as language_policy
     endpoint.update(language_hints(endpoint,context.requested_language))
     control=language_policy(endpoint,context.requested_language)
@@ -123,8 +140,8 @@ def transcribe(audio_path,chunks,*,publish_primary=False,cache_root=None,storage
     if endpoint.get('hint_counts'):
         record_run_event('cloud_request_hints', model=endpoint['model'], **endpoint['hint_counts'],
                          language=endpoint.get('filetrans_language') or '')
-    from .cloud_asr_jobs import FLASH, SPARK, worker_timeout
-    native_job=endpoint['model'] in {FLASH,SPARK,MOSI_MODEL} or is_filetrans_model(endpoint['model'])
+    from .cloud_asr_jobs import FLASH_MODELS, SPARK, worker_timeout
+    native_job=endpoint['model'] in FLASH_MODELS | {SPARK,MOSI_MODEL} or is_filetrans_model(endpoint['model'])
     # Cloud recognition never needs the local model runtime (PyTorch etc.):
     # the packaged app runs the worker with its own executable.
     from .cloud_api_worker import cloud_worker_command
@@ -166,7 +183,7 @@ def transcribe(audio_path,chunks,*,publish_primary=False,cache_root=None,storage
         if storage_credentials is None:
             storage_credentials = read_oss_credentials() if is_filetrans_model(endpoint['model']) else ()
         request=dict(source_path=str(audio_path),audio_array=str(array),output=str(output),chunks=manifest,
-            endpoint=endpoint,context=asr.build_qwen_asr_context(audio_path),settings=settings,
+            endpoint=endpoint,context='' if context.language_guard_repair else asr.build_qwen_asr_context(audio_path),settings=settings,
             native_job=native_job,speaker_source=endpoint['speaker_source'],
             cancel_file=str(root/'cancel'),
             job_id=context.job_id,requested_language=context.requested_language,

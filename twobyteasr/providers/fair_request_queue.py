@@ -3,10 +3,25 @@ from __future__ import annotations
 
 import hashlib
 import queue
+import re
 import threading
 import time
 from collections import defaultdict,deque
 from urllib.parse import urlsplit
+
+
+# 2026-11-25 (Ninja Spy): DeepSeek answered 429 "Your current concurrency is 14,
+# which exceeds your concurrency limit of 14" while the local budget was 16.
+# The account's reported limit caps every stage and shard sharing that key.
+_SERVER_LIMIT = re.compile(r'concurrency limit of (\d+)|并发(?:上限|限制)\D{0,6}(\d+)', re.IGNORECASE)
+SERVER_LIMIT_MEMORY_SECONDS = 600.
+
+
+def reported_concurrency_limit(error):
+    found = _SERVER_LIMIT.search(str(error or ''))
+    if not found:
+        return None
+    return int(found.group(1) or found.group(2))
 
 
 class FairRequestQueue:
@@ -54,6 +69,10 @@ class FairRequestQueue:
                         key,ceiling=self._identity(item)
                         state=self.accounts.setdefault(key,dict(active=0,limit=ceiling,ceiling=ceiling,
                             cooldown=0.,successes=0,timeouts=0))
+                        server=state.get('server_limit')
+                        if server and time.monotonic()-state.get('server_limit_at',0.)>SERVER_LIMIT_MEMORY_SECONDS:
+                            state.pop('server_limit',None);server=None
+                        if server:ceiling=min(ceiling,server)
                         state['ceiling']=ceiling;state['limit']=min(state['limit'],ceiling)
                         expired=item.handle.cancelled or time.monotonic()>=item.handle.deadline_monotonic
                         if not expired and (state['active']>=state['limit'] or time.monotonic()<state['cooldown']):
@@ -74,6 +93,11 @@ class FairRequestQueue:
             category=str(getattr(error,'category',''))
             limited=category in {'rate_limit','rate_limited'}
             if 'timeout' in category:state['timeouts']+=1
+            reported=reported_concurrency_limit(error) if limited else None
+            if reported:
+                # Leave headroom for requests already in flight elsewhere on this key.
+                state['server_limit']=max(1,reported-2);state['server_limit_at']=time.monotonic()
+                state['limit']=min(state['limit'],state['server_limit'])
             if limited or state['timeouts']>=3:
                 state['limit']=max(1,state['limit']//2)
                 state['cooldown']=time.monotonic()+(3. if limited else 1.)
@@ -93,4 +117,5 @@ class FairRequestQueue:
     def snapshot(self):
         with self.condition:
             return dict(queued=self.pending,active=sum(row['active'] for row in self.accounts.values()),
-                local_limits=[dict(active=row['active'],limit=row['limit'],ceiling=row['ceiling']) for row in self.accounts.values()])
+                local_limits=[dict(active=row['active'],limit=row['limit'],ceiling=row['ceiling'],
+                                   server_limit=row.get('server_limit')) for row in self.accounts.values()])

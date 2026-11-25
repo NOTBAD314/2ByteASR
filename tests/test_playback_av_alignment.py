@@ -46,3 +46,15 @@ def test_declared_counter_wrap_is_unwrapped_but_seek_generation_is_not():
     telemetry[-1]['audio']['transport_generation']=[2,0]
     r=analyze(rows,telemetry)
     assert r['measurement_valid'] is False and r['performance_pass']=='UNVERIFIED'
+
+
+def test_known_legacy_audio_suffix_is_not_an_mpv_video_target():
+    from types import SimpleNamespace
+    from twobyteasr.projects.studio_project import asset_has_video
+
+    for suffix in (".wav", ".mp3", ".flac"):
+        asset = SimpleNamespace(canonical_source="sample" + suffix, video_metadata={})
+        assert not asset_has_video(asset)
+        asset.video_metadata["has_video"] = True
+        assert asset_has_video(asset)
+    assert asset_has_video(SimpleNamespace(canonical_source="unknown.mkv", video_metadata={}))

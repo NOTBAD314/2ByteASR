@@ -296,6 +296,12 @@ from ..providers.endpoint_editor_ui import (
 QWEN_API_KEY_HELP_URL = "https://help.aliyun.com/zh/model-studio/get-api-key"
 
 ASR_API_PRESETS = {
+    "qwen_audio_flash": {
+        "short": "百炼 Qwen Audio Flash", "label": "阿里云百炼｜Qwen Audio Flash HTTP",
+        "protocol": "dashscope_asr_flash", "model": "qwen-audio-3.1-asr-flash",
+        "models": ("qwen-audio-3.1-asr-flash", "qwen-audio-3.0-asr-flash"),
+        "url": "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+    },
     # 2026-10-13: Qwen Cloud — the official international Qwen API platform
     # (home.qwencloud.com). One pay-as-you-go key, no workspace host. 2026-10-25:
     # the same entry also serves the mainland site 千问AI平台 (maas.qianwenaiapi.com);
@@ -380,6 +386,7 @@ PRIMARY_MODEL_CHOICES = (
     ("SenseVoice Small（轻量，CPU 友好）", "sensevoice", {"sensevoice"}),
     ("Paraformer（中文快速时间戳）", "paraformer", {"paraformer"}),
     ("Fun-ASR Nano（中文与方言）", "funasr_nano", {"funasr_nano"}),
+    ("Haas-ja-v1.0（日语，本机）", "haas_ja", {"haas_ja_q8_0"}),
     ("GLM-ASR Nano（独立运行库）", "glm_asr_nano", {"glm_asr_nano"}),
     ("Canary-Qwen（英语，独立运行库）", "canary_qwen", {"canary_qwen", "canary_qwen_tokenizer"}),
     # Apple Silicon only (MLX); the folders never exist elsewhere.
@@ -393,8 +400,10 @@ REVIEW_MODEL_CHOICES = (
     ("本地 Whisper large-v3-turbo（多语种，约 1.6 GB）", "whisper_turbo", {"whisper_turbo"}),
     ("本地 SenseVoice Small（CPU 友好，约 0.9 GB）", "sensevoice", {"sensevoice"}),
     ("本地 Fun-ASR Nano 2512（中文方言，约 2.4 GB）", "funasr_nano", {"funasr_nano"}),
+    ("Haas-ja-v1.0（日语文字复核）", "haas_ja", {"haas_ja_q8_0"}),
 )
 TIMELINE_MODEL_CHOICES = (
+    ("Haas-ja-v1.0 原生时间（快速）", "haas_native", set()),
     ("FireRedASR2-AED（独立听音识别及字级时间轴）", "local", {"firered_aed"}),
     ("Qwen3 对齐 · Ultra", "qwen_aligner", {"qwen_ultra_aligner"}),
     ("Whisper 字幕时间轴（多语种，短块级）", "whisper_turbo", {"whisper_turbo"}),
@@ -436,6 +445,14 @@ def populate_available_asr_choices(primary, review, timeline, settings, root=APP
             wanted=canonical_backend(wanted)
         rows=[]
         for label,value,required in local_choices:
+            if value == 'haas_native' and desired.get('primary_asr_backend') != 'haas_ja':
+                continue
+            if value == 'haas_ja':
+                from ..recognition.haas_backend import configuration, runtime_executable
+                config = configuration(settings)
+                if value not in unavailable_backends and config.model_key in installed and runtime_executable(config.device):
+                    rows.append((label, value, True))
+                continue
             if setting_key=='firered_asr_backend' and value in {'qwen_aligner','mfa_aligner'} and value not in unavailable_backends:
                 from ..local_models.model_status_cache import cached_registry
                 from ..local_models.alignment_readiness import effective_snapshot
@@ -526,6 +543,12 @@ def missing_selected_local_models(values: dict, root=APP_ROOT, *, models=None) -
                     missing.append(f"字幕时间轴：{snapshot.get('label', 'Qwen3 对齐')}（{snapshot['reason']}）")
                 continue
         required = requirements[role].get(selected, set())
+        if selected == 'haas_ja':
+            from ..recognition.haas_backend import configuration, runtime_executable
+            config = configuration({'models': models or values})
+            required = {config.model_key}
+            if not runtime_executable(config.device):
+                missing.append(f"{labels[role]}：Haas CrispASR {config.device.upper()} 尚未準備")
         absent = sorted(required - installed)
         if absent:
             missing.append(f"{labels[role]}：{selected}（缺少 {', '.join(absent)}）")
@@ -573,6 +596,9 @@ def required_recognition_model_keys(values: dict) -> tuple[str, ...]:
             required.add('qwen_ultra_aligner' if route in ULTRA_ALIGNERS else route)
             if route == 'qwen_ultra_head':
                 required.add(route)
+        elif choice == 'haas_ja':
+            from ..recognition.haas_backend import configuration
+            required.add(configuration({'models': models}).model_key)
         else:
             required.update(choices.get(choice, set()))
     return tuple(sorted(required))
@@ -948,12 +974,12 @@ def persist_asr_configuration(
         raise RuntimeError("转写风格选项无效。")
     if models["primary_asr_backend"] not in {
         "moss", "firered", "qwen_local", "firered_llm", "whisper_turbo", "sensevoice",
-        "paraformer", "funasr_nano", "glm_asr_nano", "canary_qwen", "mlx_qwen3_asr",
+        "paraformer", "funasr_nano", "haas_ja", "glm_asr_nano", "canary_qwen", "mlx_qwen3_asr",
         "mlx_qwen3_asr_1_7b", "api", "none",
     }:
         raise RuntimeError("主力转写后端选项无效。")
     if models["qwen_asr_backend"] not in {
-        "api", "local", "firered", "firered_llm", "whisper_turbo", "sensevoice", "funasr_nano", "off"
+        "api", "local", "firered", "firered_llm", "whisper_turbo", "sensevoice", "funasr_nano", "haas_ja", "off"
     }:
         raise RuntimeError("文字复核后端选项无效。")
     # A saved user deployment can outlive a removed preset. Retain its exact
@@ -969,7 +995,7 @@ def persist_asr_configuration(
         "mosi_transcriptions",
     }:
         raise RuntimeError("ASR API 协议选项无效。")
-    if models["firered_asr_backend"] not in {"local", "qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head", "mlx_qwen_aligner", "mfa_aligner", "whisper_turbo", "paraformer", "off"}:
+    if models["firered_asr_backend"] not in {"local", "qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head", "mlx_qwen_aligner", "mfa_aligner", "whisper_turbo", "paraformer", "haas_native", "off"}:
         raise RuntimeError("字幕时间轴后端选项无效。")
     missing_keys = []
     if models["qwen_asr_backend"] == "api" or models["primary_asr_backend"] == "api":
@@ -1400,6 +1426,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             page.diagnose_requested.connect(self._open_history_diagnosis)
             page.resume_requested.connect(self._resume_recognition_task)
             page.partial_requested.connect(lambda record:self._resume_recognition_task(record,preview_only=True))
+            page.online_requested.connect(lambda: self._open_online_history(page))
         elif name == "studio":
             # Imported on first use (or by the idle warm-up after startup):
             # the Studio module tree is ~0.5 s of the home page's start.
@@ -3373,6 +3400,16 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         if hasattr(self.history_page, "restore_active_navigation"):
             self.history_page.restore_active_navigation()
         self._switch_page(self.history_page)
+
+    def _open_online_history(self, history):
+        from .link_download_controller import controller_for
+        from .link_history import DownloadHistoryPage
+        panel = getattr(history, "_online_download_page", None)
+        if panel is None:
+            panel = history._online_download_page = DownloadHistoryPage(history, controller_for(self))
+            history.main_stack.addWidget(panel)
+        history.main_stack.setCurrentWidget(panel)
+        panel.refresh()
 
     @navigation_timed('home.asr_choices')
     def _cached_home_model_keys(self):
@@ -6723,6 +6760,11 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         The saved switches stay as they are; filling in a key turns AI back on."""
         settings = json.loads(json.dumps(self.legacy.RUNTIME_SETTINGS, ensure_ascii=False))
         switches = settings.setdefault("switches", {})
+        snapshot = (getattr(self, '_studio_recognition_context', None) or {}).get('snapshot') or {}
+        language = ((snapshot.get('project') or {}).get('generation_metadata') or {}).get('language') or {}
+        if snapshot.get('range_ms') and (language.get('guard') or {}).get('language') != 'auto':
+            from ..recognition.language_guard import saved_options
+            settings.setdefault('subtitle_language', {}).update(saved_options(language.get('guard') or {}))
         policy = (((getattr(self, '_studio_recognition_context', None) or {}).get('snapshot') or {}).get('language_recovery_policy') or {})
         if policy.get('reuse_candidates'):
             settings.setdefault('models', {}).update(primary_asr_backend='api', qwen_asr_backend='off')
@@ -6752,9 +6794,20 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         """
         import hashlib
         from ..recognition.recognition_choices import disclosure_text, run_disclosure
+        from ..recognition.asr_capabilities import selected_issue
+        settings = self._run_settings_snapshot()
+        settings.setdefault('models', {}).update(self._asr_values())
+        source_options = studio_translation_choice(self._subtitle_language_options(),
+                                                   getattr(self, '_studio_recognition_context', None), _ai_unlocked(self))
+        settings.setdefault('subtitle_language', {})['recognition_language'] = source_options['recognition_language']
+        language_problem = selected_issue(settings, source_options['recognition_language'])
+        if language_problem:
+            self._run_block_reason = language_problem
+            self._run_block_code = 'configuration_required'
+            if not noninteractive:
+                QMessageBox.warning(self, tr('无法开始识别'), language_problem)
+            return False
         try:
-            settings = self._run_settings_snapshot()
-            settings.setdefault("models", {}).update(self._asr_values())
             text = disclosure_text(settings)
             info = run_disclosure(settings)
         except Exception as exc:
@@ -9600,6 +9653,51 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(6)
         layout.addLayout(row)
+        guard_row = QHBoxLayout()
+        self._language_guard_checks = {}
+        for key, label, tooltip, default in (
+            ('strict_language', '严格语言模式', '指定语言后检查原文，并避开会忽略语言参数的原生分轨。', True),
+            ('auto_language_repair', '自动修复异常语言', '使用短段原声重新识别，按半小时及整项任务的额度限制。云端模型可能计费。', True),
+            ('language_backup_review', '备用模型复核', '首选模型无法确认时，使用已配置的独立文字复核模型。', False),
+        ):
+            check = QCheckBox()
+            check.setObjectName(key)
+            bind_text(check, label)
+            bind_text(check, tooltip, property='toolTip')
+            check.setChecked(bool(saved.get(key, default)))
+            check.toggled.connect(self._subtitle_language_changed)
+            self._language_guard_checks[key] = check
+            guard_row.addWidget(check)
+        guard_row.addStretch(1)
+        layout.addLayout(guard_row)
+        from PySide6.QtWidgets import QSpinBox
+        self._language_repair_profile = FramelessPopupCombo()
+        for value, label in (('normal', '普通修复'), ('active', '积极修复'), ('custom', '自定义修复')):
+            self._language_repair_profile.addItem(tr(label), value)
+        self._language_repair_profile.setCurrentIndex(max(0, self._language_repair_profile.findData(saved.get('repair_profile'))))
+        guard_row.insertWidget(3, self._language_repair_profile)
+        self._language_repair_limits = QWidget()
+        limits = QHBoxLayout(self._language_repair_limits)
+        limits.setContentsMargins(0, 0, 0, 0)
+        self._language_repair_spins = {}
+        for key, label, low, high, default in (
+            ('repair_max_requests', '最多请求', 0, 192, 12),
+            ('repair_max_audio_seconds', '音频秒数', 0, 1728, 120),
+            ('repair_max_elapsed_seconds', '工作秒数', -1, 86400, -1),
+            ('repair_max_cost_cents', '云端上限（美分）', -1, 1_000_000, -1),
+        ):
+            spin = QSpinBox()
+            spin.setRange(low, high)
+            if low < 0:
+                spin.setSpecialValueText(tr('默认'))
+            spin.setValue(int(saved.get(key, default)))
+            spin.valueChanged.connect(self._subtitle_language_changed)
+            limits.addWidget(bind_text(QLabel(), label))
+            limits.addWidget(spin)
+            self._language_repair_spins[key] = spin
+        limits.addStretch(1)
+        layout.addWidget(self._language_repair_limits)
+        self._language_repair_profile.currentIndexChanged.connect(self._subtitle_language_changed)
         from .home_widgets import MarkedPill
         # 2026-11-10 (user: the lines under the row are only hints, remove them
         # for a cleaner home): the "字幕会显示" pill and the hint line are no
@@ -9670,6 +9768,16 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             combo.blockSignals(blocked)
 
     def _subtitle_language_changed(self, *_args, save=True):
+        checks = self.__dict__.get('_language_guard_checks') or {}
+        if checks:
+            manual = self.recognition_language.currentData() != 'auto'
+            checks['strict_language'].setEnabled(manual)
+            checks['auto_language_repair'].setEnabled(manual and checks['strict_language'].isChecked())
+            checks['language_backup_review'].setEnabled(checks['auto_language_repair'].isEnabled()
+                                                       and checks['auto_language_repair'].isChecked())
+            repair_enabled = checks['language_backup_review'].isEnabled()
+            self._language_repair_profile.setEnabled(repair_enabled)
+            self._language_repair_limits.setVisible(repair_enabled and self._language_repair_profile.currentData() == 'custom')
         if self.__dict__.get("recognition_language") is not None:
             self._sync_translation_targets(self._subtitle_language_options()["recognition_language"])
         options = self._subtitle_language_options()
@@ -9765,6 +9873,10 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                                output=(options["subtitle_output"] if _ai_unlocked(self)
                                        else section.get("output", "original")),
                                translation_script=options["translation_script"])
+                section.update({key: check.isChecked() for key, check in checks.items()})
+                if checks:
+                    section['repair_profile'] = self._language_repair_profile.currentData()
+                    section.update({key: spin.value() for key, spin in self._language_repair_spins.items()})
                 self.legacy.RUNTIME_SETTINGS.setdefault("switches", {})["subtitle_punctuation"] = punctuation
                 save_runtime_settings(self.legacy.RUNTIME_SETTINGS)
             except Exception:
@@ -13784,6 +13896,7 @@ def run_desktop_app(
     *,
     select_media: bool = True,
     initial_paths=(),
+    browser_request=None,
     instance_guard=None,
 ) -> int:
     _configure_windows_app_identity()
@@ -13870,11 +13983,17 @@ def run_desktop_app(
     from .desktop_intake import DesktopIntake
     window._desktop_intake = DesktopIntake(window)
     instance_guard.paths_received.connect(window._desktop_intake.receive_external)
+    def receive_browser(request):
+        from .link_download_controller import controller_for
+        return controller_for(window).receive_browser(request)
+    instance_guard.browser_handler = receive_browser
     def accept_startup_requests():
         # One queue owns cold arguments and messages received during startup.
         # The first layout has settled before either starts loading a project.
         if media_paths or initial_paths:
             window._desktop_intake.submit(media_paths or initial_paths)
+        if browser_request:
+            receive_browser(browser_request)
         instance_guard.enable_receiver()
     QTimer.singleShot(0, accept_startup_requests)
     # Ctrl+wheel / Ctrl+= / Ctrl+- / Ctrl+0 interface zoom (remembered).

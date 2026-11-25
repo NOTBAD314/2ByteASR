@@ -56,9 +56,27 @@ def build_ai_menu(page, menu) -> None:
     page.ai_smart_align_action = add_rich(
         menu, _icon("fa5s.wave-square"), tr("智能修轴"), tr("按声音重新对齐当前字幕的起止时间"),
         lambda: _click(page, "smart_align_button"))
+    page.ai_smart_align_selection_action = add_rich(
+        menu, _icon("fa5s.wave-square"), tr("智能修轴选中字幕"),
+        tr("只处理选中的起止时间，保留锁定、已确认和手动时间"),
+        lambda: page._smart_align_selected())
     page.ai_reasr_action = add_rich(
         menu, _icon("fa5s.microphone"), tr("重新识别"), tr("对当前字幕的这段声音重新识别一次"),
         lambda: _click(page, "reasr_button"))
+    from .studio_reasr_batch import start as start_batch_reasr, start_in_out
+    page.ai_reasr_selection_action = add_rich(
+        menu, _icon("fa5s.microphone"), tr("重新识别选中字幕"), tr("逐段识别并生成待采用建议"),
+        lambda: start_batch_reasr(page, page.selected_cue_ids()))
+    page.ai_reasr_enhanced_action = add_rich(
+        menu, _icon("fa5s.wave-square"), tr("增强人声后重新识别"), tr("只处理所选字幕的音频，生成待采用建议"),
+        lambda: start_batch_reasr(page, page.selected_cue_ids(), voice_mode="prefer"))
+    page.ai_reasr_auto_audio_action = add_rich(
+        menu, _icon("fa5s.wave-square"), tr("自动选择音频后重新识别"),
+        tr("已确认的音乐占字幕一半以上时尝试增强，其余使用原音"),
+        lambda: start_batch_reasr(page, page.selected_cue_ids(), voice_mode="auto"))
+    page.ai_reasr_speaker_action = add_rich(
+        menu, _icon("fa5s.user"), tr("重新识别当前说话人字幕"), tr("只读取该说话人未锁定、未确认的字幕范围"),
+        lambda: start_batch_reasr(page, speaker=True))
     page.ai_refine_selection_action = add_rich(
         menu, _icon("fa5s.cut"), tr("AI 断句（选中范围）"), tr("只对选中的字幕试跑断句"),
         lambda: page.run_sentence_refine(whole_project=False))
@@ -77,6 +95,17 @@ def build_ai_menu(page, menu) -> None:
     page.ai_range_reasr_action = add_rich(
         menu, _icon("fa5s.redo-alt"), tr("只重新识别这一段字幕…"),
         tr("只对入点到出点这一段重新识别，其他字幕不动，可一步撤销"), lambda: open_range_recognition(page))
+    page.ai_range_reasr_suggestions_action = add_rich(
+        menu, _icon("fa5s.microphone"), tr("重新识别区间内现有字幕"),
+        tr("逐条生成待采用建议，保留跨界、锁定和已确认字幕"), lambda: start_in_out(page))
+    from .studio_lyrics_alignment import show as show_lyrics_alignment
+    page.ai_lyrics_alignment_action = add_rich(
+        menu, _icon("fa5s.music"), tr("对齐选区歌词…"),
+        tr("检测歌唱、编辑歌词草稿或对齐歌词并新增独立轨道"), lambda: show_lyrics_alignment(page))
+    from .studio_audio_setup import show as show_audio_setup
+    page.ai_audio_setup_action = add_rich(
+        menu, _icon("fa5s.download"), tr("准备选用音频模型…"),
+        tr("下载并核验人声增强、歌词对齐或歌唱检测组件"), lambda: show_audio_setup(page))
 
     # Only in the menu while they mean something (a failed range / a running
     # job). Added and removed, not hidden: a hidden QWidgetAction still paints
@@ -110,12 +139,24 @@ def build_ai_menu(page, menu) -> None:
             button = getattr(page, name, None)
             action.setEnabled(bool(current and (button is None or button.isEnabled())))
         page.ai_refine_selection_action.setEnabled(selected)
+        page.ai_reasr_selection_action.setEnabled(selected)
+        from ..media.vocal_enhancement import assets_present
+        has_enhancement = selected and assets_present()
+        page.ai_reasr_enhanced_action.setEnabled(has_enhancement)
+        page.ai_reasr_auto_audio_action.setEnabled(has_enhancement)
+        page.ai_reasr_enhanced_action.setToolTip(tr("未安装受验证的本机 HTDemucs 人声增强模型")
+                                               if selected and not has_enhancement else "")
+        page.ai_reasr_speaker_action.setEnabled(current)
+        page.ai_smart_align_selection_action.setEnabled(selected)
         page.ai_translate_selected_action.setEnabled(selected)
         try:
-            problem, _points = range_state(page)
+            problem, points = range_state(page)
         except Exception as exc:  # noqa: BLE001 - a menu row must never break the menu
             problem = str(exc) or "没有打开工程"
+            points = None
         page.ai_range_reasr_action.setEnabled(not problem)
+        page.ai_range_reasr_suggestions_action.setEnabled(bool(points and points[0] < points[1]))
+        page.ai_lyrics_alignment_action.setEnabled(bool(points and 0 < points[1] - points[0] <= 30000))
         page.ai_range_reasr_action.setToolTip(tr(problem) if problem else
                                               tr("只对入点到出点这一段重新识别，用新结果替换这一段的字幕"))
         failed = bool(has_project and (project.studio_state.get("ai_sentence_refine") or {}).get("failed_cue_ids"))

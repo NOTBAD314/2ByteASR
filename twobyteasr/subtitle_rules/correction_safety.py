@@ -171,6 +171,8 @@ def reference_consensus_edits(primary, independent_references):
 
 def apply_reference_consensus_corrections(segments):
     """Apply only the local spans jointly supported by FireRed and Qwen3-ASR."""
+    from ..recognition.cache import record_run_event
+
     changes = []
     total = len(segments)
     started_at = time.perf_counter()

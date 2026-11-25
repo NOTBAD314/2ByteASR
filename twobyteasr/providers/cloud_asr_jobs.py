@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .qwen31_asr import ASRProtocolError, FLASH, FILETRANS  # noqa: F401  (FILETRANS kept for callers)
+from .qwen31_asr import ASRProtocolError, FLASH, FLASH_MODELS, FILETRANS  # noqa: F401
 from .spark_asr import MODEL as SPARK
 
 
@@ -23,7 +23,7 @@ def worker_timeout(model, samples):
     from .mosi_asr import MODEL as MOSI_MODEL, worker_timeout_seconds as mosi_timeout
     seconds=samples/16000
     if model==SPARK:return max(3600,seconds+math.ceil(seconds/51)*65+120)
-    if model==FLASH:return max(3600,math.ceil(seconds/291)*200+120)
+    if model in FLASH_MODELS:return max(3600,math.ceil(seconds/291)*200+120)
     if is_filetrans_model(model):return 9300
     if model==MOSI_MODEL:return mosi_timeout(seconds)
     return 3600
@@ -34,13 +34,16 @@ def public_identity(endpoint):
     hints={k:endpoint.get(k) for k in ('vocabulary','vocabulary_id','vocabulary_model','filetrans_context')}
     # Keys added 2026-10-13 join the hash only when set, so in-flight jobs of
     # the existing Qwen-Audio-3.1 route keep their cache directory.
-    hints.update({k:endpoint[k] for k in ('filetrans_language','mosi_keyterms','mosi_diarize','filetrans_diarize')
+    hints.update({k:endpoint[k] for k in ('filetrans_language','mosi_keyterms','mosi_diarize','filetrans_diarize',
+                                         'requested_language','asr_request_language','strict_language','keep_dialect',
+                                         'language_guard_repair')
                   if endpoint.get(k) is not None})
     if endpoint.get('asr_request_language'):
         hints['asr_request_language']=endpoint['asr_request_language']
     if endpoint.get('asr_request_generation'):
         hints['asr_request_generation'] = endpoint['asr_request_generation']
-    return dict(version=2,provider=endpoint.get('provider'), model=endpoint.get('model'),
+    return dict(version=3 if endpoint.get('filetrans_language') or endpoint.get('requested_language') not in {None, 'auto'} else 2,
+                provider=endpoint.get('provider'), model=endpoint.get('model'),
                 protocol=endpoint.get('protocol'),url=public_url(endpoint.get('url','')),
                 speaker_source=endpoint.get('speaker_source','single'),
                 native_hints_sha256=hashlib.sha256(json.dumps(hints,
@@ -173,38 +176,104 @@ def chunk_ranges(audio, max_seconds=55):
 
 
 def transcribe_chunks(audio, endpoint, cache_root, *, check=lambda:None, progress=lambda *a:None, caller=None,
-                      on_rows=None):
+                      on_rows=None, workers=1):
     from ..recognition.asr import _api_transcription_rows
     from ..recognition.speaker_evidence import scope_request_speakers
     validate_speaker_strategy(endpoint)
     root=job_root(audio,endpoint,cache_root)
     ranges=list(chunk_ranges(audio,55 if endpoint['model']==SPARK else 295))
-    rows=[]
-    for index,(start,end) in enumerate(ranges):
-        check();path=root/f'chunk-{start}-{end}.json'
+    total = len(ranges)
+    workers = 1 if endpoint['model'] == SPARK else max(1, min(5, int(workers), total))
+
+    def load_or_request(job):
+        index, (start, end) = job
+        check()
+        path = root/f'chunk-{start}-{end}.json'
         if path.is_file():
-            payload=json.loads(path.read_text('utf8'));progress('cached',index,len(ranges))
+            return index, json.loads(path.read_text('utf8')), 'cached', None
         else:
-            progress('request',index,len(ranges))
             from .qwen31_asr import flash
             from .spark_asr import transcribe
             run=caller or (transcribe if endpoint['model']==SPARK else flash)
-            chunk_endpoint={**endpoint,'audit_root':str(root/'evidence'),'audit_request':f'chunk-{index}'}
+            chunk_endpoint={**endpoint,'audit_root':str(root/'evidence'),'audit_request':f'chunk-{index}',
+                            'language_request_index':index,'language_request_range':[start/16000,end/16000]}
             try:
                 payload=run(audio[start:end],chunk_endpoint,check=check)
             except Exception as exc:
-                save(root/'failure.json',dict(chunk=index,completed_chunks=index,category=getattr(exc,'category','request_failed'),
-                    message='本块失败；成功块已保留。下一次显式重试仅请求未完成块。'))
-                raise
+                if (isinstance(exc, ASRProtocolError) and exc.category == 'CLIENT_ERROR'
+                        and str(exc) == 'ASR_RESPONSE_HAVE_NO_WORDS'):
+                    # Keep the provider's empty-window receipt for gap review.
+                    payload = {'no_words': str(exc)}
+                else:
+                    return index, None, 'failed', exc
             check();save(path,payload)
-        converted=_api_transcription_rows(payload,dict(start=start/16000,end=end/16000))
+            return index, payload, 'received', None
+
+    rows = {}
+    failures = {}
+
+    def consume(completion):
+        index, payload, state, error = completion
+        if error:
+            failures[index] = error
+            return
+        start, end = ranges[index]
+        if state == 'cached':
+            progress('cached', len(rows), total)
+        if endpoint['model'] in FLASH_MODELS:
+            payload.setdefault('timestamp_source', 'qwen31_native' if endpoint['model'] == FLASH else 'qwen30_native')
+        if payload.get('no_words'):
+            progress('provider_no_words',len(rows),total)
+            converted=[dict(start=start/16000, end=end/16000, text='', cloud_gap={
+                'provider': endpoint.get('provider'), 'reason': 'provider_no_words', 'detail': payload['no_words'],
+            })]
+        else:
+            converted=_api_transcription_rows(payload,dict(start=start/16000,end=end/16000))
         if any(row.get('speaker') is not None for row in converted):
-            converted=scope_request_speakers(converted,index,len(ranges))
-        rows.extend(converted)
+            converted=scope_request_speakers(converted,index,total)
+        rows[index] = converted
         # 2026-10-15: each finished chunk's text shows while the rest run.
-        if on_rows is not None:on_rows(index,len(ranges),converted)
-        progress('completed',index+1,len(ranges))
-    return rows
+        if on_rows is not None:on_rows(index,total,converted)
+        progress('completed',len(rows),total)
+
+    if workers == 1:
+        for job in enumerate(ranges):
+            progress('request',len(rows),total)
+            consume(load_or_request(job))
+            if failures:
+                break
+    else:
+        from concurrent.futures import FIRST_COMPLETED, wait
+        from ..recognition.run_context import ContextExecutor
+        jobs = iter(enumerate(ranges))
+        with ContextExecutor(max_workers=workers, thread_name_prefix='qwen-flash') as pool:
+            pending = set()
+
+            def schedule():
+                job = next(jobs, None)
+                if job is not None:
+                    progress('request',len(rows),total)
+                    pending.add(pool.submit(load_or_request, job))
+
+            for _ in range(workers):
+                schedule()
+            while pending:
+                check()
+                done, pending = wait(pending, timeout=.1, return_when=FIRST_COMPLETED)
+                for future in done:
+                    consume(future.result())
+                if not failures:
+                    for _ in done:
+                        schedule()
+
+    if failures:
+        first = min(failures)
+        error = failures[first]
+        save(root/'failure.json',dict(chunk=first,completed_chunks=len(rows), failed_chunks=sorted(failures),
+             category=getattr(error,'category','request_failed'),
+             message='本块失败；成功块已保留。下一次显式重试仅请求未完成块。'))
+        raise error
+    return [row for index in sorted(rows) for row in rows[index]]
 
 
 def _upload_audio(storage, payload, progress):
@@ -322,24 +391,15 @@ def filetrans(audio, endpoint, cache_root, storage, *, check=lambda:None, progre
                 save(root/'submission-parameters.json',dict(model=model, input_field=spec.input_field,
                      parameters=parameters, context=context, hint_counts=endpoint.get('hint_counts', {}),
                      vocabulary_dropped=endpoint.get('filetrans_vocabulary_dropped') or [],
-                     storage_kind=getattr(storage,'kind','oss'),
-                     language_hints_rejected=state.get('language_hints_rejected')))
+                     storage_kind=getattr(storage,'kind','oss')))
             submission_record()
             from .dashscope_service import OSS_RESOLVE_HEADER, needs_oss_resolve
             if needs_oss_resolve(url): headers={**headers,**OSS_RESOLVE_HEADER}
-            def submit():
-                return client.post(endpoint['url'],headers={**headers,'X-DashScope-Async':'enable'},
-                    json=dict(model=model,input=inputs,parameters=parameters),
-                    timeout=(10,60),allow_redirects=False)
-            response=submit()
-            if (response.status_code==400 and parameters.get('language_hints')
-                    and 'language' in str(getattr(response,'text','') or '').lower()):
-                # 2026-11-22: language_hints is documented for this model; an
-                # endpoint that still refuses it (400, not accepted, not billed)
-                # gets the same request without it, as before this field existed.
-                state['language_hints_rejected']=parameters.pop('language_hints');save(state_path,state)
-                submission_record();progress('language_hints_rejected',0,1)
-                response=submit()
+            from .asr_language_control import record_request
+            record_request(endpoint, parameters)
+            response=client.post(endpoint['url'],headers={**headers,'X-DashScope-Async':'enable'},
+                json=dict(model=model,input=inputs,parameters=parameters),
+                timeout=(10,60),allow_redirects=False)
             if response.status_code!=200:
                 # Explicit auth/limit/validation refusal is safe to retry on a
                 # later user run. 5xx may have accepted a job: retain uncertainty.

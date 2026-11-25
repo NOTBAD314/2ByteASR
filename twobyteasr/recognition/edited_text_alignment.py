@@ -36,7 +36,7 @@ def _validate_tokens(segment, segments, tokens, job, worker_row, content_exact):
     return None
 
 
-def realign_edited_segments(segments, audio, legacy, *, enabled, language, evidence_dir):
+def realign_edited_segments(segments, audio, legacy, *, enabled, language, evidence_dir, previous_text=None):
     from .asr import aligner_tokens, run_qwen_aligner_worker
     from .service import CancelledError
     from .timing_evidence import save_aligner_payload
@@ -45,11 +45,15 @@ def realign_edited_segments(segments, audio, legacy, *, enabled, language, evide
 
     pending = {}
     jobs = []
+    previous_text = previous_text or {}
     for segment in segments:
         arbitration = segment.caption_arbitration
         changes = [*arbitration.get("terminology_normalization", ()), *arbitration.get("numeric_formatting", ())]
         suspect_words = [word for word in segment.words if suspicious_numeric_word(word.text, word.start, word.end)]
-        if not suspect_words and not any(isinstance(row, dict) and row.get("requires_acoustic_alignment") for row in changes):
+        before = previous_text.get(str(segment.segment_id), segment.text)
+        text_changed = content_exact(before).casefold() != content_exact(segment.text).casefold()
+        if not text_changed and not suspect_words and not any(
+                isinstance(row, dict) and row.get("requires_acoustic_alignment") for row in changes):
             continue
         key = f"edited:{segment.segment_id}"
         start = round(segment.start * 1000)
@@ -57,11 +61,14 @@ def realign_edited_segments(segments, audio, legacy, *, enabled, language, evide
         receipt = {"status": "pending", "reason": "selected_alignment_unavailable",
                    "text_sha256": hashlib.sha256(segment.text.encode("utf-8")).hexdigest(),
                    "source_pcm_range_ms": [start, end], "language": language}
+        if text_changed:
+            receipt["previous_text_sha256"] = hashlib.sha256(before.encode("utf-8")).hexdigest()
+            receipt["trigger"] = "accepted_text_revision"
         if suspect_words:
             receipt["suspect_numeric_words"] = [{"text": word.text, "start": word.start, "end": word.end}
                                                 for word in suspect_words]
         arbitration["edited_text_alignment"] = receipt
-        arbitration["word_timing"] = {"basis": "uniform_display_estimate", "reason": "edited_text_alignment_pending"}
+        arbitration["word_timing"] = {"basis": "unavailable", "reason": "edited_text_alignment_pending"}
         arbitration.pop("acoustic_words", None)
         segment.words = []
         pending[key] = segment
@@ -111,8 +118,11 @@ def realign_edited_segments(segments, audio, legacy, *, enabled, language, evide
             if segment.final_end == high:
                 segment.final_end = segment.end
             segment.words = [WordUnit(row["start"], row["end"], row["text"], row.get("confidence", 0.0)) for row in tokens]
-            measured = [{"text": row["text"], "start_ms": round(row["start"] * 1000),
-                         "end_ms": round(row["end"] * 1000)} for row in tokens]
+            measured = [{"id": f"{key}:{index}", "text": row["text"],
+                         "start_ms": round(row["start"] * 1000), "end_ms": round(row["end"] * 1000),
+                         "model": row.get("model"), "language": language, "speaker": segment.speaker,
+                         "confidence": row.get("confidence"), "start_basis": "model", "end_basis": "model"}
+                        for index, row in enumerate(tokens)]
             arbitration = segment.caption_arbitration
             arbitration["word_timing"] = {"basis": "aligner_words", "measured_words": measured}
             arbitration["acoustic_words"] = measured

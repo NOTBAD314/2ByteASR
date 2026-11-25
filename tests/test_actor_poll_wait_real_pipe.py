@@ -1,5 +1,4 @@
 """Own JSON pipe, real actor read loop, both poll wait primitives; no player/UI."""
-from collections import deque
 import json
 import sys
 import threading
@@ -34,10 +33,9 @@ def test_actor_reassembles_fragments_and_keeps_poll_primitive_identity(monkeypat
     assert connected.GetOverlappedResult(False)[1]==0
     api=_WindowsAPI();api.CreateFile=lambda *args:handle
     peer=WindowsOverlappedPipe(name,_api=api)
-    actor=object.__new__(_MpvCommandActor)
-    actor._init_request_metrics()
-    actor.controller=SimpleNamespace(_request_id=0,running=True)
-    actor._condition=threading.Condition();actor._requests=deque()
+    monkeypatch.setattr(_MpvCommandActor, '_run', lambda actor: None)
+    controller = SimpleNamespace(_request_id=0, running=True, _subtitle_binding_epoch=0, source_epoch=0)
+    actor = _MpvCommandActor(controller)
     actor._thread=threading.current_thread();actor._stopping=False
     actor._pipe=stream;actor._read_buffer=b'';actor._reconnect_attempts=0
     actor._command_error_count=0;actor._open_pipe=lambda timeout:None

@@ -8,7 +8,7 @@ from ..design.studio_theme import StudioComboBox
 from ..design.soft_widgets import FoldCard, SegmentedControl, UnitField, WrapLayout
 from ..design.themed_icons import install_themed_icon
 from ..i18n import bind_text, tr
-from .caption_layer_transform import resolved_values, displayed_layer,GeometryBatch
+from .caption_layer_transform import resolved_values, displayed_layer
 from .scoped_transform import transform_command,edit_values
 from ..studio.presentation_scope import capture_scope,report_scope
 
@@ -28,7 +28,10 @@ class CaptionTransformPanel(FoldCard):
         self._updating=False
         self._needs_refresh=False
         self._selection=None
+        self._geometry_summary = None
+        self._cancel_geometry_summary = None
         self.gesture=None
+        self._gesture_project=None
         self.pending={}
         self.controls={}
         self.mixed=set()
@@ -130,6 +133,9 @@ class CaptionTransformPanel(FoldCard):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if self._geometry_summary is not None and self._geometry_summary[1] == "failed":
+            self._geometry_summary = None
+            self._needs_refresh = True
         if self._needs_refresh:
             QTimer.singleShot(0, self, self._refresh_if_needed)
 
@@ -169,11 +175,9 @@ class CaptionTransformPanel(FoldCard):
         value=resolved_values(self.page.project,cue,layer)
         if value is None:return
         changes={key:value[key] for key in ('position_x','position_y','scale_x','scale_y')}
-        command=transform_command(self.page.project,[c.id for c in targets],self._scope_snapshot.layer,changes,
-            reference_id=cue.id,changed=self.page._changed)
-        if command is not None:self.page.undo_stack.push(command)
-        report_scope(self.page,self._scope_snapshot,applied=len(targets) if command is not None else 0)
-        self.refresh()
+        queued = self._commit(changes, [c.id for c in targets], self._scope_snapshot.layer, False, cue)
+        if not queued:
+            self.refresh()
 
     def begin_gesture(self):
         if self.gesture is not None:return
@@ -297,10 +301,26 @@ class CaptionTransformPanel(FoldCard):
                 shared_after(self.page.project,reference,language,changes,reset=reset),self.page._changed)
         else:
             mode=getattr(self,'_gesture_mode','absolute') if self._gesture_project is not None else 'absolute'
-            from .bulk_transform_preparation import BULK_THRESHOLD,prepare_command
+            from .bulk_transform_preparation import BULK_THRESHOLD, queue_command
             if len(ids)>=BULK_THRESHOLD:
-                command=prepare_command(self.page,ids,language,changes,reset=reset,
-                    reference_id=reference.id,mode=mode)
+                scope = self._gesture_scope if self._gesture_project is not None else self._scope_snapshot
+
+                def complete(command):
+                    from time import perf_counter
+
+                    started = perf_counter()
+                    if command is not None:
+                        self.page.undo_stack.push(command)
+                    pushed_ms = (perf_counter() - started) * 1000
+                    report_scope(self.page, scope, applied=len(command.entries) if command is not None else 0)
+                    summary = command.inspector_summary if command is not None else None
+                    self.refresh(prepared=(scope, summary) if summary is not None else None)
+                    self.page._last_bulk_transform_ui_work = dict(
+                        undo_push_ms=pushed_ms, inspector_ms=(perf_counter() - started) * 1000 - pushed_ms)
+
+                return queue_command(self.page, ids, language, changes, completed=complete, discarded=self.refresh,
+                                     reset=reset, reference_id=reference.id, mode=mode,
+                                     inspect_geometry=self.isVisible())
             else:
                 command=transform_command(self.page.project,ids,language,changes,reset=reset,changed=self.page._changed,
                     reference_id=reference.id,mode=mode)
@@ -328,10 +348,38 @@ class CaptionTransformPanel(FoldCard):
             if cue is not None:geometry.sync(cue,self.page.project.style_recipes.get(cue.style_id,{}))
         self.page.ensure_active_subtitle_renderer(reason='caption_language_selection')
 
-    def refresh(self):
+    def _large_geometry_summary(self, scope, targets, language, prepared):
+        from .bulk_transform_preparation import queue_geometry_summary
+
+        revision = self.page._revision_store.authoring_render()
+        key = (id(self.page.project), revision.visual_revision, revision.mapping_revision, scope, language)
+        previous = self._geometry_summary
+        if prepared is None and previous is not None and previous[0] == key:
+            return previous[1:]
+        if self._cancel_geometry_summary is not None:
+            self._cancel_geometry_summary()
+            self._cancel_geometry_summary = None
+        if prepared is not None:
+            self._geometry_summary = (key, "ready", prepared)
+            return "ready", prepared
+        self._geometry_summary = (key, "pending", None)
+
+        def completed(value):
+            self._cancel_geometry_summary = None
+            self._geometry_summary = (key, "ready" if value is not None else "failed", value)
+            if self.isVisible() and not getattr(self.page, "_close_requested", False):
+                self.refresh()
+            else:
+                self._needs_refresh = True
+
+        cue_ids = tuple(cue.id for cue in targets)
+        self._cancel_geometry_summary = queue_geometry_summary(self, revision, cue_ids, language, completed)
+        return "pending", None
+
+    def refresh(self, *, prepared=None):
         if self._updating:return
-        if (not self.isVisible() and self.gesture is None
-                and len(capture_scope(self.page).cue_ids) > 32):
+        hidden_scope = capture_scope(self.page) if not self.isVisible() and self.gesture is None else None
+        if hidden_scope is not None and len(hidden_scope.cue_ids) > 32:
             # The Video tab's mixed-value form has no visible consumer while
             # another tab is open. Keep selection/overlay ownership current,
             # then hydrate the form from the latest state when it is shown.
@@ -339,10 +387,10 @@ class CaptionTransformPanel(FoldCard):
             sync_tab=getattr(self.page,'_sync_video_tab_selection',None)
             if callable(sync_tab):sync_tab()
             if not self.isVisible():
-                self._scope_snapshot=capture_scope(self.page)
+                self._scope_snapshot=hidden_scope
                 language='linked' if self._scope_snapshot.layer=='group' else self._scope_snapshot.layer
                 with QSignalBlocker(self.language):self.language.setCurrentIndex(self.language.findData(language))
-                if self.page.project:self.sync_overlay()
+                if self.page.project:self.sync_overlay(scope=hidden_scope)
                 return
         self._needs_refresh=False
         if self.gesture is not None:
@@ -363,9 +411,24 @@ class CaptionTransformPanel(FoldCard):
             from .caption_group_transform import LINK_KEY
             with QSignalBlocker(self.global_link):
                 self.global_link.setChecked(bool(self.page.project and self.page.project.studio_state.get(LINK_KEY,False)))
-            cache=GeometryBatch(self.page.project) if self.page.project else None
-            values=[cache.values(c,'original' if language=='linked' else language) for c in targets]
-            available=[value for value in values if value is not None]
+            from .bulk_transform_preparation import BULK_THRESHOLD, summarize_geometry
+
+            summary_state = "ready"
+            supplied = prepared[1] if prepared is not None and prepared[0] == self._scope_snapshot else None
+            if len(targets) >= BULK_THRESHOLD:
+                summary_state, summary = self._large_geometry_summary(self._scope_snapshot, targets, language, supplied)
+                available, mixed = summary if summary is not None else (None, set())
+            else:
+                if self._cancel_geometry_summary is not None:
+                    self._cancel_geometry_summary()
+                    self._cancel_geometry_summary = None
+                    self._geometry_summary = None
+                if supplied is not None:
+                    available, mixed = supplied
+                elif targets:
+                    available, mixed = summarize_geometry(self.page.project, targets, language)
+                else:
+                    available, mixed = None, set()
             locked=bool(targets and any(c.speaker_id in getattr(self.page.timeline,'locked_speakers',set()) for c in targets))
             if self.global_link.isChecked() and self.page.project:
                 locked=locked or any(c.speaker_id in getattr(self.page.timeline,'locked_speakers',set()) for c in self.page.project.cues)
@@ -379,6 +442,10 @@ class CaptionTransformPanel(FoldCard):
             if self._scope_snapshot.locked_ids:
                 message=tr('将跳过 {count} 条锁定字幕',count=len(self._scope_snapshot.locked_ids)) if targets else tr('所选字幕轨已锁定，请在时间轴解锁')
             if locked:message=tr('所选字幕轨已锁定，请在时间轴解锁')
+            if summary_state == "pending":
+                message = tr('正在计算 {count} 条字幕的位置与缩放…', count=len(targets))
+            elif summary_state == "failed":
+                message = tr('批量更新字幕失败')
             self.target.setText(message);self.target.setVisible(bool(message))
             self.mixed.clear()
             width,height=(float(self.page.project.render_settings.get(k,d)) if self.page.project else d
@@ -386,13 +453,13 @@ class CaptionTransformPanel(FoldCard):
             for key,control in self.controls.items():
                 control.setEnabled(editable)
                 with QSignalBlocker(control):
-                    raw=available[0][key] if available else (100 if key.startswith('scale_') else 0)
+                    raw=available[key] if available else (100 if key.startswith('scale_') else 0)
                     factor=100/width if key=='position_x' else 100/height if key=='position_y' else 100 if key.startswith('anchor_') else 1
                     control.setValue(raw*factor)
-                    if not available or any(abs(value[key]-raw)>.001 for value in available[1:]):
+                    if not available or key in mixed:
                         self.mixed.add(key);control.lineEdit().setText('—')
                         control.setToolTip(tr('不同字幕的值不同；输入后只更新此项。'))
-            with QSignalBlocker(self.link):self.link.setChecked(available[0]['scale_link'] if available else True)
+            with QSignalBlocker(self.link):self.link.setChecked(available['scale_link'] if available else True)
             linked=self.link.isChecked()
             install_themed_icon(self.link,'fa5s.link' if linked else 'fa5s.unlink','accent' if linked else 'secondary')
             self.link.setEnabled(editable);self.reset.setEnabled(editable)
@@ -400,7 +467,7 @@ class CaptionTransformPanel(FoldCard):
             self.apply_all.setEnabled(editable)
             self.pad.update()
             self._refresh_summary()
-            self.sync_overlay()
+            self.sync_overlay(scope=self._scope_snapshot)
         finally:self._updating=False
         # The 视频 tab shows this card for a caption selection, the clip
         # cards otherwise; the chip names the selected caption.
@@ -445,11 +512,16 @@ class CaptionTransformPanel(FoldCard):
         pending=self._commit(changes,[c.id for c in targets],language,self.global_link.isChecked() and self._scope_snapshot.scope=='all' and language=='linked',reference,reset=reset)
         if not pending:self.refresh()
 
-    def sync_overlay(self):
-        targets=self.targets()
+    def sync_overlay(self, *, scope=None):
+        scope = capture_scope(self.page) if scope is None else scope
         overlay=getattr(self.page,'position_overlay',None)
-        if not targets or overlay is None or overlay._dragging:return
-        cue=next((c for c in targets if c.id==self.page.selected_cue_id),targets[0])
+        if not scope.cue_ids or overlay is None or overlay._dragging:return
+        selected = self.page.selected_cue_id
+        cue_id = selected if selected in scope.cue_ids else scope.cue_ids[0]
+        cue = getattr(self.page, '_cue_lookup', {}).get(cue_id)
+        if cue is None:
+            cue = next((item for item in self.page.project.cues if item.id == cue_id), None)
+        if cue is None:return
         shown=displayed_layer(self.page.project,cue,self.language.currentData())
         if shown is None:return
         from .resolved_caption_style import resolve_caption_style

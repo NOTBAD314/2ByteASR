@@ -425,6 +425,7 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
         self._sequence_before: SequenceState | None = None
         self._cues_snapshot = None
         self._cues_snapshot_is_full = False
+        self._geometry_snapshot = None
         self._styles_snapshot = None
         self._effects_snapshot = None
         self._recipes_snapshot = None
@@ -438,6 +439,24 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
         self._audio_tracks_snapshot = None
         self._av_track_groups_snapshot = None
         self._entity_epoch_snapshot = None
+
+    def apply_prepared_geometry(self, values) -> None:
+        """Replace owned transform fields and retain exact rollback references."""
+        compatible = (DirtyDomain.CUE_STYLE | DirtyDomain.TIMELINE_PIXELS | DirtyDomain.NATIVE_SUBTITLE |
+                      DirtyDomain.ADVANCED_PREVIEW | DirtyDomain.TRANSFORM | DirtyDomain.AUTOSAVE)
+        parent_owns_cues = self._parent is None or self._parent.snapshot_cues
+        if (self.snapshot_cues or not parent_owns_cues or self.dirty & ~compatible
+                or values.keys() != self.affected_cue_ids):
+            raise ValueError("invalid prepared caption geometry transaction")
+        targets = [(cue, values[cue.id]) for cue in self.project.cues if cue.id in values]
+        if len(targets) != len(values) or any(type(transform) is not dict for _, transform in targets):
+            raise ValueError("prepared caption geometry does not match the project")
+        # A parent transaction already owns its general cue snapshots.
+        if self._parent is None:
+            self._geometry_snapshot = [(cue, cue.transform, cue.appearance_generation) for cue, _ in targets]
+        for cue, transform in targets:
+            cue.transform = transform
+            cue.appearance_generation += 1
 
     def mark_dirty(
         self,
@@ -590,6 +609,10 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
                 self._av_track_groups_snapshot = copy.deepcopy(self.project.av_track_groups)
 
     def _rollback(self) -> None:
+        if self._geometry_snapshot is not None:
+            for cue, transform, generation in self._geometry_snapshot:
+                cue.transform = transform
+                cue.appearance_generation = generation
         for key,(present,value) in self._generation_snapshot.items():
             if present:self.project.generation_metadata[key]=value
             else:self.project.generation_metadata.pop(key,None)
@@ -666,7 +689,7 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
             from ..timeline.studio_edit_sequence import runtime_of
 
             runtime_of(self.project).reindex(validate=True)
-        if self.dirty & CUE_DOMAINS:
+        if self.dirty & CUE_DOMAINS and self._geometry_snapshot is None:
             targets = (
                 [cue for cue in self.project.cues if cue.id in self.affected_cue_ids]
                 if self.affected_cue_ids

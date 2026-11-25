@@ -8,6 +8,7 @@ from twobyteasr.glossary.domain_terms import (
 )
 from twobyteasr.subtitle_rules.grouping import call_grouping_api, fallback_group
 from twobyteasr.subtitle_rules.polishing import call_correction_api
+from twobyteasr.subtitle_rules.language_rules import language_scope
 
 
 def _segment(segment_id, text, *, firered="", qwen="", start=0.0, end=2.0):
@@ -100,7 +101,8 @@ def test_cloud_grouping_fallback_preserves_text_and_interval_with_comfort_splits
     text = "这个终末地的单肩包还蛮有设计感的"
     segment = _segment(1, text, start=23.88, end=25.85)
 
-    cues = fallback_group([segment])
+    with language_scope("zh"):
+        cues = fallback_group([segment])
 
     # 2026-09-03 contract: local fallback splits 13–16 characters to <=12;
     # cloud semantic boundaries remain separate. No text/time is discarded.
@@ -130,12 +132,12 @@ def test_permanent_cloud_failure_marks_later_batches_as_fallback_not_cacheable()
             verified_terms=[],
             abort_event=abort,
         )
-    with subtitle_core.capture_review_items() as group_items:
+    with subtitle_core.capture_review_items() as group_items, language_scope("zh"):
         cues = call_grouping_api([segment], abort_event=abort)
 
     assert result == {1: segment.text}
     assert [item["category"] for item in polish_items] == ["校对回退"]
-    assert [item["category"] for item in group_items] == ["断句回退"]
+    assert [item["category"] for item in group_items] == ["断句回退", "断句待重试"]
     assert ''.join(cue.text for cue in cues) == segment.text
     assert cues[0].start==segment.start and cues[-1].end==segment.end
 

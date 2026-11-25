@@ -791,16 +791,33 @@ def aligner_tokens(payload, *, source="qwen-forced-aligner"):
         text = str(row.get("text") or "")
         if row.get('status') not in (None,'aligned'):
             continue
+        window_start = row.get("window_start_ms")
+        window_end = row.get("window_end_ms")
+        previous_char = previous_start = previous_end = -1
+        candidates = (row.get('word_units') or []) + (row.get('char_units') or [])
+        local_starts, local_ends = {}, {}
+        for unit in candidates:
+            if unit.get('start_local') is not None:
+                local_starts.setdefault(unit.get('start_ms'), unit['start_local'])
+            if unit.get('end_local') is not None:
+                local_ends.setdefault(unit.get('end_ms'), unit['end_local'])
         for piece in row.get("segments") or ():
-            start, end = int(piece["start_ms"]), int(piece["end_ms"])
-            fragment = text[int(piece["char_start"]):int(piece["char_end"])]
-            if end <= start or not fragment.strip():
+            try:
+                start, end = int(piece["start_ms"]), int(piece["end_ms"])
+                left, right = int(piece["char_start"]), int(piece["char_end"])
+            except (KeyError, TypeError, ValueError, OverflowError):
                 continue
-            measured = piece.get("start_basis") == "model" and piece.get("end_basis") == "model"
-            candidates = (row.get('word_units') or []) + (row.get('char_units') or [])
-            starts = [u.get('start_local') for u in candidates if u.get('start_ms') == start and u.get('start_local') is not None]
-            ends = [u.get('end_local') for u in candidates if u.get('end_ms') == end and u.get('end_local') is not None]
-            posterior = min(starts[0], ends[0]) if starts and ends else None
+            if (not 0 <= left < right <= len(text) or left < previous_char
+                    or not 0 <= start < end or start < previous_start or end < previous_end
+                    or (isinstance(window_start, (int, float)) and start < window_start)
+                    or (isinstance(window_end, (int, float)) and end > window_end)):
+                continue
+            fragment = text[left:right]
+            if not fragment.strip():
+                continue
+            previous_char, previous_start, previous_end = right, start, end
+            posterior = (min(local_starts[start], local_ends[end])
+                         if start in local_starts and end in local_ends else None)
             score = {'confidence': posterior} if posterior is not None else {}
             tokens.append({"model":(row.get("effective_model_identity") or {}).get("model",payload.get("model")),
                            "alignment_origin":"official_compatibility" if row.get("compatibility_fallback") else "configured_model",
@@ -944,6 +961,7 @@ def resolve_whisper_local_source():
 def transcribe_whisper_reference(audio_path, speech_regions, shared_audio=None):
     """Produce review chunks with the pinned local Whisper large-v3-turbo model."""
     import gc
+    from ..subtitle_rules.language_rules import active_task_language, normalize_language
     import torch
     from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
     from twobyteasr.model_integrity import verify_model_files
@@ -974,6 +992,15 @@ def transcribe_whisper_reference(audio_path, speech_regions, shared_audio=None):
             low_cpu_mem_usage=True,
         ).to(device)
         model.eval()
+        requested_language = normalize_language(get_runtime_context().requested_language)
+        if requested_language == 'auto':
+            requested_language = normalize_language(active_task_language())
+        supported = getattr(model.generation_config, "lang_to_id", {}) or {}
+        if requested_language != 'auto' and supported and f'<|{requested_language}|>' not in supported:
+            raise ValueError(f'本機 Whisper 不支援所選語言（{requested_language}）。')
+        whisper_language = requested_language if requested_language != 'auto' else None
+        record_run_event("whisper_reference_language", requested=requested_language or "auto",
+                         generation_language=whisper_language or "auto")
         batch_size = 4 if device.type == "cuda" else 1
         references = []
         for offset in range(0, len(chunks), batch_size):
@@ -988,9 +1015,10 @@ def transcribe_whisper_reference(audio_path, speech_regions, shared_audio=None):
             )
             generation_inputs = {
                 "input_features": inputs.input_features.to(device=device, dtype=dtype),
-                "language": "zh",
                 "task": "transcribe",
             }
+            if whisper_language:
+                generation_inputs["language"] = whisper_language
             attention_mask = getattr(inputs, "attention_mask", None)
             if attention_mask is not None:
                 generation_inputs["attention_mask"] = attention_mask.to(device)
@@ -1161,9 +1189,9 @@ def funasr_timestamp_tokens(result, *, base_start=0.0, source="paraformer"):
 
 def _funasr_generate(model, wav_path, model_key):
     options = {"input": wav_path, "cache": {}, "batch_size_s": 60}
-    if model_key == "sensevoice":
-        options.update(language="auto", use_itn=True)
-    elif model_key == "paraformer":
+    from .language_guard import funasr_language_options
+    options.update(funasr_language_options(model_key, get_runtime_context().requested_language))
+    if model_key == "paraformer":
         # FunASR defaults pred_timestamp to False.  Without this flag inference
         # still succeeds and returns text, but no character timeline, which used
         # to be misreported as "主力转写没有生成可用片段".
@@ -1171,6 +1199,8 @@ def _funasr_generate(model, wav_path, model_key):
     try:
         return model.generate(**options)
     except TypeError:
+        if options.get('language') not in {None, 'auto'}:
+            raise
         return model.generate(input=wav_path)
 
 
@@ -1326,6 +1356,8 @@ atexit.register(end_local_asr_session, force=True)
 
 def build_qwen_asr_context(media_path):
     """Use Qwen's existing context input for pinned canonical spelling hints."""
+    if get_runtime_context().language_guard_repair:
+        return ''
     media_title = os.path.splitext(os.path.basename(media_path))[0]
     from .content_scene import runtime_content_scene
     scene = runtime_content_scene()
@@ -1766,7 +1798,7 @@ def _api_transcription_rows(result, chunk):
             # Bare words (e.g. MAI) need spaces; native subword tokens (Qwen)
             # do not. Prefer the exact original sentence/speaker slice.
             text = clean_transcript(str(fallback_text)) if fallback_text else clean_transcript(
-                (''.join if result.get('timestamp_source') in {'qwen31_native', 'qwen3_filetrans_native'}
+                (''.join if result.get('timestamp_source') in {'qwen30_native', 'qwen31_native', 'qwen3_filetrans_native'}
                  else _join_word_texts)(_word_text(w) for w in group_words))
             tokens = []
             for word in group_words:
@@ -1812,7 +1844,7 @@ def _api_transcription_rows(result, chunk):
                     and start-.01 <= base+float(w['start']) < base+float(w['end']) <= end+.01)])
         content_cursor += length
         native_source = result.get('timestamp_source')
-        if native_source in {'qwen31_native', 'qwen3_filetrans_native', 'mosi_native'}:
+        if native_source in {'qwen30_native', 'qwen31_native', 'qwen3_filetrans_native', 'mosi_native'}:
             # Word rows carry provider word times; sentence rows only provider
             # segment bounds (never per-character timing).
             row['timestamp_source'] = native_source + ('_word' if tokens else '_sentence')
@@ -1927,7 +1959,7 @@ def call_qwen_asr_api(audio, context, *, endpoint=None, requests_module=None):
         if request_token is not None:request_token.raise_if_cancelled()
         else:_raise_if_queue_cancelled()
     protocol = endpoint.get("protocol", "dashscope_multimodal")
-    from ..providers.asr_language_control import policy as source_control
+    from ..providers.asr_language_control import policy as source_control, record_request
     control=source_control(endpoint,get_runtime_context().requested_language)
     request_language=endpoint.get('asr_request_language') if control['parameter_sent'] else None
     if request_language is None and control['parameter_sent']:request_language=control['request_language']
@@ -1992,6 +2024,8 @@ def call_qwen_asr_api(audio, context, *, endpoint=None, requests_module=None):
             },
             "response_format": "verbose_json" if with_verbose else "json",
         }
+        if request_language:
+            payload['language'] = request_language
         if with_granularities:
             payload["timestamp_granularities"] = ["segment", "word"]
         if with_provider:
@@ -2018,6 +2052,7 @@ def call_qwen_asr_api(audio, context, *, endpoint=None, requests_module=None):
         with_granularities: bool, with_verbose: bool, with_provider: bool = True
     ):
         body = _openrouter_body(with_granularities, with_verbose, with_provider)
+        record_request(endpoint, body)
         save_speaker_evidence(evidence_root, f"{request_id}-sent-{time.time_ns()}",
             public_request(endpoint, **{k:v for k,v in body.items() if k != "input_audio"}))
         return requests_module.post(
@@ -2033,7 +2068,9 @@ def call_qwen_asr_api(audio, context, *, endpoint=None, requests_module=None):
     # 四十四轮：429/5xx 重试从 3 次亚秒退避改为 6 次指数退避（1.5→20s 封顶，
     # 尊重 Retry-After），且全部请求过进程级自适应节流器——并发下也不会
     # 在限流窗口内连环撞墙（用户实录 590 块大面积 429 根因）。
-    for attempt in range(6):
+    repair = bool(endpoint.get('language_guard_repair'))
+    attempts = 1 if repair else 6
+    for attempt in range(attempts):
         check_request_cancelled()
         _ASR_API_THROTTLE.acquire()
         save_speaker_evidence(evidence_root, f"{request_id}-attempt{attempt}-request",
@@ -2046,16 +2083,16 @@ def call_qwen_asr_api(audio, context, *, endpoint=None, requests_module=None):
                 response = _post_openrouter(granularities_ok, verbose_ok, provider_ok)
                 # 400 降级链：撤短语列表 → 撤时间戳粒度 → 撤 verbose_json → 撤
                 # provider 路由项（diarization/transcribeStyle 被拒时的最终兜底）。
-                if response.status_code == 400 and phrases_ok:
+                if not repair and response.status_code == 400 and phrases_ok:
                     phrases_ok = False
                     response = _post_openrouter(granularities_ok, verbose_ok, provider_ok)
-                if response.status_code == 400 and granularities_ok:
+                if not repair and response.status_code == 400 and granularities_ok:
                     granularities_ok = False
                     response = _post_openrouter(False, verbose_ok, provider_ok)
-                if response.status_code == 400 and verbose_ok:
+                if not repair and response.status_code == 400 and verbose_ok:
                     verbose_ok = False
                     response = _post_openrouter(False, False, provider_ok)
-                if response.status_code == 400 and provider_ok:
+                if not repair and response.status_code == 400 and provider_ok:
                     provider_ok = False
                     response = _post_openrouter(False, False, False)
             elif is_multipart:
@@ -2071,6 +2108,7 @@ def call_qwen_asr_api(audio, context, *, endpoint=None, requests_module=None):
                 )
                 if protocol == "openai_transcription":
                     data["model"] = endpoint["model"]
+                record_request(endpoint, data)
                 response = requests_module.post(
                     endpoint["url"],
                     headers=headers,
@@ -2078,8 +2116,9 @@ def call_qwen_asr_api(audio, context, *, endpoint=None, requests_module=None):
                     data=data,
                     timeout=(10, 180),
                 )
-                if response.status_code == 400 and verbose_ok:
+                if not repair and response.status_code == 400 and verbose_ok:
                     verbose_ok = False
+                    record_request(endpoint, data)
                     response = requests_module.post(
                         endpoint["url"],
                         headers=headers,
@@ -2088,6 +2127,7 @@ def call_qwen_asr_api(audio, context, *, endpoint=None, requests_module=None):
                         timeout=(10, 180),
                     )
             else:
+                record_request(endpoint, body.get('parameters', {}).get('asr_options', {}))
                 response = requests_module.post(
                     endpoint["url"],
                     headers={
@@ -2142,7 +2182,7 @@ def call_qwen_asr_api(audio, context, *, endpoint=None, requests_module=None):
             raise
         except Exception as exc:
             last_error = exc
-        if attempt < 5:
+        if attempt + 1 < attempts:
             # 2026-10-15: retries reach the progress page, not only the log.
             record_run_event("asr_request_retry", backend="api", model=endpoint.get("model", ""),
                              request=request_id, attempt=attempt + 1, max_attempts=6,
@@ -2193,7 +2233,7 @@ def _transcribe_qwen_api(audio_path, chunks, *, publish_primary=False, _endpoint
             if item is None:return
             index, chunk = item
             future = pool.submit(call_qwen_asr_api, chunk["audio"][0], context,
-                                 endpoint={**endpoint,"audit_request":f"chunk{index}"})
+                                 endpoint={**endpoint,"audit_request":f"chunk{index}","language_request_index":index})
             futures[future] = index
             return future
         for _ in range(workers):submit_next()
@@ -2252,7 +2292,7 @@ def _transcribe_qwen_api(audio_path, chunks, *, publish_primary=False, _endpoint
         pool.shutdown(wait=True)
     # 四十四轮：失败块补扫轮——主扫失败的块不再直接丢弃（字幕出空洞），
     # 串行重试至多 4 轮。此时节流器已被 429 抬高间隔，串行+节流=温和重放。
-    for sweep in range(4):
+    for sweep in range(0 if endpoint.get('language_guard_repair') else 4):
         if not failed_indices:
             break
         _raise_if_queue_cancelled()
@@ -2267,7 +2307,7 @@ def _transcribe_qwen_api(audio_path, chunks, *, publish_primary=False, _endpoint
             _raise_if_queue_cancelled()
             try:
                 result = call_qwen_asr_api(chunks[index]["audio"][0], context,
-                    endpoint={**endpoint,"audit_request":f"chunk{index}-retry{sweep}"})
+                    endpoint={**endpoint,"audit_request":f"chunk{index}-retry{sweep}","language_request_index":index})
             except CancelledError:
                 raise
             except Exception as exc:
@@ -2773,11 +2813,11 @@ def api_uploads_whole_file(endpoint) -> bool:
     VAD beside the upload instead of before it (2026-10-22: 26 s of a
     491 s MOSS Pro task were VAD waiting in front of the upload).
     """
-    from ..providers.cloud_asr_jobs import FLASH, SPARK
-    from ..providers.qwen31_asr import is_filetrans_model
+    from ..providers.cloud_asr_jobs import SPARK
+    from ..providers.qwen31_asr import FLASH_MODELS, is_filetrans_model
     from ..providers.mosi_asr import MODEL as MOSI_MODEL
     model = (endpoint or {}).get('model')
-    return model in {FLASH, SPARK, MOSI_MODEL} or is_filetrans_model(model)
+    return model in FLASH_MODELS | {SPARK, MOSI_MODEL} or is_filetrans_model(model)
 
 
 def transcribe_qwen_reference(
@@ -2800,12 +2840,30 @@ def transcribe_qwen_reference(
         use_qwen = True
     if not use_qwen or backend == "off":
         return []
+    if backend == 'haas_ja':
+        from .haas_backend import transcribe
+        from ..subtitle_rules.language_rules import normalize_language
+        task = get_runtime_context()
+        if normalize_language(task.requested_language) != 'ja':
+            record_run_event('haas_review_skipped', reason='japanese_scope_unconfirmed')
+            return []
+        try:
+            audio = shared_audio if shared_audio is not None else decode_audio_to_array(audio_path)
+            return transcribe(audio, speech_regions, task)
+        except CancelledError:
+            raise
+        except Exception as exc:
+            record_run_event('haas_review_failed', error_type=type(exc).__name__)
+            add_review_item(0.0, 'Haas 複核失敗', str(exc)[:160], priority=2)
+            return []
     if backend == "whisper_turbo":
         try:
             return transcribe_whisper_reference(audio_path, speech_regions, shared_audio)
         except CancelledError:
             raise
         except Exception as exc:
+            if backend_override is not None:
+                raise
             print(f"   [警告] Whisper 复核失败，自动沿用 FireRed/MOSS：{exc}")
             add_review_item(0.0, "Whisper失败", str(exc)[:160], priority=2)
             return []
@@ -2854,7 +2912,6 @@ def transcribe_qwen_reference(
         if backend == "api":
             from twobyteasr.providers.llm_config import qwen_asr_endpoint_from_settings
 
-            from .run_context import get_runtime_context
             api_endpoint = dict(get_runtime_context().asr_endpoint_snapshot or
                 qwen_asr_endpoint_from_settings(
                     _legacy_runtime_value("RUNTIME_SETTINGS", RUNTIME_SETTINGS)
@@ -2990,6 +3047,25 @@ def write_pcm16_wav(path, audio):
 
 
 
+_TLS_MARKERS = ('HTTPS 证书校验失败', 'CERTIFICATE_VERIFY_FAILED', 'certificate verify failed',
+                'unable to get local issuer certificate', 'self signed certificate in certificate chain')
+
+
+def network_certificate_problem(stderr):
+    """An explained network-certificate problem for a cloud worker's stderr, or None."""
+    text = str(stderr or '')
+    if not any(marker.lower() in text.lower() for marker in _TLS_MARKERS):
+        return None
+    import re as _re
+    found = _re.search(r'诊断 ([0-9a-f]{32})', text)
+    return dict(category='tls_certificate', retryable=True, remote_task_kept=True,
+                diagnostic_id=found.group(1) if found else '',
+                message='云端识别的 HTTPS 证书校验失败（网络证书问题，不是本机模型损坏）。',
+                action=('已受理的云端任务编号已保存，网络恢复后重试会继续查询原任务，不会重复上传或计费。'
+                        '若持续出现，请检查代理、杀毒软件的 HTTPS 扫描或系统时间，并在设置的网络诊断中查看'
+                        + (f'诊断 {found.group(1)}。' if found else '最近一次诊断。')))
+
+
 def _reported_worker_device(stdout):
     """Device actually reported by a worker; never infer CUDA from success."""
     device='unknown'
@@ -3019,6 +3095,12 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
     from twobyteasr.system.processes import external_python_environment
     from twobyteasr.python_runtime_identity import file_identity, environment_difference, save_identity
     environment = external_python_environment()
+    # Workers import application modules from the installed bundle. Keep
+    # generated bytecode out of that tree, including in Python's isolated mode.
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    command = list(command)
+    if command[1:2] == ["-I"] and command[2:3] != ["-B"]:
+        command.insert(2, "-B")
     if entrypoint == "sensevoice_worker.py":
         from twobyteasr.system.runtime_registry import load_registry
         save_identity("production-launch", dict(command=list(map(str, command)), cwd=os.getcwd(),
@@ -3162,6 +3244,14 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
             error = RuntimeError(str(problem.get('message') or '') + (' ' + str(problem['action']) if problem.get('action') else '')
                                  + '\n\n' + log)
             error.problem = problem
+            raise error
+        tls_problem = network_certificate_problem(stderr) if model_id == 'PRIMARY_API' else None
+        if tls_problem:
+            # 2026-11-25 (真拳伝説 03): a certificate failure while polling MOSS was
+            # shown as a broken model runtime. It is a network trust problem; the
+            # accepted remote task is saved and resumed on the next run.
+            error = RuntimeError(tls_problem['message'] + ' ' + tls_problem['action'] + '\n\n' + log)
+            error.problem = tls_problem
             raise error
         error = RuntimeError(
             f'模型运行时（{command[0]}）启动或执行失败。请在模型工坊校验与修复该模型运行环境。\n' + log)
@@ -3348,7 +3438,7 @@ def _transcribe_firered_worker(audio, audio_seconds, firered_dir):
         return normalized
 
 
-def _transcribe_qwen_worker(audio, chunks, model_path, *, context, evidence_root):
+def _transcribe_qwen_worker(audio, chunks, model_path, *, context, evidence_root, automatic_language=False):
     """One managed-worker protocol for source and frozen Qwen evidence."""
     import numpy as np
     from .speaker_evidence import save_speaker_evidence
@@ -3359,6 +3449,8 @@ def _transcribe_qwen_worker(audio, chunks, model_path, *, context, evidence_root
         raise RuntimeError(f"Qwen worker runtime missing: python={runtime}, worker={worker}")
     from twobyteasr.subtitle_rules.language_rules import qwen_language_name, active_task_language, EN, JA, KO
     task_language = active_task_language() or getattr(get_runtime_context(), "requested_language", "zh")
+    if automatic_language:
+        task_language = 'auto'
     policy = {"version": "qwen-worker-shared-float32-v1",
         "batch_size": max(1, min(12, int(_legacy_runtime_value("QWEN_ASR_BATCH_SIZE", QWEN_ASR_BATCH_SIZE)))),
         "max_new_tokens": int(_legacy_runtime_value("QWEN_ASR_MAX_NEW_TOKENS", QWEN_ASR_MAX_NEW_TOKENS)),
@@ -3455,7 +3547,8 @@ def _transcribe_funasr_worker(model_key, chunks):
         manifest = os.path.join(temp_dir, "manifest.json")
         output = os.path.join(temp_dir, "results.json")
         Path(manifest).write_text(
-            json.dumps({"model_key": model_key, "jobs": jobs}, ensure_ascii=False),
+            json.dumps({"model_key": model_key, "jobs": jobs,
+                        "language": get_runtime_context().requested_language}, ensure_ascii=False),
             encoding="utf-8",
         )
         payload = _run_isolated_asr_worker(
@@ -3747,8 +3840,18 @@ def transcribe_primary_reference(
 ):
     """Run a non-MOSS primary backend and return normalized timed text chunks."""
     backend = str(backend or "moss")
+    if backend != 'api':
+        from .asr_capabilities import issue
+        problem = issue(backend, get_runtime_context().requested_language)
+        if problem:
+            raise ValueError(problem)
     if backend == 'glm_asr_nano':
         return transcribe_glm_reference(shared_audio,speech_regions)
+    if backend == 'haas_ja':
+        from .haas_backend import transcribe
+        task = get_runtime_context()
+        cache_dir = media_cache_context(audio_path)['cache_dir']
+        return transcribe(shared_audio, speech_regions, task, cache_dir=cache_dir)
     if backend == 'canary_qwen':
         return _transcribe_dedicated_reference('canary','Canary','canary-qwen-2.5b','canary_asr_worker.py',shared_audio,speech_regions)
     if backend in {'vibevoice_1_5b','vibevoice_7b'}:

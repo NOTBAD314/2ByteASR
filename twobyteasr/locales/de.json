@@ -6047,6 +6047,7 @@
   "复用第 {index} / {total} 段": "Teil {index} / {total} wird wiederverwendet",
   "复用已有结果": "Vorhandenes Ergebnis wird wiederverwendet",
   "排队中": "In Warteschlange",
+  "网络中断，重新查询原任务": "Verbindung unterbrochen, Auftrag wird erneut abgefragt",
   "云端识别中": "Erkennung in der Cloud",
   "正在取回结果": "Ergebnis wird abgerufen",
   "重新上传": "Erneuter Upload",

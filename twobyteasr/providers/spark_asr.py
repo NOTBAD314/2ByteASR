@@ -91,6 +91,9 @@ def transcribe(audio, endpoint, *, check=lambda:None, connection_factory=None):
         raise ASRProtocolError('Spark每会话音频必须在60秒以内', 'input_limit')
     if endpoint.get('model') != MODEL:
         raise ASRProtocolError('Spark适配器要求spark_asr_v2', 'configuration_error')
+    requested = endpoint.get('requested_language') or 'auto'
+    if endpoint.get('strict_language') and requested not in {'auto', 'zh'}:
+        raise ASRProtocolError('目前的 Spark 端點固定使用普通話，請選擇支援指定語言的模型。', 'configuration_error')
     pcm = (np.clip(np.asarray(audio, dtype=np.float64), -1, 1)*32767).astype('<i2').tobytes()
     check()
     ca, _ = ca_bundle()
@@ -118,6 +121,8 @@ def transcribe(audio, endpoint, *, check=lambda:None, connection_factory=None):
                     packet['parameter']={'iat':dict(domain=MODEL, language='zh_cn', accent='mandarin',
                         dwa='wpgs', vinfo=1, fa_nbest=True, bos=60000, eos=60000,
                         result=dict(encoding='utf8',compress='raw',format='json'))}
+                    from .asr_language_control import record_request
+                    record_request(endpoint, packet['parameter']['iat'])
                 socket.send(json.dumps(packet,ensure_ascii=False))
             if not stop.is_set():
                 socket.send(json.dumps(dict(header={'app_id':endpoint['app_id'],'status':2},payload={'audio':dict(

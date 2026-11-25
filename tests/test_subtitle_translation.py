@@ -131,24 +131,29 @@ def test_split_and_merge_statuses_and_candidates():
     split.redo()
     right = next(item.id for item in project.cues if item.id.startswith("c1-split-"))
     assert st.cue_status(project, "c1") == "needs_update"
-    assert st.cue_status(project, right) == "untranslated"
+    assert st.cue_status(project, right) == "needs_update"
     candidates = {item["cue_id"]: item for item in st.split_merge_candidates(project)}
     assert set(candidates) == {"c1", right}
     for item in candidates.values():
         assert item["kind"] == "split"
         assert item["parents"][0]["translation"] == "等一下，我还没准备好"
-    # Never copied or divided: the right half has no translation at all.
-    assert right not in st.sync_render_view(project)
+    # The explicit clause boundary permits an offline estimate. Both parts
+    # remain stale for review, and neither gets a copy of the entire parent.
+    view = st.sync_render_view(project)
+    assert view['c1'] == '等一下' and view[right] == '我还没准备好'
+    assert st.records_of(project)[right]['split_estimate'] is True
     split.undo()
     assert st.cue_status(project, "c1") == "done"
 
     merge = merge_cues_command(project, ["c2", "c3"])
     merge.redo()
-    assert st.cue_status(project, "c2") == "needs_update"
-    [merged] = st.split_merge_candidates(project)
-    assert merged["kind"] == "merge"
-    assert [parent["cue_id"] for parent in merged["parents"]] == ["c2", "c3"]
-    assert "c3" in st.records_of(project)  # gone cue keeps its record for undo
+    # Both parent translations were valid. A local merge concatenates their
+    # text and records provenance without another translation request.
+    assert st.cue_status(project, "c2") == "done"
+    merged = st.records_of(project)['c2']
+    assert merged['text'] == '糟了 真的假的'
+    assert [parent['cue_id'] for parent in merged['merge_sources']] == ['c2', 'c3']
+    assert "c3" not in st.records_of(project)  # the undo snapshot owns the consumed ID
     assert "c3" not in st.sync_render_view(project)
     merge.undo()
     assert st.cue_status(project, "c3") == "done"
@@ -476,8 +481,11 @@ def test_cache_hit_and_each_key_part_misses():
     other = OtherModel()
     run(project, other, ["c0"], cache=cache)
     assert other.calls  # model differs: no reuse
+    irrelevant = FakeProvider()
+    run(project, irrelevant, ["c0"], cache=cache, glossary_pairs=[("ボス", "首领")])
+    assert not irrelevant.calls  # this term is absent from c0 and its request context
     glossary = FakeProvider()
-    run(project, glossary, ["c0"], cache=cache, glossary_pairs=[("ボス", "首领")])
+    run(project, glossary, ["c0"], cache=cache, glossary_pairs=[("行くぞ", "走了")])
     assert glossary.calls
     hant = FakeProvider()
     run(project, hant, ["c0"], cache=cache, target="zh-Hant")

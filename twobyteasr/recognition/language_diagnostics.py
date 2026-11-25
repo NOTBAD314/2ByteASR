@@ -14,7 +14,7 @@ from ..subtitle_rules.language_rules import detect_language, normalize_language,
 
 MAX_TEXT = 6000
 MAX_REGIONS = 12
-AUDIT_VERSION = 3
+AUDIT_VERSION = 4
 
 
 def transcript_language_sample(texts):
@@ -113,20 +113,41 @@ def audit_primary_language(rows, context, legacy):
             region['needs_manual_review'] = requested in TASK_LANGUAGES
     conflicts = [r for r in regions if requested in TASK_LANGUAGES and (
         (r.get("transcript") or {}).get("language") not in {None, "", requested} or r.get('needs_manual_review'))]
+    from .language_guard import score
+    label_disagreements = []
+    label_disagreement_count = 0
+    for row in rows:
+        receipt = row.get('asr_language_receipt') or {}
+        label = normalize_language(row.get('language') or receipt.get('provider_detected_language'))
+        if label not in TASK_LANGUAGES:
+            continue
+        original = (row.get('language_guard') or {}).get('original_text') or row.get('text')
+        observed = score(original, requested if requested != 'auto' else label)
+        if observed and observed != label:
+            label_disagreement_count += 1
+            if len(label_disagreements) < 32:
+                label_disagreements.append(dict(start=row['start'], end=row['end'],
+                                                reported=label, transcript=observed))
     audit = {"version": AUDIT_VERSION, "signature": signature, "requested_language": requested, "adopted_language": context.task_language, "mode": context.language_mode,
-             "regions": regions, "conflicts": len(conflicts), "acoustic_language_verified": False}
+             "regions": regions, "conflicts": len(conflicts), "acoustic_language_verified": False,
+             "label_text_disagreement_count": label_disagreement_count,
+             "label_text_disagreement_examples": label_disagreements}
     context.language_evidence["primary_language_audit"] = audit
     legacy.record_run_event("primary_language_audit", **audit)
-    if conflicts:
+    pending = [(row['start'], row['end']) for row in rows
+               if (row.get('language_guard') or {}).get('pending')]
+    unreported = [region for region in conflicts
+                  if not any(start <= region['start'] and region['end'] <= end for start, end in pending)]
+    if unreported:
         labels = {"en": "英语", "it": "意大利语", "zh": "中文", "ja": "日语", "ko": "韩语",
                   "es": "西班牙语", "de": "德语", "fr": "法语", "pt": "葡萄牙语", "ru": "俄语"}
         languages = "、".join(dict.fromkeys(labels.get(r['transcript'].get('language'), r['transcript'].get('language') or '证据不足')
-                                           for r in conflicts))
-        detail = (f"已选择{labels.get(requested, requested)}，但主力转写的 {len(conflicts)} 段长文本呈现{languages}特征。"
+                                           for r in unreported))
+        detail = (f"已选择{labels.get(requested, requested)}，但主力转写的 {len(unreported)} 段长文本呈现{languages}特征。"
                   f"已按你选择的{labels.get(requested, requested)}处理，候选不会仅因此被隔离。"
                   "这是文字观察，不是音频语言验证。可查看候选并试听核对，或主动重新识别对应范围；源语言只有你主动修改才会变化。")
-        legacy.add_review_item(conflicts[0]["start"], "转写语言需要核对", detail, priority=2, severity="warning",
-                               language_conflicts=conflicts, retry_action="inspect_audio_then_recognize_range")
+        legacy.add_review_item(unreported[0]["start"], "转写语言需要核对", detail, priority=2, severity="warning",
+                               language_conflicts=unreported, retry_action="inspect_audio_then_recognize_range")
     return audit
 
 

@@ -17,6 +17,7 @@ from PySide6.QtGui import QColor, QTransform
 class CollisionLayout:
     offsets: dict[str, float]
     warnings: tuple[str, ...] = ()
+    ready: bool = True
 
 
 _bounds_cache = OrderedDict()
@@ -269,27 +270,55 @@ def prepare_component_index(project, revision):
     return components
 
 
+def _detached_component_index(revision):
+    from .continuity_layout import continuity_components
+    from ..projects.studio_project import StudioCue
+    from ..rendering.caption_playback_cache import _caption_source_project
+    from ..subtitle_rules.display_continuity import layout_cues
+
+    project = _caption_source_project(revision)
+    cues = revision.timeline_cues if revision.timeline_cues is not None else revision.cues
+    project.cues = [StudioCue(**cue.to_dict()) for cue in cues]
+    rows = layout_cues(project, visible_subtitle_cues(project))
+    return {cue.id: cluster for cluster in continuity_components(rows) for cue in cluster}
+
+
 class ProjectCollisionLayout:
     """Revision-indexed, lazy components shared with the export planner."""
     def __init__(self):
         self.key=None
         self.components={}
         self.layouts={}
+        self.pending = None
 
-    def for_cues(self,project,cues,revision):
-        from .continuity_layout import ContinuityLayout,continuity_components
+    def for_cues(self,project,cues,revision,*,work_ms=None):
+        from .continuity_layout import ContinuityLayout
         from .bilingual_layout import project_display_cues,companion_id
         from .visual_snapshot import build_visual_cue_snapshot
-        from ..projects.studio_runtime_state import state_for
         from copy import copy
         from types import SimpleNamespace
         cues=tuple(cues)
-        if not project.studio_state.get('auto_subtitle_stacking',True):
+        if not cues or not project.studio_state.get('auto_subtitle_stacking',True):
             return CollisionLayout({})
         key=component_index_key(project, revision)
         if key!=self.key:
             prepared = getattr(project, '_prepared_collision_components', None)
-            self.components = prepared[1] if prepared is not None and prepared[0] == key else prepare_component_index(project, revision)
+            if prepared is not None and prepared[0] == key:
+                components = prepared[1]
+            elif work_ms is not None and len(project.cues) > 128:
+                try:
+                    components = self._index_in_background(key, revision)
+                except Exception as exc:
+                    from ..diagnostics.event_log import emit
+
+                    emit("caption.collision_index", level="WARN", result="fallback",
+                         error_type=type(exc).__name__)
+                    components = prepare_component_index(project, revision)
+                if components is None:
+                    return CollisionLayout({}, (), False)
+            else:
+                components = prepare_component_index(project, revision)
+            self.components = components
             self.layouts={}
             self.key=key
         def snapshots_for(cue):
@@ -298,6 +327,8 @@ class ProjectCollisionLayout:
             local._studio_state_runtime=SimpleNamespace(cue_by_id={c.id:c for c in local.cues})
             return [build_visual_cue_snapshot(local,c.id) for c in local.cues]
         offsets,warnings={},[]
+        progressed = set()
+        ready = True
         target=max((c.start_ms for c in cues),default=-1)
         for cue in cues:
             cluster=self.components.get(cue.id)
@@ -311,12 +342,40 @@ class ProjectCollisionLayout:
             if component not in self.layouts:
                 self.layouts[component]=ContinuityLayout(cluster,snapshots_for)
             planner=self.layouts[component]
-            planner.advance(target)
+            if component not in progressed:
+                planner.advance(target, work_ms=work_ms if len(cluster) > 128 else None)
+                progressed.add(component)
+            if not planner.ready_through(target):
+                ready = False
+                continue
             for identity in (cue.id,companion_id(cue.id)):
                 if identity in planner.offsets:
                     offsets[identity]=planner.offsets[identity]
             warnings.extend(planner.warnings)
-        return CollisionLayout(offsets,tuple(dict.fromkeys(warnings)))
+        return CollisionLayout(offsets,tuple(dict.fromkeys(warnings)),ready)
+
+    def _index_in_background(self, key, revision):
+        from concurrent.futures import Future
+        from threading import Thread
+
+        if self.pending is not None:
+            previous_key, result = self.pending
+            if not result.done():
+                return None
+            self.pending = None
+            if previous_key == key:
+                return result.result()
+        result = Future()
+        self.pending = key, result
+
+        def run():
+            try:
+                result.set_result(_detached_component_index(revision))
+            except Exception as error:
+                result.set_exception(error)
+
+        Thread(target=run, name="collision-component-index", daemon=True).start()
+        return None
 
 
 def project_layout_schedule(project, cues=None):

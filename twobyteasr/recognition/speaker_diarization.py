@@ -9,7 +9,7 @@ import json
 import time
 from pathlib import Path
 
-VERSION = 'ecapa-window-v3'
+VERSION = 'ecapa-window-v4'
 COSINE_THRESHOLD = .45
 
 
@@ -83,23 +83,42 @@ def cluster_windows(windows, embeddings, threshold=COSINE_THRESHOLD):
 
 def assign_identities(references, windows):
     """Split only at existing exact word boundaries; never regenerate text."""
+    from .transcript_fidelity import transcript_spans, word_tokens
+    from ..subtitle_rules.text_rules import content_exact
+
     output=[]
     for original in references:
-        words=original.get('tokens') or []
-        exact_words=bool(words) and ''.join(str(w.get('text','')) for w in words)==original['text']
-        units=words if exact_words else [original]
+        text = original['text']
+        words = original.get('tokens') or []
+        spans = transcript_spans(text, [word.get('text', '') for word in words]) if words else None
+        units = [(word, span) for word, span in zip(words, spans or ()) if span is not None]
+        if not units:
+            units = [(original, (0, len(text)))]
         labelled=[]
-        for unit in units:
+        for unit, span in units:
             winner,share,ordered = _identity_for_interval(unit, windows)
             if labelled and labelled[-1][0]==winner:
-                labelled[-1][1].append(unit)
+                labelled[-1][1].append((unit, span))
             else:
-                labelled.append((winner,[unit]))
-        for winner,group in labelled:
+                labelled.append((winner, [(unit, span)]))
+        left = 0
+        content_offset = int((original.get('provider_source') or {}).get('content_start', 0))
+        for index, (winner, group) in enumerate(labelled):
             row=copy.deepcopy(original)
-            if exact_words:
-                row.update(start=group[0]['start'],end=group[-1]['end'],
-                    text=''.join(w['text'] for w in group),tokens=copy.deepcopy(group))
+            if len(labelled) > 1:
+                right = labelled[index + 1][1][0][1][0] if index + 1 < len(labelled) else len(text)
+                piece = text[left:right].strip()
+                row.update(start=group[0][0]['start'], end=group[-1][0]['end'], text=piece,
+                           tokens=word_tokens(piece, [word for word, _ in group]))
+                content_end = content_offset + len(content_exact(piece))
+                if row.get('provider_source'):
+                    evidence = row['provider_source']
+                    evidence.update(content_start=content_offset, content_end=content_end,
+                                    source_start=row['start'], source_end=row['end'],
+                                    valid_word_times=[word for word in evidence.get('valid_word_times', [])
+                                                      if row['start'] <= word['start'] < word['end'] <= row['end']])
+                left = right
+                content_offset = content_end
             row['speaker']=winner
             row['speaker_evidence']={'source':VERSION,'needs_confirmation':True,
                 'identity_confirmed':False,'unassigned':winner=='S00',
@@ -149,7 +168,10 @@ def diarize(references, audio, regions, *, sample_rate, model_dir, cache_dir, wo
         audio_path=folder/(key.hexdigest()+'.npy')
         np.save(audio_path,audio)
         load_start=time.perf_counter()
-        embeddings=run_speaker_embed_worker(worker_path=str(worker_path),main_python=python,manifest={
+        from .run_context import get_runtime_context
+        token = get_runtime_context().cancellation_token
+        embeddings=run_speaker_embed_worker(worker_path=str(worker_path),main_python=python,
+            cancel_check=(lambda: token.is_cancelled) if token else None, manifest={
             'audio_npy':str(audio_path),'sample_rate':sample_rate,'model_dir':str(model_dir),
             'max_audio_seconds':2.4,'chunk_overlap_seconds':0,'audio_seconds':len(audio)/sample_rate,
             'threads':4,'batch_size':12,

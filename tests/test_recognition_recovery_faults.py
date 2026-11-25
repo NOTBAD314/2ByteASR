@@ -87,9 +87,11 @@ def test_chinese_admission_retains_global_dependencies():
     from twobyteasr.providers.mosi_asr import MODEL
     context=SimpleNamespace(asr_endpoint_snapshot={'model':MODEL},requested_language='zh',
         recognition_purpose='final',enable_term_search=False,recognition_snapshot={},speaker_source='native',
-        dialogue_coverage_mode='all_dialogue',expected_speakers=0)
+        dialogue_coverage_mode='all_dialogue',expected_speakers=0,asr_settings_snapshot={})
     legacy=SimpleNamespace(PRIMARY_ASR_BACKEND='api',FIRERED_ASR_BACKEND='local',QWEN_ASR_BACKEND='off',
                            USE_QWEN_ASR_REFERENCE=False,PARALLEL_GPU_ASR=True)
+    assert eligible(context,legacy,3600) == (False, 'language_guard_requires_task_wide_repair_budget')
+    context.asr_settings_snapshot['subtitle_language'] = {'auto_language_repair': False}
     assert eligible(context,legacy,3600)[0]
     context.expected_speakers=2
     assert not eligible(context,legacy,3600)[0]

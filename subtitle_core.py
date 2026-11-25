@@ -2840,12 +2840,17 @@ def best_alternate_window(primary, raw_alternate):
     alternate_content = content_only(raw_alternate)
     if not primary_content or not alternate_content:
         return "", 0.0
+    if primary_content in alternate_content:
+        # A same-length exact hit already achieves the maximum possible score.
+        # No phonetic search over neighboring sentences can improve it.
+        return primary_content, 1.0
 
     target_length = len(primary_content)
     minimum_length = max(1, target_length - 2)
     maximum_length = min(len(alternate_content), target_length + 2)
     best_text = ""
     best_score = 0.0
+    primary_phonetics = phonetic_text(primary_content)
     for window_length in range(minimum_length, maximum_length + 1):
         for start in range(0, len(alternate_content) - window_length + 1):
             window = alternate_content[start : start + window_length]
@@ -2854,7 +2859,7 @@ def best_alternate_window(primary, raw_alternate):
             ).ratio()
             phonetic_similarity = SequenceMatcher(
                 None,
-                phonetic_text(primary_content),
+                primary_phonetics,
                 phonetic_text(window),
                 autojunk=False,
             ).ratio()

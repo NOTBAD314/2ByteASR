@@ -226,7 +226,9 @@ def test_legacy_confirmed_hint_preserves_short_and_symbol_names(libraries):
 
 @pytest.mark.parametrize('before,after,pair', [('使用Cpp开发', '使用C++开发', ('Cpp', 'C++')),
     ('学习C+', '学习C++', ('C+', 'C++')), ('今天Hello world', '今天Hello  world', None),
-    ('He is ready', 'She is ready', None)])
+    ('He is ready', 'She is ready', None),
+    ('パイモソが先に説明しました。', 'パイモンが先に説明しました。', ('パイモソ', 'パイモン')),
+    ('エミリー・ゾーンが来ました。', 'エミリー・ローンが来ました。', ('エミリー・ゾーン', 'エミリー・ローン'))])
 def test_symbol_name_extraction_keeps_token_boundaries(before, after, pair):
     assert extract_term_replacements(before, after) == ([pair] if pair else [])
 

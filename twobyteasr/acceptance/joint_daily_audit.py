@@ -12,10 +12,10 @@ def install_guards():
 
 
 def verify_ui(window, output):
-    from PySide6.QtCore import QEvent, QObject, QPoint, Qt
+    from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer
     from PySide6.QtGui import QHelpEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QWidget
+    from PySide6.QtWidgets import QApplication, QToolTip, QWidget
     from ..design.theme_manager import apply_theme
     from ..projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
 
@@ -45,9 +45,17 @@ def verify_ui(window, output):
     window._return_to_settings()
     settle(.5)
     check('home hint rows hidden', window.subtitle_language_summary.isHidden() and window.subtitle_language_hint.isHidden())
-    target = window.subtitle_language_hint
-    event = QHelpEvent(QEvent.Type.ToolTip, QPoint(1, 1), target.mapToGlobal(QPoint(1, 1)))
-    check('home hover hints suppressed', window._home_tooltip_mute.eventFilter(target, event))
+    target = window.primary_asr_backend
+    previous_hint = target.toolTip()
+    try:
+        target.setToolTip('Acceptance hover probe')
+        event = QHelpEvent(QEvent.Type.ToolTip, QPoint(1, 1), target.mapToGlobal(QPoint(1, 1)))
+        event.ignore()
+        consumed = app.sendEvent(target, event)
+        settle()
+        check('home hover hints suppressed', consumed and event.isAccepted() and not QToolTip.isVisible())
+    finally:
+        target.setToolTip(previous_hint)
     for theme in ('grape', 'warm'):
         apply_theme(theme, app)
         settle(.4)
@@ -97,14 +105,25 @@ def verify_ui(window, output):
         labels = [a.text() for a in menu.actions() if not a.isSeparator()]
         check(theme+' AI commands grouped by scope', labels[:5] == ['整个工程', 'AI 校对', 'AI 清理', 'AI 断句', '翻译整个工程…']
               and '当前 / 选中的字幕' in labels and 'AI 断句（选中范围）' in labels)
-        menu.popup(page.cue_ai_button.mapToGlobal(QPoint(0, page.cue_ai_button.height())))
-        settle(.3)
-        check(theme+' AI menu visible', menu.isVisible())
-        check(theme+' AI menu screenshot', menu.grab().save(str(output/f'ai-menu-{theme}.png')))
-        rect = app.primaryScreen().availableGeometry()
-        check(theme+' AI menu fits the screen', rect.contains(menu.frameGeometry()),
-              dict(screen=rect.getRect(), menu=menu.frameGeometry().getRect()))
-        menu.close()
+        opened = {}
+
+        def capture_menu():
+            geometry = menu.frameGeometry()
+            screen = app.screenAt(page.cue_ai_button.mapToGlobal(QPoint())) or app.primaryScreen()
+            available = screen.availableGeometry()
+            opened.update(visible=menu.isVisible(), fits=available.contains(geometry),
+                          screen=available.getRect(), menu=geometry.getRect())
+            opened['image'] = opened['visible'] and menu.grab().save(str(output/f'ai-menu-{theme}.png'))
+            menu.close()
+
+        # QToolButton chooses where its menu opens on this screen. Let its
+        # nested menu loop handle the timer before continuing the checks.
+        QTimer.singleShot(350, capture_menu)
+        QTest.mouseClick(page.cue_ai_button, Qt.MouseButton.LeftButton)
+        wait(lambda: bool(opened), 3)
+        check(theme+' AI menu visible', opened['visible'])
+        check(theme+' AI menu screenshot', opened['image'])
+        check(theme+' AI menu fits the screen', opened['fits'], dict(screen=opened['screen'], menu=opened['menu']))
         calls = []
         original_refine = page.run_sentence_refine
         page.run_sentence_refine = lambda **kwargs: calls.append(kwargs)

@@ -12,6 +12,15 @@ from twobyteasr.subtitle_rules.sentence_refine import (
     validate_action,
 )
 from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.subtitle_rules.language_rules import language_scope
+
+
+@pytest.fixture(autouse=True)
+def chinese_fixture_language():
+    # These archived Chinese cases run under the same explicit profile as
+    # the recognition queue; an unknown-language task has a different policy.
+    with language_scope("zh"):
+        yield
 
 
 @pytest.fixture(scope="module")

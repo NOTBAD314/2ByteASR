@@ -55,6 +55,8 @@ def test_flash_unfixed_words_cannot_erase_final_text_or_become_speaker():
     result=state.result(2)
     assert not result['words'] and 'speaker' not in result['segments'][0]
     state.consume({'output':{'sentence':{**sentence(), 'sentence_end':False}}})
+    assert state.result(2)['text'] == result['text']
+    state.consume({'output':{'sentence':{**sentence(), 'sentence_id':2, 'sentence_end':False}}})
     with pytest.raises(ASRProtocolError,match='未完成'):state.result(2)
 
 

@@ -105,9 +105,12 @@ def run(window, output):
         after_picture=picture('01-paused-a');check('paused native video changed',before_picture!=after_picture)
         check('paused timeline and time display',abs(page.timeline.playhead_ms-10000)<=40 and '10.' in page.timecode_input.text(),page.timecode_input.text())
         pos=click('a',repeat=True)
+        zoom=page.timeline.visible_duration_ms
         QTest.mouseDClick(page.timeline,Qt.LeftButton,Qt.NoModifier,pos)
-        check('original double-click survives first-click scroll',page.timeline._inline_target==('a',False))
-        page.timeline._cancel_inline_edit()
+        at(10000)
+        check('original double-click locates without opening the editor or zooming',page.selected_cue_id=='a'
+              and page.timeline.active_subtitle_layer=='original' and page.timeline._inline_editor is None
+              and page.timeline.visible_duration_ms==zoom and requests[-1]['ms']==10000)
         count=len(requests);key();at(13000)
         check('one physical combination produces one exact endpoint request',len(requests)==count+1 and requests[-1]['ms']==13000)
         check('adjacent and overlapping target stays a',page.selected_cue_id=='a' and page.selection_model.scope.active_id=='a')
@@ -128,8 +131,10 @@ def run(window, output):
         wait(ready);check('keyboard switches selection and seeks its start',target is not None and target.id!=old and abs(page.timeline.playhead_ms-target.start_ms)<=40)
         pos=click('a','translation')
         QTest.mouseDClick(page.timeline,Qt.LeftButton,Qt.NoModifier,pos)
-        check('translation double-click survives first-click scroll',page.timeline._inline_target==('a',True))
-        page.timeline._cancel_inline_edit()
+        at(10000)
+        check('translation double-click locates and keeps the layer',page.selected_cue_id=='a'
+              and page.timeline.active_subtitle_layer=='translation' and page.timeline._inline_editor is None
+              and requests[-1]['ms']==10000)
         key();at(13000)
         check('translation endpoint keeps editing field',page.timeline.active_subtitle_layer=='translation' and page.selected_cue_id=='a')
         key();at(10000)

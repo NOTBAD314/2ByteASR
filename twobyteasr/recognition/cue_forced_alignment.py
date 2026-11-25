@@ -163,9 +163,16 @@ def split_run_row(row, run, *, edge_shift_ms=0):
     ``edge_shift_ms`` converts the members' caption times into the clock of
     ``row`` (0 for the recognition task clock).
     """
+    bounds = row.get("actual_measurement_range_ms")
+    if bounds is None:
+        bounds = (row.get("window_start_ms", run["window_start_ms"] - edge_shift_ms),
+                  row.get("window_end_ms", run["window_end_ms"] - edge_shift_ms))
+    lower, upper = bounds
+    segments = [piece for piece in row.get("segments") or ()
+                if lower <= int(piece["start_ms"]) < int(piece["end_ms"]) <= upper]
     out = []
     for member, (start, end) in zip(run["members"], run["spans"]):
-        pieces, crossing = _member_pieces(row.get("segments"), start, end,
+        pieces, crossing = _member_pieces(segments, start, end,
                                           int(member["start_ms"]) - edge_shift_ms,
                                           int(member["end_ms"]) - edge_shift_ms)
         stats = dict(row.get("stats") or {})
@@ -176,11 +183,11 @@ def split_run_row(row, run, *, edge_shift_ms=0):
                                    if row.get("char_units") is not None else None)}
         if row.get('measurement'):
             from .alignment_measurements import sentence_measurement
-            valid=row.get('actual_measurement_range_ms') or [row.get('window_start_ms',0),row.get('window_end_ms',10**15)]
-            pm=sentence_measurement(part['text'],part['word_units'],part['char_units'],valid)
+            pm=sentence_measurement(part['text'],part['word_units'],part['char_units'],bounds)
             for side,eligible in [('start',start==0),('end',end==len(row['text']))]:
                 point=row['measurement']['accepted'][side]
-                if eligible and point['value_ms'] is not None:pm[side]=copy.deepcopy(point)
+                if eligible and point['value_ms'] is not None and lower <= point['value_ms'] <= upper:
+                    pm[side]=copy.deepcopy(point)
             part['measurement']=dict(accepted=pm,primary=pm,state='complete' if all(p['value_ms'] is not None for p in pm.values()) else 'partial' if any(p['value_ms'] is not None for p in pm.values()) else 'unmeasured',
                 parent_original_text_span=[start,end],parent_measurement_source=row['measurement'].get('state'),old_model_fallback=row['measurement'].get('old_model_fallback',False))
         out.append(part)

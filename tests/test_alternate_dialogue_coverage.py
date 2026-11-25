@@ -13,7 +13,7 @@ exec(compile(ast.Module(body=constant_nodes,type_ignores=[]),'actual-production-
 exec(compile(ast.Module(body=nodes,type_ignores=[]),'proposal-functions','exec'),ns)
 apply=ns['apply_alternate_dialogue_coverage']
 class Legacy:
-    def __init__(self):self.events=[];self.review=[]
+    def __init__(self):self.events=[];self.review=[];self.RUNTIME_SETTINGS={}
     def clean_subtitle_text(self,t):return str(t)
     def content_only(self,t):return ''.join(str(t).split())
     def best_alternate_window(self,t,c):return (t,1.) if t in c else ('',0.)
@@ -21,7 +21,8 @@ class Legacy:
     def add_review_item(self,*a,**kw):self.review.append((a,kw))
 class Guards(unittest.TestCase):
     def fixture(self,mode='host_priority'):
-        l=Legacy();context=SimpleNamespace(dialogue_coverage_mode=mode,expected_speakers=1,speaker_recovery={'candidates':['D01','D02']})
+        l=Legacy();context=SimpleNamespace(dialogue_coverage_mode=mode,expected_speakers=1,
+            speaker_recovery={'candidates':['D01','D02']},asr_settings_snapshot={})
         rows=[dict(start=0.,end=2.,text='持续对白甲',speaker='D01',confidence=None),dict(start=3.,end=5.,text='持续对白乙',speaker='D01',confidence=None),dict(start=6.,end=7.,text='短句角色',speaker='D02',confidence=None)]
         segments=[SimpleNamespace(segment_id=i+1,start=r['start'],end=r['end'],text=r['text'],speaker=r['speaker'],words=[{'text':r['text'],'start':r['start'],'end':r['end']}],caption_arbitration={'native_model_probability':None,'speaker_evidence':{'assignment':'DiariZen'}},primary_source='vibevoice_1_5b-primary',final_timing_owner='FireRed acoustic word alignment',timing_locked=False,confidence=0.) for i,r in enumerate(rows)]
         # One independent FireRed word: a second recognizer ran (2026-10-15).
@@ -76,7 +77,17 @@ class Guards(unittest.TestCase):
         self.assertNotEqual(first,signature('vibevoice_1_5b','native',f[5],f[4]))
         self.assertEqual(signature('moss','moss',f[5],f[4]),{})
         self.assertIn('primary_dependency.update(alternate_coverage_signature)',text)
-        self.assertEqual(text.count('**alternate_coverage_signature'),2)
+        cached_stages=set()
+        for node in ast.walk(ast.parse(text)):
+            if not (isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute)
+                    and node.func.attr=='run_cached_stage' and node.args):
+                continue
+            signature=next((arg.value for arg in node.keywords if arg.arg=='extra_signature'),None)
+            if (isinstance(signature,ast.Dict) and any(key is None and isinstance(value,ast.Name)
+                    and value.id=='alternate_coverage_signature' for key,value in zip(signature.keys,signature.values))):
+                cached_stages.update(item.value for item in ast.walk(node.args[0])
+                                     if isinstance(item,ast.Constant) and isinstance(item.value,str))
+        self.assertTrue({'grouped','grouped_local','final_timing'}<=cached_stages,cached_stages)
         self.assertNotIn('pid',str(first));self.assertNotIn('job',str(first))
 
     def test_diarizen_identity_primary_moss_and_label_source_are_separate(self):
@@ -86,7 +97,7 @@ class Guards(unittest.TestCase):
         with contextlib.redirect_stdout(buffer):out=self.run_filter(f,'moss')
         e=f[4].events[-1]
         self.assertEqual(e['primary_backend'],'moss');self.assertEqual(e['speaker_backend'],'diarizen')
-        self.assertIn('label_source=DiariZen v2',buffer.getvalue());self.assertNotIn('label_source=moss',buffer.getvalue())
+        self.assertIn('label_source=diarizen',buffer.getvalue());self.assertNotIn('label_source=moss',buffer.getvalue())
         self.assertEqual(out[0].speaker,'D01');self.assertEqual(out[0].caption_arbitration['speaker_evidence']['assignment'],'DiariZen')
         self.assertEqual(f[5].speaker_recovery['coverage_filter']['speaker_backend'],'diarizen')
 
@@ -96,8 +107,9 @@ class Guards(unittest.TestCase):
         before=copy.deepcopy(context.speaker_recovery['coverage_filter'])
         tree=ast.parse(text);fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and any(isinstance(x,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='coverage_filter' for t in x.targets) for x in n.body))
         start=next(i for i,n in enumerate(fn.body) if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='coverage_filter' for t in n.targets))
-        from twobyteasr.recognition.speaker_recovery import candidate_snapshot
-        scope=dict(copy=copy,runtime_context=context,segments=segments,primary_backend='vibevoice_1_5b',speaker_mode='native',speaker_processing={'status':'native','backend':'native'},legacy=f[4],candidate_snapshot=candidate_snapshot)
+        from twobyteasr.recognition.speaker_recovery import candidate_snapshot, confirmation_message
+        scope=dict(copy=copy,runtime_context=context,segments=segments,primary_backend='vibevoice_1_5b',speaker_mode='native',speaker_processing={'status':'native','backend':'native'},legacy=f[4],candidate_snapshot=candidate_snapshot,
+                   confirmation_message=confirmation_message)
         exec(compile(ast.Module(body=fn.body[start:start+3],type_ignores=[]),'real-final-refresh','exec'),scope)
         self.assertEqual(context.speaker_recovery['coverage_filter'],before)
         self.assertTrue(context.speaker_recovery['needs_confirmation'])

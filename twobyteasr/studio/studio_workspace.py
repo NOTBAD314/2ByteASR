@@ -1562,6 +1562,29 @@ class StudioWorkspaceBuilder:
         page.waveform_toggle.setChecked(True)
         bind_text(page.waveform_toggle, '显示或隐藏紧凑波形轨道', property='toolTip')
         timeline_toolbar.addWidget(page.waveform_toggle)
+        page.spectrogram_toggle = QCheckBox("频谱")
+        page.spectrogram_toggle.setObjectName("timelineToggleChip")
+        bind_text(page.spectrogram_toggle, "在可视范围显示音轨频谱", property="toolTip")
+        timeline_toolbar.addWidget(page.spectrogram_toggle)
+        page.word_times_toggle = QCheckBox("词时码")
+        page.word_times_toggle.setObjectName("timelineToggleChip")
+        bind_text(page.word_times_toggle, "显示选中字幕的词起点", property="toolTip")
+        timeline_toolbar.addWidget(page.word_times_toggle)
+        page.uncertain_edges_toggle = QCheckBox("待核时码")
+        page.uncertain_edges_toggle.setObjectName("timelineToggleChip")
+        bind_text(page.uncertain_edges_toggle, "标出选中字幕的估计或待核边界", property="toolTip")
+        timeline_toolbar.addWidget(page.uncertain_edges_toggle)
+        page.sound_event_toggle = QToolButton(page)
+        page.sound_event_toggle.setObjectName("timelineSoundEvents")
+        page.sound_event_toggle.setCheckable(True)
+        bind_text(page.sound_event_toggle, "声音事件")
+        bind_text(page.sound_event_toggle, "显示或隐藏独立声音事件", property="toolTip")
+        event_menu = create_studio_menu(page.sound_event_toggle)
+        from .studio_sound_events import show as show_sound_events
+        event_menu.addAction(tr("编辑声音事件…"), lambda: show_sound_events(page))
+        page.sound_event_toggle.setMenu(event_menu)
+        page.sound_event_toggle.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        timeline_toolbar.addWidget(page.sound_event_toggle)
         yield from _gui_slice.checkpoint()
         page.filmstrip_toggle = QCheckBox('缩略图')
         page.filmstrip_toggle.setObjectName("timelineToggleChip")
@@ -1652,6 +1675,12 @@ class StudioWorkspaceBuilder:
         page._shortcut_tooltip(page.snap_toggle, '拖动字幕时吸附到播放头、相邻边界和静音点（快捷键 {key}）', 'toggle_snap')
         page.snap_toggle.toggled.connect(page._toggle_timeline_snap)
         timeline_toolbar.addWidget(page.snap_toggle)
+        precision = page._tool_button('fa5s.ruler-horizontal',
+            '精细打轴 · 波形左键设入点，右键设出点，拖曳设区间，中键移动播放头', lambda: None)
+        precision.setCheckable(True)
+        bind_text(precision, '精细打轴', property='accessibleName')
+        page.precise_timing_toggle = precision
+        timeline_toolbar.addWidget(precision)
         for toggle, icon_name in ((page.waveform_toggle, 'fa5s.wave-square'), (page.filmstrip_toggle, 'fa5s.film'),
                                   (page.follow_playhead_toggle, 'fa5s.crosshairs'), (page.snap_toggle, 'fa5s.magnet')):
             # 2026-10-30 (user, draft B): an "on" switch shows its icon in the accent,
@@ -1832,6 +1861,14 @@ class StudioWorkspaceBuilder:
             page._resource_governor.set_dragging
         )
         page.timeline.cue_selected.connect(page._timeline_cue_clicked)
+        page.timeline.cue_start_requested.connect(page._timeline_jump_to_cue_start)
+        def toggle_precision(checked):
+            page.timeline.waveform_timing.enabled = checked
+            page.timeline.waveform_timing.cancel()
+            if checked:
+                page.waveform_toggle.setChecked(True)
+            page.timeline.update()
+        page.precise_timing_toggle.toggled.connect(toggle_precision)
         yield from _gui_slice.checkpoint()
         page.timeline.subtitle_visibility_changed.connect(page._subtitle_visibility_changed)
         page.timeline.subtitle_lock_changed.connect(page._schedule_autosave)
@@ -1933,6 +1970,10 @@ class StudioWorkspaceBuilder:
         page.timeline.text_split_requested.connect(
             lambda cue_id, position, point: page.cue_controller.split_at_text(cue_id, position, point))
         page.waveform_toggle.toggled.connect(page.timeline.set_waveform_visible)
+        page.spectrogram_toggle.toggled.connect(page.timeline.set_spectrogram_visible)
+        page.word_times_toggle.toggled.connect(page.timeline.set_word_times_visible)
+        page.uncertain_edges_toggle.toggled.connect(page.timeline.set_uncertain_edges_visible)
+        page.sound_event_toggle.toggled.connect(page.timeline.set_sound_events_visible)
         # 2026-11-09 (user, redesign): whole-project overview strip.
         from .timeline_overview import TimelineOverview
         yield from _gui_slice.checkpoint()
@@ -2629,7 +2670,7 @@ class StudioWorkspaceBuilder:
         zero_recognition_layout.addLayout(zero_recognition_row)
         page.recognition_zero_card.hide()
         zero_layout.addWidget(page.recognition_zero_card)
-        page.cue_import_subtitles_button = QPushButton("导入 SRT / ASS")
+        page.cue_import_subtitles_button = QPushButton("导入字幕或歌词")
         page.cue_import_subtitles_button.setObjectName("studioButton")
         page.cue_import_subtitles_button.setCursor(Qt.CursorShape.PointingHandCursor)
         page.cue_import_subtitles_button.clicked.connect(page._open_subtitle_import_dialog)

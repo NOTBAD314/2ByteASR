@@ -714,6 +714,11 @@ def _run_media_queue(
                     from ..providers.llm_config import qwen_asr_endpoint_from_settings
                     runtime_context.asr_endpoint_snapshot=qwen_asr_endpoint_from_settings(runtime_settings)
                     runtime_context.asr_endpoint_snapshot['speaker_source']=runtime_context.speaker_source
+                    from .asr_capabilities import selected_issue
+                    if not ((runtime_context.recognition_snapshot or {}).get('language_recovery_policy') or {}).get('reuse_candidates'):
+                        language_problem = selected_issue(runtime_settings, runtime_context.requested_language)
+                        if language_problem:
+                            raise ValueError(language_problem)
                     from .speaker_strategy import execution_plan
                     speaker_plan=execution_plan(runtime_settings,runtime_context.speaker_source)
                     legacy.record_run_event('speaker_plan',job_id=runtime_context.job_id,
@@ -758,6 +763,9 @@ def _run_media_queue(
                     lane_runs = lane_snapshots(snapshot) if snapshot.get("audio_lanes") else []
                     normalized_paths = []
                     for target in lane_runs or [snapshot]:
+                        # Studio must validate the submitted scope even after
+                        # the worker adds byte hashes for the execution cache.
+                        target.setdefault("request_fingerprint", target["fingerprint"])
                         # Source hashes are computed by this worker once per job;
                         # mapping/range/audio graph stay part of the input identity.
                         for source, source_identity in target["sources"].items():

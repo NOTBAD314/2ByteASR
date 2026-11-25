@@ -14,7 +14,7 @@ _ALIASES = {
     'qwen3_asr': 'qwen3-asr', 'qwen_asr': 'qwen3-asr', 'qwen_local': 'qwen3-asr',
     'whisper_turbo': 'whisper-turbo', 'whisper-turbo': 'whisper-turbo',
     'whisper': 'whisper-turbo', 'sensevoice': 'sensevoice',
-    'funasr_sensevoice': 'sensevoice', 'funasr_nano': 'funasr-nano',
+    'funasr_sensevoice': 'sensevoice', 'funasr_nano': 'funasr-nano', 'haas_ja': 'haas-ja-v1.0',
     'qwen_aligner': 'qwen_aligner', 'qwen3-aligner': 'qwen_aligner', 'qwen3_aligner': 'qwen_aligner',
     'mlx_qwen3_asr': 'mlx_qwen3_asr', 'mlx-qwen3-asr': 'mlx_qwen3_asr', 'mlx-asr': 'mlx_qwen3_asr',
     'mlx_qwen3_asr_1_7b': 'mlx_qwen3_asr_1_7b',

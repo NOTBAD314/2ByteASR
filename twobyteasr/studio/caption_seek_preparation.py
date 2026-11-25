@@ -181,8 +181,19 @@ class CaptionSeekPreparation(QObject):
             page.save_state.setText(self.status_owned)
         if elapsed>8:
             page._studio_trace('CAPTION_SEEK_TIMEOUT',request_sequence=request['serial'],phase=request['phase'])
-            self.cancel()
+            intended = video.playback_intended
+            project = page.project
+            generation = getattr(page.session, "generation", None)
+            self.cancel(preserve_seek_hold=intended)
+            serial = self.serial
             page._seek_immediate(request['target']/1000,accurate=request['accurate'])
+            # The immediate seek uses the normal buffered play gate. A
+            # presentation timeout must not turn its internal hold into a
+            # user pause, or resume a replaced project or a newer request.
+            if (intended and self.serial == serial and page.project is project
+                    and getattr(page.session, "generation", None) == generation
+                    and not getattr(page, "_close_requested", False)):
+                video.set_paused(False)
             return
         if request['phase']=='reveal':
             if self._removal_applied(request):self._finish(request,resume=True)
@@ -266,7 +277,7 @@ class CaptionSeekPreparation(QObject):
         if scene is not None:
             with scene.lock:scene._priority_warm_time=None;scene._seek_reserved_frame=None
 
-    def cancel(self, *, closing=False):
+    def cancel(self, *, closing=False, preserve_seek_hold=False):
         with self.lock:
             self.closed=bool(closing);self.cover_epoch+=1
         try:self.timer.stop()
@@ -274,7 +285,8 @@ class CaptionSeekPreparation(QObject):
         request,self.pending=self.pending,None;self.serial+=1
         if not closing:
             self._release_cover();self._restore_status()
-            if request is not None and request['scope']==self._scope() and self.page.video._seek_hold_active:
+            if (not preserve_seek_hold and request is not None and request['scope']==self._scope()
+                    and self.page.video._seek_hold_active):
                 self.page.video.set_paused(True)
         else:self.cover=None;self.cover_scope=None
 

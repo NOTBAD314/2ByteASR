@@ -503,6 +503,72 @@
       },
       "download_bytes": 1622443339
     },
+    "haas_ja_f16": {
+      "repository": "cstr/Haas-ja-v1.0-GGUF",
+      "revision": "607fa1450398d589643fbb0e8bb1d0424af68d11",
+      "path": "models/Haas-ja-v1.0-f16",
+      "required_files": [
+        "haas-ja-v1.0-f16.gguf"
+      ],
+      "sha256": {
+        "haas-ja-v1.0-f16.gguf": "69dce16668e9bfeaa611562443e52a3bf7000590c6d5870363ac16afedf92923"
+      },
+      "license": "Apache-2.0",
+      "download_bytes": 1232807488,
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/cstr/Haas-ja-v1.0-GGUF/revision/607fa1450398d589643fbb0e8bb1d0424af68d11?blobs=true",
+        "files": {
+          "haas-ja-v1.0-f16.gguf": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "69dce16668e9bfeaa611562443e52a3bf7000590c6d5870363ac16afedf92923"
+          }
+        }
+      }
+    },
+    "haas_ja_q4_k": {
+      "repository": "cstr/Haas-ja-v1.0-GGUF",
+      "revision": "607fa1450398d589643fbb0e8bb1d0424af68d11",
+      "path": "models/Haas-ja-v1.0-q4_k",
+      "required_files": [
+        "haas-ja-v1.0-q4_k.gguf"
+      ],
+      "sha256": {
+        "haas-ja-v1.0-q4_k.gguf": "873bff08c312edcfc5651709d4a52ca8526cc7abedcf162b7f3f27f245db85fe"
+      },
+      "license": "Apache-2.0",
+      "download_bytes": 386398272,
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/cstr/Haas-ja-v1.0-GGUF/revision/607fa1450398d589643fbb0e8bb1d0424af68d11?blobs=true",
+        "files": {
+          "haas-ja-v1.0-q4_k.gguf": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "873bff08c312edcfc5651709d4a52ca8526cc7abedcf162b7f3f27f245db85fe"
+          }
+        }
+      }
+    },
+    "haas_ja_q8_0": {
+      "repository": "cstr/Haas-ja-v1.0-GGUF",
+      "revision": "607fa1450398d589643fbb0e8bb1d0424af68d11",
+      "path": "models/Haas-ja-v1.0-q8_0",
+      "required_files": [
+        "haas-ja-v1.0-q8_0.gguf"
+      ],
+      "sha256": {
+        "haas-ja-v1.0-q8_0.gguf": "630fb47ac99d5111b0f99a7488857405611f05d7acae0fb2ceba4847ae1f9a2c"
+      },
+      "license": "Apache-2.0",
+      "download_bytes": 656182656,
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/cstr/Haas-ja-v1.0-GGUF/revision/607fa1450398d589643fbb0e8bb1d0424af68d11?blobs=true",
+        "files": {
+          "haas-ja-v1.0-q8_0.gguf": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "630fb47ac99d5111b0f99a7488857405611f05d7acae0fb2ceba4847ae1f9a2c"
+          }
+        }
+      }
+    },
     "sensevoice": {
       "repository": "FunAudioLLM/SenseVoiceSmall",
       "revision": "3847d57b6bdf2dd8875cb1508d2af43d80a16bf7",

@@ -16,7 +16,10 @@ import json
 import time
 from pathlib import Path
 
+from .studio_runtime_state import DirtyDomain, state_for
+
 FOLDER = "timing-journal"
+_TIMING_WORK = DirtyDomain.CUE_TIMING | DirtyDomain.CUE_MODEL | DirtyDomain.TIMELINE_INDEX | DirtyDomain.SEQUENCE_STRUCTURE
 
 
 def journal_path(project_path) -> Path:
@@ -41,11 +44,18 @@ class TimingJournal:
             return
         if not delta.affected_cue_ids:
             return
+        dirty = getattr(delta, "dirty", _TIMING_WORK)
+        if not dirty & _TIMING_WORK:
+            if self._pending:
+                self.flush()
+            return
         wanted = set(delta.affected_cue_ids)
-        present = {cue.id for cue in self.project.cues}
-        # An undone split names only the restored caption; the removed half is found here.
-        wanted |= set(self._times) - present
-        current = {cue.id: cue for cue in self.project.cues if cue.id in wanted}
+        if dirty & (DirtyDomain.CUE_MODEL | DirtyDomain.SEQUENCE_STRUCTURE | DirtyDomain.TIMELINE_INDEX):
+            current = {cue.id: cue for cue in self.project.cues}
+            # An undone split can name only the restored caption.
+            wanted |= self._times.keys() - current.keys()
+        else:
+            current = state_for(self.project).cue_by_id
         stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         for cue_id in sorted(wanted):
             cue = current.get(cue_id)

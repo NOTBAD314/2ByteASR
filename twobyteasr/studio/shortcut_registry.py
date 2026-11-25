@@ -55,6 +55,8 @@ ACTIONS: tuple[ShortcutAction, ...] = (
     _a('frame_right', '下一帧', 'Right', category='播放'),
     _a('previous_cue', '上一条字幕', 'Up', category='播放'),
     _a('next_cue', '下一条字幕', 'Down', category='播放'),
+    _a('previous_cue_alt', '上一条字幕（备用）', 'Alt+Up', category='播放'),
+    _a('next_cue_alt', '下一条字幕（备用）', 'Alt+Down', category='播放'),
     # 2026-10-17 additions (user: more keys should be changeable); callbacks
     # live in studio_shortcut_actions. Rarely used ones start unbound.
     _a('jump_start', '跳到开头', 'Home', category='播放'),
@@ -62,6 +64,10 @@ ACTIONS: tuple[ShortcutAction, ...] = (
     _a('seek_back', '后退 1 秒', 'Shift+Left', category='播放'),
     _a('seek_forward', '前进 1 秒', 'Shift+Right', category='播放'),
     _a('loop_cue', '循环播放当前字幕', 'Ctrl+L', category='播放'),
+    _a('audition_cue', '从句首完整试听当前字幕', 'F5', category='播放'),
+    _a('audition_head', '试听当前字幕的开头', 'F6', category='播放'),
+    _a('audition_tail', '试听当前字幕的结尾', 'F7', category='播放'),
+    _a('audition_loop', '开始或停止整句循环试听', 'F8', category='播放'),
     _a('jump_cue_boundary', '跳转到当前字幕起点／终点', 'Alt+J', category='播放',
        note='使用主动选中的字幕；连续按键往返起点和终点，E 编辑浮窗也可使用，文本框保留标准编辑键'),
     _a('speed_down', '播放减速', '', category='播放'),
@@ -87,6 +93,9 @@ ACTIONS: tuple[ShortcutAction, ...] = (
     _a('merge_next', '波纹向后合并（与下一条合并）', 'Shift+W'),
     _a('edit_at_playhead', '编辑播放头处的字幕', 'E'),
     _a('add_subtitle', '添加字幕', 'T'),
+    _a('insert_cue_before', '在选中字幕之前插入', 'Ctrl+Shift+Return'),
+    _a('insert_cue_after', '在选中字幕之后插入', 'Ctrl+Return'),
+    _a('insert_cue_in_out', '在 I/O 范围插入字幕', 'Ctrl+Alt+Return'),
     _a('split', '拆分当前字幕', 'Ctrl+Shift+S'),
     _a('merge', '与下一条合并', 'Ctrl+Shift+M'),
     _a('translate_selected', '翻译所选字幕 / 更新所选翻译', 'Ctrl+Alt+T'),
@@ -149,8 +158,7 @@ ACTIONS: tuple[ShortcutAction, ...] = (
     _a('review_adopt_2', '采用第 2 个候选', '2', 'studio.review', '审核'),
     _a('review_adopt_3', '采用第 3 个候选', '3', 'studio.review', '审核'),
     _a('review_adopt_4', '采用第 4 个候选', '4', 'studio.review', '审核'),
-    # 2026-10-15 (user: 他/她 is the most frequent fix): flip the caption's pronouns.
-    _a('review_flip_pronoun', '切换目标代称（他 → 她 → 它）', '', 'studio.review', '审核'),
+    _a('review_cycle_pronoun', '切换目标代称（他 → 她 → 它）', 'Shift+F', 'studio.review', '审核'),
     # Home page
     _a('home.start_run', '开始生成字幕', 'Ctrl+Return', 'home', '首页'),
     _a('home.choose_media', '选择素材', 'Ctrl+O', 'home', '首页'),
@@ -182,7 +190,7 @@ FIXED_GESTURES = (
     ('Ctrl / Shift + 点击', '多选、范围选择'),
     ('Alt + 拖动', '复制拖动；拖动时按住 Alt 暂停吸附'),
     ('Shift + 点击时间尺', '平移时间轴'),
-    ('双击字幕块', '在时间轴上直接改字'),
+    ('双击字幕块', '在时间轴上定位字幕句首'),
     ('Shift+F / Shift+A、D / Shift+E / Shift+S（字幕编辑）', '直接替换代称 / 候选循环 / 确认编辑 / 返回正文'),
     ('字幕编辑框里的 Enter / Esc / Ctrl+Enter / Shift+Enter / Tab', '提交 / 取消 / 提交并编辑下一条 / 换行 / 下一条'),
     ('对话框里的 Esc 与 Enter', '关闭 / 确认（系统约定）'),
@@ -247,6 +255,15 @@ def shadows(first: str, second: str) -> bool:
     return {first, second} == {'studio', 'studio.review'}
 
 
+def _migrate_review_pronoun(stored):
+    legacy = stored.pop('review_flip_pronoun', '')
+    old = normalize(legacy) if isinstance(legacy, str) else ''
+    # The previous action's empty default still had a hardwired Shift+F.
+    # Preserve custom keys and let the new action own explicit unbinding.
+    if old and old.upper() not in {'P', 'SHIFT+P', 'ALT+P'}:
+        stored.setdefault('review_cycle_pronoun', old)
+
+
 def load_values(stored: dict | None, platform: str | None = None) -> tuple[dict[str, str], list[str]]:
     """Merged bindings and the ids whose new default was left unbound.
 
@@ -259,8 +276,7 @@ def load_values(stored: dict | None, platform: str | None = None) -> tuple[dict[
     stored.pop('editor_flip_pronoun', None)
     for retired in ('editor_pronoun_he', 'editor_pronoun_she', 'editor_pronoun_it'):
         stored.pop(retired, None)
-    if normalize(stored.get('review_flip_pronoun','')).upper() in {'P','SHIFT+P','ALT+P'}:
-        stored.pop('review_flip_pronoun',None)
+    _migrate_review_pronoun(stored)
     values = {}
     for action_id, default in defaults.items():
         values[action_id] = normalize(stored[action_id]) if action_id in stored else default
@@ -283,9 +299,6 @@ def load_values(stored: dict | None, platform: str | None = None) -> tuple[dict[
     # mapping, including stored copies of those defaults.
     for action_id in ('review_next_w', 'review_next_a', 'review_previous_s', 'review_previous_d', 'adopt_suggestion'):
         values[action_id] = defaults[action_id]
-    for action_id, old in (('editor_flip_pronoun', 'ALT+P'), ('review_flip_pronoun', 'P')):
-        if values.get(action_id, '').upper() == old:
-            values[action_id] = defaults[action_id]
     if values.get('reasr_review', '').upper() == 'SHIFT+R':
         values['reasr_review'] = defaults['reasr_review']
     unbound = []
@@ -390,6 +403,7 @@ def import_payload(text: str) -> dict[str, str]:
     bindings = payload.get('bindings')
     if not isinstance(bindings, dict):
         raise ValueError('快捷键文件缺少 bindings。')
+    _migrate_review_pronoun(bindings)
     return {key: normalize(value) for key, value in bindings.items()
             if key in BY_ID and isinstance(value, str)}
 
@@ -425,6 +439,9 @@ def save_values(values: dict[str, str]) -> None:
     except (OSError, ValueError, TypeError):
         payload = {}
     stored = dict(payload.get('shortcuts') or {})
+    _migrate_review_pronoun(stored)
+    values = dict(values)
+    _migrate_review_pronoun(values)
     stored.update({key: normalize(value) for key, value in values.items() if key in BY_ID})
     stored.pop('edit_review', None)
     payload['shortcuts'] = stored

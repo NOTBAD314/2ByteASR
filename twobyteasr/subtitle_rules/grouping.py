@@ -2,6 +2,7 @@
 
 import copy
 from functools import wraps
+from itertools import accumulate
 from .grouping_quality import enabled as _quality_enabled, quality_for_segments, cues_from_quality, SourceIndex, QUALITY_VERSION
 from .grouping_quality_request import QualityRetryBudget, retry_quality_windows
 import hashlib
@@ -52,6 +53,7 @@ from twobyteasr.subtitle_rules.segmentation import (
 # subtitle_core during cache initialization, so eager wildcard imports can
 # otherwise miss functions defined later in that cycle.
 _batch_trace = threading.local()
+JAPANESE_BATCH_MAX_CHARS = 900
 
 def record_run_event(event, **payload):
     from twobyteasr.recognition.cache import record_run_event as implementation
@@ -124,6 +126,7 @@ def _retain_grouping_range(rows, error, batch_id=None):
     cues = [SubtitleCue(index, row.start, row.end, row.text,
                         row.timing_locked, row.speaker or 'S00')
             for index, row in enumerate(rows, 1)]
+    cues = _locally_split_retained_japanese(rows, cues) or cues
     attach_grouping_spans(rows, cues)
     for cue in cues:
         cue.grouping_origin = 'source_retained_after_local_rejection'
@@ -133,6 +136,76 @@ def _retain_grouping_range(rows, error, batch_id=None):
                     priority=3, severity='warning', batch_id=batch_id,
                     source_segment_ids=ids, failure_category=category)
     return GroupedBatchResult(cues, origin='fallback', data_validated=True, result_status='unresolved')
+
+
+def _locally_split_retained_japanese(rows, cues):
+    """Japanese retained range: over-long source lines are split on legal phrase edges.
+
+    2026-11-25 (Ninja Spy, 785 of 794 lines retained): a retained 30-character
+    line failed the whole task at the final length gate. The range stays
+    pending retry (same origin and receipt), but its lines are now readable.
+    """
+    try:
+        from .language_rules import active_task_language
+        if (active_task_language() or '').split('-')[0] != 'ja':
+            return None
+        profile = _current_language_profile()
+        if not any(display_length(cue.text) > profile.hard_max for cue in cues):
+            return None
+        from .japanese_grouping import build_candidates, local_only
+        from .segmentation_alignment import source_segment_character_offsets
+        result = []
+        # Speaker turns are independent: split each speaker run on its own.
+        run = []
+        for row in list(rows) + [None]:
+            if run and (row is None or (row.speaker or 'S00') != (run[-1].speaker or 'S00')):
+                text = ''.join(item.text for item in run)
+                candidates = build_candidates(text, source_segment_character_offsets(run),
+                                              segment_offsets=source_segment_character_offsets(run),
+                                              hard_max=int(profile.hard_max))
+                if candidates is None:
+                    return None
+                pieces, _receipt = local_only(run, candidates, hard_max=int(profile.hard_max),
+                                              preferred=int(profile.preferred), max_seconds=float(profile.max_seconds))
+                result.extend(pieces)
+                run = []
+            if row is not None:
+                run.append(row)
+        for number, cue in enumerate(result, 1):
+            cue.cue_id = number
+        record_run_event('grouping_retained_range_local_split', source_segment_ids=[row.segment_id for row in rows],
+                         before=len(cues), after=len(result), language='ja')
+        return result
+    except Exception as error:  # the source lines themselves remain valid output
+        record_run_event('grouping_retained_range_local_split_failed', error=str(error)[:300])
+        return None
+
+
+def grouping_origin_summary(cues):
+    """Separate counts of how each final line was decided (2026-11-25).
+
+    ai_first_pass: the model's first answer; ai_retry: a targeted correction;
+    local_fallback: legal local split the model could not supply; pending: kept
+    source lines of a range still waiting for an AI retry. The AI adoption
+    rate counts only the first two.
+    """
+    buckets = dict(ai_first_pass=0, ai_retry=0, local_fallback=0, pending=0, other=0)
+    for cue in cues:
+        origin = str(getattr(cue, 'grouping_origin', '') or '')
+        if origin in ('ai_accepted', 'ai_fast_path') or origin.startswith('ai_accepted'):
+            buckets['ai_first_pass'] += 1
+        elif origin == 'ai_targeted_correction':
+            buckets['ai_retry'] += 1
+        elif origin.startswith('local_'):
+            buckets['local_fallback'] += 1
+        elif origin in ('source_retained_after_local_rejection', 'unresolved'):
+            buckets['pending'] += 1
+        else:
+            buckets['other'] += 1
+    total = len(cues)
+    decided = buckets['ai_first_pass'] + buckets['ai_retry']
+    return dict(buckets, total=total, ai_adoption_rate=round(decided / total, 4) if total else None,
+                local_fallback_rate=round(buckets['local_fallback'] / total, 4) if total else None)
 
 
 def _timing_basis(seconds, tokens, edge):
@@ -809,15 +882,34 @@ def call_grouping_api(
         "time_domain": "source_seconds",
     }
     japanese_candidates = None
+    japanese_candidate_set = None
     if prompt_language == "ja":
         # 2026-11-18: the model picks numbered phrase ends instead of copying the text.
-        japanese_candidates = japanese_break_candidates(
-            source_text, set(hard_break_offsets) | set(protected_source_offsets))
-        if japanese_candidates is not None:
+        # 2026-11-25: one candidate engine for every entry (japanese_grouping); a
+        # mandatory pause measured inside a word (返してくださ｜い) moves to the
+        # nearest phrase edge so the request always has a legal answer.
+        from .japanese_grouping import build_candidates
+        japanese_candidate_set = build_candidates(
+            source_text, set(hard_break_offsets) | set(protected_source_offsets),
+            segment_offsets=source_boundary_offsets, hard_max=int(_current_language_profile().hard_max))
+        if japanese_candidate_set is not None:
+            japanese_candidates = japanese_candidate_set.candidates
+            moved = {row['given']: row['used'] for row in japanese_candidate_set.moved_mandatory}
+            hard_break_offsets = sorted({moved.get(x, x) for x in hard_break_offsets})
+            protected_source_offsets = sorted({moved.get(x, x) for x in protected_source_offsets})
+            request_body["hard_break_character_offsets"] = hard_break_offsets
+            request_body["protected_source_offsets"] = protected_source_offsets
             request_body.pop("indexed_content", None)
             request_body.pop("source_text", None)
             request_body["marked_text"] = marked_break_text(source_text, japanese_candidates)
             request_body["break_candidate_count"] = len(japanese_candidates)
+            request_body["candidate_source"] = japanese_candidate_set.source
+            if japanese_candidate_set.indivisible:
+                request_body["indivisible_length_conflicts"] = [
+                    dict(start=a, end=b, units=b - a) for a, b in japanese_candidate_set.indivisible]
+            if not _messages_only:
+                record_run_event('japanese_grouping_candidates', batch_index=batch_index,
+                                 **japanese_candidate_set.receipt())
     if _quality_enabled():
         inherited_allowed = segment_batch[0].caption_arbitration.get('grouping_request_allowed') if len(segment_batch)==1 else None
         if inherited_allowed is not None:
@@ -1054,6 +1146,9 @@ def call_grouping_api(
             )
             diag["raw_response_length"] = len(content)
             diag["raw_response_sha256"] = hashlib.sha256(str(content).encode("utf-8")).hexdigest()
+            # The answer is only boundary numbers; a short redacted excerpt makes a
+            # rejected batch diagnosable (2026-11-25: only hashes were recorded).
+            diag["raw_response_excerpt"] = redact_runtime_secrets(str(content)[:1500])
             if not str(content).strip():
                 raise AIProviderError("断句正文为空。", category="empty_response")
             from .grouping_contract import parse_grouping_response, capture_grouping_source
@@ -1064,8 +1159,14 @@ def call_grouping_api(
                 closing_added=lambda total: record_run_event(
                     "grouping_closing_boundary_added", batch_index=batch_index,
                     attempt=attempt, total_length=total))
-            if japanese_candidates is not None and not set(boundary_offsets) <= set(japanese_candidates):
-                raise AIProviderError("日语断点不在请求给出的文节边界内。", category="semantic_quality")
+            if japanese_candidate_set is not None:
+                # A pick between marks moves to the nearest mark instead of
+                # failing the batch (2026-11-25: 3/13 batches of 1.json).
+                from .japanese_grouping import snap as _snap_japanese
+                boundary_offsets, off_marks = _snap_japanese(boundary_offsets, japanese_candidate_set)
+                if off_marks:
+                    record_run_event('grouping_marked_boundaries_snapped', batch_index=batch_index,
+                                     attempt=attempt, moved=off_marks)
             model_boundaries = list(boundary_offsets)
             source_identity = capture_grouping_source(segment_batch,
                 job_id=get_runtime_context().job_id, batch_id=batch_index).identity()
@@ -1146,6 +1247,7 @@ def call_grouping_api(
                 boundary_receipts.extend(unresolved_receipts)
                 result, boundary_offsets, quality_issues = cues_from_quality(segment_batch,
                     boundary_offsets, firered_tokens,
+                    protected=set(hard_break_offsets) | set(protected_source_offsets),
                     record=record_run_event, repair=False, quality=quality,
                     review_filter=lambda issues: [x for x in blocking_issues(issues)
                                                   if x not in unsplittable_lengths(quality, issues)])
@@ -1185,14 +1287,41 @@ def call_grouping_api(
                     source_text_sha256=hashlib.sha256(quality.index.text.encode("utf-8")).hexdigest(),
                     model_positions=model_boundaries, committed_positions=boundary_offsets,
                     unresolved_issues=quality_issues)
-            elif prompt_language=='ja' and (accepted_ja:=accepted_japanese_boundaries(
-                    segment_batch,model_boundaries,set(hard_break_offsets)|set(protected_source_offsets),
-                    firered_tokens,speech_regions)) is not None:
-                result=accepted_ja
-                proposed_texts=texts_from_boundary_offsets(segment_batch,model_boundaries,firered_tokens)
-                boundary_offsets=list(model_boundaries)
-                record_run_event('japanese_ai_boundaries_retained',batch_index=batch_index,
-                    boundaries=boundary_offsets,basis='measured_phrase_edges_content_time_hard_limits')
+            elif prompt_language == 'ja' and japanese_candidate_set is not None:
+                # 2026-11-25: lines are checked one by one. Valid lines stay, only
+                # the failing windows go back to the model with the exact error,
+                # and what it cannot fix is split locally on legal candidates
+                # (labelled local_*). A local line problem never rejects the batch.
+                from .japanese_grouping import finalize_batch
+
+                def _japanese_repair(repair_messages):
+                    # Bounded by finalize_batch: at most three targeted rounds per
+                    # batch, and a repeated answer stops the loop.
+                    return provider.complete(
+                        repair_messages, stage="grouped", operation_kind='group', batch_index=batch_index,
+                        max_tokens=snapshot.max_output_tokens, temperature=0.0,
+                        timeout=snapshot.timeout_policy.total, _timeout_policy=snapshot.timeout_policy,
+                        cancel_check=lambda: bool(abort_event is not None and abort_event.is_set()) or bool(
+                            getattr(get_runtime_context().cancellation_token, "is_cancelled", False)),
+                        enable_thinking=snapshot.enable_thinking, thinking_protocol=snapshot.thinking_protocol,
+                        response_format={"type": "json_object"})
+                profile_now = _current_language_profile()
+                result, ja_receipt = finalize_batch(
+                    segment_batch, model_boundaries, japanese_candidate_set,
+                    firered_tokens=firered_tokens, speech_regions=speech_regions,
+                    hard_max=int(profile_now.hard_max), preferred=int(profile_now.preferred),
+                    max_seconds=float(profile_now.max_seconds), complete=_japanese_repair,
+                    record=record_run_event, batch_index=batch_index)
+                boundary_offsets = list(ja_receipt['final_boundaries'])
+                proposed_texts = [cue.text for cue in result]
+                boundary_receipts.extend(dict(cue.grouping_boundary_receipt) for cue in result
+                                         if cue.grouping_origin != 'ai_accepted')
+                for cue in result:
+                    if cue.grouping_origin == 'local_indivisible_retained':
+                        add_review_item(cue.start, '断句约束待复核',
+                            '这一条找不到合法的换行位置（完整词或时间证据不足），保留整条并标出局部冲突。',
+                            cue.text, priority=1, severity='info', grouping_origin='local_indivisible_retained',
+                            batch_index=batch_index)
             else:
                 raise AIProviderError("模型断点未通过本语言的边界、长度或时间校验。",
                                       category="semantic_quality")
@@ -1223,6 +1352,10 @@ def call_grouping_api(
             record_run_event("asr_provider_request", **diag)
             accepted = GroupedBatchResult(result, validated=not quality_issues, origin=diag['result_origin'])
             accepted.result_status = diag["result_status"]
+            if prompt_language == 'ja' and japanese_candidate_set is not None and not _quality_enabled():
+                # A batch with local splits is reported as mixed, never as pure AI.
+                from .ai_boundary_policy import provenance
+                accepted.origin, accepted.result_status = provenance(result, True)
             return accepted
         except CancelledError:
             raise
@@ -1381,16 +1514,24 @@ def retain_source_utterances(segments,profile=None):
 
 
 def accepted_japanese_boundaries(segments,boundaries,required=(),firered_tokens=(),speech_regions=None):
-    """Freeze exact model edges only with measured Japanese phrase evidence."""
+    """Keep source cuts or require measured phrase evidence for new cuts."""
     from .japanese_morphology import document_phrase_spans
     from .language_rules import JAPANESE_CUE_MAX_CHARS,JAPANESE_CUE_MAX_SECONDS
-    text=''.join(content_exact(segment.text) for segment in segments)
-    spans=document_phrase_spans(text)
-    if spans is None or not set(required)<=set(boundaries):return None
-    allowed={len(text),*[end for start,end,word in spans]}
-    if not set(boundaries)<=allowed:return None
-    pieces=texts_from_boundary_offsets(segments,boundaries,firered_tokens)
-    result=cues_from_resegmented_texts(segments,pieces,firered_tokens,speech_regions)
+    source_pieces = [content_exact(segment.text) for segment in segments]
+    if not set(required) <= set(boundaries):
+        return None
+    if list(boundaries) == list(accumulate(map(len, source_pieces))):
+        # A boundary-only response that selects the existing cuts has no
+        # timing edits to commit. Word evidence may cross a display boundary
+        # in a reopened Studio project and must not retime its neighbour.
+        result = retain_source_utterances(segments)
+    else:
+        text = ''.join(source_pieces)
+        spans = document_phrase_spans(text)
+        if spans is None or not set(boundaries) <= {len(text), *(end for _, end, _ in spans)}:
+            return None
+        pieces = texts_from_boundary_offsets(segments, boundaries, firered_tokens)
+        result = cues_from_resegmented_texts(segments, pieces, firered_tokens, speech_regions)
     cursor=0;actual=[]
     for cue in result:
         size=len(content_exact(cue.text));cursor+=size;actual.append(cursor)
@@ -1614,8 +1755,13 @@ def group_subtitles(
             owner.cancellation_token.raise_if_cancelled()
 
     prompt_key = grouping_prompt_key(task_prompt_language())
+    # 2026-11-25: Japanese requests carry a mark at every phrase edge and Qwen
+    # windows are 20-25 s each; a smaller text budget keeps one request to a
+    # couple of minutes of dialogue (1.json batch 1 held 521 characters).
+    batch_chars = (min(GROUP_API_BATCH_MAX_CHARS, JAPANESE_BATCH_MAX_CHARS)
+                   if task_prompt_language() == 'ja' else GROUP_API_BATCH_MAX_CHARS)
     max_rows, max_chars, batch_policy = grouping_batch_limits(ordered_segments,
-        max_chars=GROUP_API_BATCH_MAX_CHARS, legacy_max_rows=GROUP_API_BATCH_MAX_CUES)
+        max_chars=batch_chars, legacy_max_rows=GROUP_API_BATCH_MAX_CUES)
     batches = []
     turns = []
     for segment in ordered_segments:
@@ -1975,6 +2121,8 @@ def group_subtitles(
         batch_count=len(jobs), remote_batch_count=sum(not job[-1] for job in jobs) if use_ai else 0,
         local_fast_batch_count=sum(bool(job[-1]) for job in jobs), protected_turn_count=len(turns),
         quality_retry_outcomes=quality_budget.summary(),result_origin=origin)
+    if use_ai:
+        record_run_event('grouping_origin_summary', **grouping_origin_summary(cues))
     from .grouping_contract import capture_grouping_source
     grouped = GroupedBatchResult(cues, origin=origin, validated=all_validated,data_validated=True,
         source_fingerprint=capture_grouping_source(ordered_segments).fingerprint,

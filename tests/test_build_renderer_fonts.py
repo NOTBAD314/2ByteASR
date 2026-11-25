@@ -55,4 +55,4 @@ def test_payload_scanner_uses_the_same_public_audio_pin():
     root=Path(__file__).resolve().parents[1]
     spec=importlib.util.spec_from_file_location('payload_media_preflight',root/'scripts/check_release_payload.py')
     scanner=importlib.util.module_from_spec(spec);spec.loader.exec_module(scanner)
-    assert scanner.PUBLIC_RENDERER_AUDIO==module.PUBLIC_RENDERER_AUDIO
+    assert scanner.PUBLIC_RENDERER_AUDIO == module.PUBLIC_RENDERER_AUDIO | module.PUBLIC_DIAGNOSTIC_AUDIO

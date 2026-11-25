@@ -16,6 +16,10 @@ def proposal_identity(segment_id, text, start, end, replacement):
 
 def preserve_source_for_delivery(baseline, analysis, *, record, summary=None):
     """Transfer review metadata only. Audio, timings, source words and text stay owned by baseline."""
+    from ..recognition.language_guard import conflict, settings_policy
+    from ..recognition.run_context import get_runtime_context
+    context = get_runtime_context()
+    guard = settings_policy(context.asr_settings_snapshot, context.requested_language)
     analyzed = {segment.segment_id: segment for segment in analysis}
     total = 0
     for segment in baseline:
@@ -44,11 +48,15 @@ def preserve_source_for_delivery(baseline, analysis, *, record, summary=None):
             for field in ('rejected_edits', 'new_suspects', 'suspect_results'):
                 detail['analysis_' + field] = detail.pop(field, [])
         proposals = []
+        foreign_candidate = conflict(result.text, guard['language']) if guard['strict'] else None
         for edit in alternatives:
             start, end = edit['start'], edit['end']
             matching = next((row for row in analyzed_edits if all(row.get(k) == edit[k]
                 for k in ('start', 'end', 'from', 'to'))), None)
             proof = bool(matching and (matching.get('acoustic_verified') or matching.get('terminology_evidence')))
+            if foreign_candidate and foreign_candidate != conflict(before, guard['language']):
+                detail.setdefault('draft_rejections', []).append(dict(edit, reason='language_guard'))
+                continue
             # Keep larger or disputed draft rewrites in diagnostics. No user
             # is asked to approve a patch without a sensible, visible anchor.
             if end == start or not edit['to'] or max(end-start, len(edit['to'])) > 4 and not proof:

@@ -112,13 +112,15 @@ def main() -> None:
         inference_started = time.perf_counter()
         for job in jobs:
             options = {"input": str(job["path"]), "cache": {}, "batch_size_s": 60}
-            if args.model_key == "sensevoice":
-                options.update(language="auto", use_itn=True)
-            elif args.model_key == "paraformer":
+            from twobyteasr.recognition.language_guard import funasr_language_options
+            options.update(funasr_language_options(args.model_key, manifest.get('language')))
+            if args.model_key == "paraformer":
                 options.update(pred_timestamp=True)
             try:
                 rows = model.generate(**options)
             except TypeError:
+                if options.get('language') not in {None, 'auto'}:
+                    raise
                 rows = model.generate(input=str(job["path"]))
             row = rows[0] if isinstance(rows, list) and rows else rows
             text = str(row.get("text", "") if isinstance(row, dict) else "")

@@ -39,13 +39,16 @@ INDEPENDENT = {"名詞", "代名詞", "動詞", "形容詞", "形状詞", "副�
                "英単語", "URL"}
 NOMINAL = {"名詞", "代名詞", "接尾辞", "英単語"}
 NON_CONTENT = {"補助記号", "記号", "空白"}
-SURU = {"する", "し", "さ", "せ", "しよ", "すれ", "しろ", "できる", "でき", "出来", "出来る"}
+SURU = {"する", "し", "さ", "せ", "しよ", "すれ", "しろ", "できる", "でき", "出来", "出来る",
+        # Humble/polite suru (お待たせ|いたしました, 2026-11-25 1.json live run).
+        "いたす", "いたし", "いたさ", "いたせ", "致す", "致し", "なさる", "なさい", "なさっ"}
 # Verbs that are auxiliaries after the te-form (して|いる is one phrase).
 AFTER_TE = {"い", "いる", "いれ", "いろ", "いら", "る", "ある", "あっ", "あり", "おく", "おい", "おか", "とく",
             "とい", "とか", "しまう", "しまっ", "しまい", "ちゃう", "ちゃっ", "じゃう", "じゃっ", "くる", "き",
             "こ", "来", "来る", "いく", "いっ", "いか", "行く", "行っ", "みる", "み", "みよ", "もらう", "もらっ",
             "もらい", "あげる", "あげ", "くれる", "くれ", "やる", "やっ", "ください", "下さい", "ほしい", "欲しい"}
 NEGATIVE_HEADS = ("ない", "なく", "なかっ", "なけれ")
+HUMBLE_SURU = {"いたす", "いたし", "いたさ", "いたせ", "致す", "致し"}
 # Formal/auxiliary nominals that a predicate needs (わかる|ように, する|ことが).
 ATTACH_AFTER_PREDICATE = {"よう", "そう", "みたい", "ん", "の", "こと", "もの", "ところ", "わけ", "はず",
                           "とき", "ため", "まま", "つもり", "ほう"}
@@ -56,7 +59,12 @@ FINAL_PARTICLES = {"ね", "よ", "な", "わ", "ぞ", "ぜ", "さ", "か", "か�
 FIXED_EXPRESSIONS = ("もしかして", "もしかしたら", "なんて", "なんか", "なんで", "どうして", "やっぱり",
                      "やっぱ", "ちょっと", "とにかく", "それでも", "だから", "じゃあ", "ところで",
                      "そういえば", "いつも", "みんな", "ありがとう", "おはよう", "こんにちは", "すみません",
-                     "っていう", "という", "っていうか")
+                     "っていう", "という", "っていうか",
+                     # Negative fixed predicates (たどり着いたに違い|ない, 2026-11-25 live run).
+                     "違いない", "違いありません", "間違いない", "仕方ない", "仕方がない", "しょうがない",
+                     "かもしれない", "かもしれません", "なければならない", "なければなりません",
+                     "なくちゃいけない", "てはいけない", "ではいけない", "わけではない", "わけじゃない",
+                     "じゃないですか", "じゃないんですか", "ということ", "いただきます", "ございます")
 # Auxiliary verbs fused to the previous stem (高|すぎる, 言い|出す).
 STEM_AUXILIARIES = ("すぎ", "過ぎ", "やす", "にく", "づら", "がる", "がっ")
 # Lengthened interjections (いやー, あー, うわー): their own phrase when they
@@ -66,6 +74,9 @@ FINAL_CHARS = set("ねよなわぞぜさかのー")
 # A modifier and its head noun (襲われた|人が, ハオの|レベル) stay on one line
 # while the whole noun phrase is this short (content characters).
 ATTRIBUTIVE_KEEP_CHARS = 10
+# Polite/copula endings close a sentence; the noun after them starts a new one
+# (いただきます|殿, 2026-11-25 真拳伝説: the cut was dropped as "attributive").
+SENTENCE_FINAL_AUXILIARIES = {"ます", "です", "ました", "でした", "ません", "ませ", "だ", "だろう", "でしょう"}
 
 _CONTENT_RE = None
 
@@ -166,6 +177,10 @@ def _starts_phrase(word: str, tag: str, previous: tuple[str, str] | None) -> boo
         return False                              # 高|すぎた
     if tag in NOMINAL and before_tag in NOMINAL:
         return False                              # compound noun / number + counter
+    if tag == "形状詞" and before_tag in NOMINAL:
+        return False                              # 一生|懸命 (2026-11-25 live run)
+    if tag == "動詞" and word in HUMBLE_SURU:
+        return False                              # お待た|せ|いたし|ました: humble suru never starts a phrase
     if tag == "動詞" and before_tag in ("名詞", "形状詞") and word in SURU:
         return False                              # 勉強|する
     if tag == "動詞" and before_word in ("て", "で") and word in AFTER_TE:
@@ -198,7 +213,8 @@ def bunsetsu_breaks(text: str, spans) -> tuple[set[int], set[int]]:
             if (pending_strong or tag in ("感動詞", "接続詞")
                     or (previous[1] == "助詞" and previous[0] in FINAL_PARTICLES)):
                 strong.add(start)
-            elif tag in ("名詞", "代名詞") and (previous[1] in PREDICATE or previous == ("の", "助詞")):
+            elif (tag in ("名詞", "代名詞") and (previous[1] in PREDICATE or previous == ("の", "助詞"))
+                  and previous[0] not in SENTENCE_FINAL_AUXILIARIES):
                 attributive.append(start)
         previous = (word, tag)
         pending_strong = False
@@ -238,6 +254,9 @@ class PhraseDocument:
     measured_segments: int = 0
     heuristic_segments: int = 0
     tagger: str = ""
+    # Every word start (not only phrase starts): a measured long pause on a word
+    # edge is kept even where the phrase rules would not cut (2026-11-25).
+    word_edges: frozenset = field(default_factory=frozenset)
 
     def receipt(self) -> dict:
         return {"policy": BUNSETSU_POLICY, "tagger": self.tagger, "content_characters": len(self.content),
@@ -255,7 +274,7 @@ def _heuristic_breaks(text: str) -> tuple[set[int], set[int]]:
 def build_document(texts, payload: dict | None) -> PhraseDocument:
     """Map each text's breaks onto the joined content string (segment joins are strong breaks)."""
     rows = (payload or {}).get("results") or []
-    content, allowed, strong = [], set(), set()
+    content, allowed, strong, words = [], set(), set(), set()
     measured = heuristic = 0
     base = 0
     for index, text in enumerate(texts):
@@ -264,14 +283,16 @@ def build_document(texts, payload: dict | None) -> PhraseDocument:
         spans = word_spans(text, row.get("words") or []) if row and row.get("text") == text else None
         if spans:
             text_allowed, text_strong = bunsetsu_breaks(text, spans)
+            text_words = {start for start, _end, _word, tag in spans if tag != "空白"} | text_allowed
             measured += 1
         else:
             text_allowed, text_strong = _heuristic_breaks(text)
+            text_words = set(text_allowed)
             heuristic += 1
         positions = content_positions(text)
         to_content = {position: rank for rank, position in enumerate(positions)}
         # A break between two content characters, wherever spaces/punctuation sit.
-        for offsets, target in ((text_allowed, allowed), (text_strong, strong)):
+        for offsets, target in ((text_allowed, allowed), (text_strong, strong), (text_words, words)):
             for offset in offsets:
                 following = next((p for p in positions if p >= offset), None)
                 if following is not None and to_content[following] > 0:
@@ -279,15 +300,42 @@ def build_document(texts, payload: dict | None) -> PhraseDocument:
         if base:
             allowed.add(base)
             strong.add(base)
+            words.add(base)
         content.append("".join(text[p] for p in positions))
         base += len(positions)
     return PhraseDocument("".join(content), frozenset(allowed), frozenset(strong), measured, heuristic,
-                          f"nagisa {(payload or {}).get('tagger_version', '')}".strip() if measured else "")
+                          f"nagisa {(payload or {}).get('tagger_version', '')}".strip() if measured else "",
+                          frozenset(words))
 
 
 def install(document: PhraseDocument | None) -> None:
     from twobyteasr.recognition.run_context import get_runtime_context
     get_runtime_context().japanese_phrases = document
+
+
+def prepare_task_document(texts, record_event, *, scope: str = "task") -> PhraseDocument:
+    """Tag ``texts``, install the document on the running context and record it.
+
+    2026-11-25: shared by the normal pipeline and every long-material shard.
+    The shards used to start with ``japanese_phrases=None`` and never tag, so
+    each request offered every character gap as a phrase boundary. A tagger
+    failure is recorded and the script-class heuristic is used (never every gap).
+    """
+    texts = [str(text) for text in texts]
+    try:
+        tagged = tag_texts(texts)
+    except Exception as error:
+        tagged = None
+        record_event("japanese_morphology_unavailable", error=str(error)[:300], scope=scope)
+        print(f"   [日语断句] 分词不可用，改用文字类别近似规则：{str(error)[:120]}")
+    document = build_document(texts, tagged)
+    install(document)
+    record_event("japanese_morphology", **document.receipt(), elapsed_ms=(tagged or {}).get("elapsed_ms"),
+                 scope=scope)
+    if tagged:
+        print(f"   [日语断句] nagisa 文节（{scope}）：{document.measured_segments}/{len(texts)} 段，"
+              f"{len(document.allowed)} 个可断点，其中 {len(document.strong)} 个强断点。")
+    return document
 
 
 _SCOPE = threading.local()
@@ -346,7 +394,9 @@ def _content_breaks(text: str, attribute: str) -> tuple[list[int], set[int]] | N
     places = _locate(content, document)
     if not places:
         return None
-    marks = getattr(document, attribute)
+    marks = getattr(document, attribute, None)
+    if marks is None:
+        return None
     # A repeated line must agree everywhere it occurs before a cut is allowed.
     breaks = {k for k in range(1, len(content)) if all(place + k in marks for place in places)}
     return positions, breaks
@@ -364,6 +414,12 @@ def document_phrase_spans(text: str) -> list[tuple[int, int, str]] | None:
         start, end = positions[left], positions[right - 1] + 1
         spans.append((start, end, text[start:end]))
     return spans
+
+
+def document_word_edges(text: str) -> set[int] | None:
+    """Word-start offsets on the content of ``text`` (content indices), or None."""
+    located = _content_breaks(text, "word_edges")
+    return None if located is None else located[1]
 
 
 def document_strong_breaks(text: str) -> set[int] | None:

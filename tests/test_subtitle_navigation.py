@@ -168,10 +168,14 @@ def test_double_click_keeps_first_clicked_caption_after_center_scroll(timeline,l
     rect=timeline._track_layout()[1] if layer=='translation' else timeline._track_layout()[0]['S0']
     y=round(rect.center().y())
     pos=QPoint(round(timeline._time_to_x(11000)),y)
+    requests = []
+    timeline.cue_start_requested.connect(requests.append)
     QTest.mouseClick(timeline,Qt.LeftButton,Qt.NoModifier,pos)
     QTest.mouseDClick(timeline,Qt.LeftButton,Qt.NoModifier,pos)
-    assert timeline._inline_target==('a',layer=='translation')
-    timeline._cancel_inline_edit()
+    assert requests == ['a']
+    assert timeline.active_subtitle_layer == layer
+    assert timeline._inline_editor is None
+    assert timeline.visible_duration_ms == 10000
 
 
 def test_manual_identity_is_retained_by_clock_even_with_center_mode_disabled(timeline):

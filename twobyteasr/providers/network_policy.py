@@ -1,7 +1,7 @@
 """Application HTTP CA resolution and credential-free transport diagnostics.
 
-No global patch, trust downgrade, retry, or certificate installation. Explicit
-CA environment values take precedence over the packaged certifi bundle.
+Explicit CA environment values take precedence over the packaged certifi
+bundle. Windows system trust can supplement certifi after a verification error.
 """
 from __future__ import annotations
 
@@ -82,7 +82,59 @@ def snapshot():
         meipass=str(getattr(sys, '_MEIPASS', '')), cwd=os.getcwd(), certifi_module=certifi.__file__, ca=ca,
         proxy={k: public_url(v) if k != 'no' else '[configured]' for k,v in proxies.items()},
         ca_environment={k:os.environ.get(k) for k in ('SSL_CERT_FILE','SSL_CERT_DIR','REQUESTS_CA_BUNDLE','CURL_CA_BUNDLE')},
-        policy='explicit CA > packaged certifi; hostname and chain verification required')
+        policy='explicit CA > packaged certifi > Windows trust fallback; hostname and chain verification required')
+
+
+def system_trust_bundle():
+    """certifi plus the Windows ROOT/CA stores as one PEM file, or None.
+
+    2026-11-25 (真拳伝説 03, MOSS poll): a Windows machine whose network
+    inspects HTTPS (antivirus, company proxy) trusts that root in the system
+    store, which the packaged certifi bundle does not contain. Verification
+    stays on: the chain and host name are still checked, only against the CAs
+    this Windows installation trusts as well.
+    """
+    if sys.platform != 'win32' or not hasattr(ssl, 'enum_certificates'):
+        return None
+    pems = []
+    seen = set()
+    for store in ('ROOT', 'CA'):
+        try:
+            entries = ssl.enum_certificates(store)
+        except OSError:
+            continue
+        for der, encoding, trust in entries:
+            if encoding != 'x509_asn' or der in seen:
+                continue
+            # trust is True (all purposes) or a set of OIDs; keep server-auth roots.
+            if trust is not True and '1.3.6.1.5.5.7.3.1' not in trust:
+                continue
+            seen.add(der)
+            pems.append(ssl.DER_cert_to_PEM_cert(der))
+    if not pems:
+        return None
+    base_path, _ = ca_bundle()
+    base = Path(base_path).read_bytes()
+    payload = base.rstrip() + b'\n' + ''.join(pems).encode('ascii')
+    digest = hashlib.sha256(payload).hexdigest()
+    try:
+        from ..runtime_paths import user_data_root
+        folder = user_data_root() / 'cache' / 'tls'
+    except Exception:
+        import tempfile
+        folder = Path(tempfile.gettempdir()) / '2ByteASR-tls'
+    target = folder / f'ca-bundle-system-{digest}.pem'
+    if target.is_file() and target.read_bytes() == payload:
+        return str(target)
+    folder.mkdir(parents=True, exist_ok=True)
+    temporary = folder / f'.ca-bundle-{uuid.uuid4().hex}.tmp'
+    try:
+        with temporary.open('xb') as stream:
+            stream.write(payload)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return str(target)
 
 
 def request(method, url, **kwargs):
@@ -91,10 +143,23 @@ def request(method, url, **kwargs):
     path, source = ca_bundle()
     if kwargs.get('verify') is False:
         raise NetworkTrustError('应用请求必须验证 HTTPS 证书。', category='tls_configuration')
+    explicit_verify = 'verify' in kwargs
     kwargs.setdefault('verify', path)
     try:
         return getattr(requests, method.lower())(url, **kwargs)
     except requests.exceptions.SSLError as exc:
+        if source == 'certifi' and not explicit_verify and 'certificate' in str(exc).lower():
+            # Same verification against certifi + this computer's trusted roots.
+            try:
+                merged = system_trust_bundle()
+            except OSError:
+                merged = None
+            if merged:
+                kwargs['verify'] = merged
+                try:
+                    return getattr(requests, method.lower())(url, **kwargs)
+                except requests.exceptions.SSLError as second:
+                    exc = second
         diagnostics = snapshot()
         diagnostics.update(request_id=request_id, target=public_url(url), stage='tls_handshake',
                            client='requests', detail=redact_diagnostics(str(exc)))

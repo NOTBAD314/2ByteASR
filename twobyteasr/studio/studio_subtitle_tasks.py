@@ -18,9 +18,22 @@ class StudioSubtitleTaskMixin:
             self._subtitle_tasks_timer.setInterval(500)
             self._subtitle_tasks_timer.timeout.connect(self._refresh_subtitle_task_entry)
             self._subtitle_tasks_timer.start()
+            self.undo_stack.indexChanged.connect(self._refresh_reasr_adoptions)
         return task
 
+    def _refresh_reasr_adoptions(self, _index):
+        from .studio_reasr_batch import reconcile_adoption_rows
+
+        for task in getattr(self, '_subtitle_tasks', {}).values():
+            if task.project is self.project and getattr(task, 'adopted_commands', None):
+                reconcile_adoption_rows(self, task)
+
     def _refresh_subtitle_task_entry(self):
+        preview_project = getattr(self, "_reasr_preview_project", None)
+        if preview_project is not None and preview_project is not self.project:
+            from .studio_reasr_batch import stop_preview
+
+            stop_preview(self)
         button = getattr(self, 'subtitle_tasks_button', None)
         if button is None:
             return
@@ -94,6 +107,10 @@ class StudioSubtitleTaskMixin:
             panel = SubtitleTaskPanel(self)
             panel.locate.connect(self._locate_subtitle_task_range)
             panel.retry.connect(self._retry_subtitle_task_range)
+            from .studio_reasr_batch import adopt_suggestion, audition, stop_preview
+            panel.adopt.connect(lambda payload: adopt_suggestion(self, payload))
+            panel.audition.connect(lambda payload: audition(self, payload))
+            panel.preview_dismissed.connect(lambda: stop_preview(self))
             panel.cancel.connect(self._cancel_subtitle_task)
             self._subtitle_tasks_dialog = panel
         return panel
@@ -110,7 +127,7 @@ class StudioSubtitleTaskMixin:
                 task.started -= max(0., float(state.get('elapsed_seconds', 0)))
                 for row in rows:
                     task.update(dict(row))
-                task.finish(cancelled=state.get('last_status') == 'cancelled')
+                task.finish(cancelled=state.get('last_status') == 'cancelled', record_history=False)
         import time
         self._subtitle_tasks_seen = time.monotonic()
         self._refresh_subtitle_task_entry()
@@ -153,6 +170,9 @@ class StudioSubtitleTaskMixin:
                 self._seek(int(row.get('start_ms') or 0) / 1000.)
             if getattr(task, 'result', None) is not None:
                 self._show_reasr_result(task.result)
+            if task.kind == '批量重新识别':
+                from .studio_reasr_batch import open_suggestion
+                open_suggestion(self, task, cue_id)
 
     def _retry_subtitle_task_range(self, payload):
         task = getattr(self, '_subtitle_tasks', {}).get(payload['task_id'])
@@ -162,11 +182,14 @@ class StudioSubtitleTaskMixin:
         if task.kind == 'AI 断句':
             self.run_sentence_refine(whole_project=False, retry_ids=ids)
         elif task.kind == '单条重新识别' and ids:
-            self._reasr_current(cue_id=ids[0])
+            self._reasr_current(cue_id=ids[0], retry=True)
+        elif task.kind == '批量重新识别' and ids:
+            from .studio_reasr_batch import start
+            start(self, ids, voice_mode=getattr(task, "voice_mode", "off"), retry=True)
         elif task.kind == '字词对齐':
             self._subtitle_task_panel().hide()
             from .studio_realign import start_realign
-            start_realign(self,ids)
+            start_realign(self, ids, enhance_voice=getattr(task, "enhance_voice", False), retry=True)
         elif task.kind == '工程重新识别':
             self._subtitle_task_panel().hide()
             self._open_recognition_sheet()

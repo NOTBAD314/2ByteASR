@@ -55,9 +55,11 @@ def bind(context,texts,*,asr_detected=None):
 
 def metadata(context):
     if not context.language_decision:initialise(context)
+    from .language_guard import settings_policy
     return dict(code=context.task_language or context.language_decision.get('adopted_language'),
         requested=context.requested_language,mode=context.language_mode,decision=copy.deepcopy(context.language_decision),
-        evidence=copy.deepcopy(context.language_evidence))
+        evidence=copy.deepcopy(context.language_evidence),
+        guard=settings_policy(context.asr_settings_snapshot, context.requested_language))
 
 
 def validate_rows(payload,audio_seconds):

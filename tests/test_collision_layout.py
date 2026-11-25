@@ -33,6 +33,41 @@ def pixel_bounds(s):
     return image_bounds(render_live_snapshot(s, width=s.playres_x, height=s.playres_y))
 
 
+def test_time_sliced_continuity_produces_the_same_lease_positions():
+    from twobyteasr.caption_style.continuity_layout import ContinuityLayout
+
+    p = project(count=6)
+    source = {cue.id: (snapshot,) for cue, snapshot in zip(p.cues, snapshots(p))}
+    build = lambda cue: source[cue.id]
+    expected = ContinuityLayout(p.cues, build).advance(600)
+    planner = ContinuityLayout(p.cues, build)
+    for cursor in range(1, len(p.cues) + 1):
+        planner.advance(600, work_ms=0)
+        assert planner.cursor == cursor
+        assert planner.ready_through(600) is (cursor == len(p.cues))
+    assert planner.offsets == expected
+
+
+def test_detached_collision_indexes_match_the_live_timeline():
+    from twobyteasr.caption_style.collision_layout import _detached_component_index, prepare_component_index
+    from twobyteasr.projects.studio_revisions import StudioRevisionStore
+
+    p = project(count=6)
+    p.render_settings["_cue_domain"] = "timeline"
+    p.cues[0].transform["display_break"] = True
+    p.cues[2].transform["hidden"] = True
+    p.speakers[4].hidden = True
+    p.studio_state["caption_timeline"] = {
+        "instances": {"b": {"manual_timing": True}, "d": {"source_clip_id": "clip"}}
+    }
+    revision = StudioRevisionStore(p).render
+    expected = prepare_component_index(p, revision)
+    detached = _detached_component_index(revision)
+    shape = lambda index: {key: [(cue.id, cue.start_ms, cue.end_ms, cue.continuity_break)
+                                 for cue in cluster] for key, cluster in index.items()}
+    assert shape(detached) == shape(expected)
+
+
 def test_thick_strokes_have_real_visible_gap_and_do_not_edit_project():
     p = project()
     p.cues[1].appearance_override = {'outline_color': '#FFFF7900'}

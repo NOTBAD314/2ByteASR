@@ -63,9 +63,12 @@ def _plain_json(value) -> bool:
 
 
 FrozenJSON = None | bool | int | float | str | tuple["FrozenJSON", ...] | FrozenMap | FrozenBlob
+_EMPTY_FROZEN_MAP = FrozenMap()
 
 
 def freeze_json(value: Any) -> FrozenJSON:
+    if type(value) is dict and not value:
+        return _EMPTY_FROZEN_MAP
     if isinstance(value, Mapping):
         return FrozenMap(tuple(
             (str(key), freeze_json(item))
@@ -871,6 +874,8 @@ class StudioRevisionStore:
             import marshal
             presentation = {}
             def freeze_presentation(value):
+                if type(value) is dict and not value:
+                    return _EMPTY_FROZEN_MAP
                 try:key = marshal.dumps(value, 2)
                 except (TypeError, ValueError):return freeze_json(value)
                 if key not in presentation:presentation[key] = freeze_json(value)

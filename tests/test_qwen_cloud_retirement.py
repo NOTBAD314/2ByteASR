@@ -24,8 +24,11 @@ def test_exact_legacy_short_migration_keeps_roles_workspace_oss_and_is_idempoten
     models=result["models"]
     assert (models["qwen_asr_api_provider"], models["qwen_asr_api_protocol"], models["qwen_asr_api_model"]) == ("qwen31_filetrans", "dashscope_filetrans", LATEST)
     assert models["qwen_asr_api_url"]==HOST+PATH
-    for key in ("primary_asr_backend","qwen_asr_backend","qwen_asr_model","firered_asr_backend","oss_bucket","oss_prefix","speaker_source"):
+    for key in ("primary_asr_backend","qwen_asr_backend","qwen_asr_model","firered_asr_backend","oss_bucket","oss_prefix"):
         assert models[key]==original["models"][key]
+    # Speaker labels come from the primary. A retired cloud preference for
+    # the independent MOSS stage must not override the ASR role on migration.
+    assert models['speaker_source'] == ('moss' if primary == 'moss' else 'native')
     assert any("cloud ASR dashscope migrated" in w for w in warnings)
     assert not any("cloud ASR dashscope migrated" in w for w in second)
 
@@ -69,7 +72,7 @@ def test_factory_endpoint_and_catalog_only_offer_latest_cloud_qwen(monkeypatch):
     from twobyteasr.local_models.model_benchmarks import reference_api_model
     assert reference_api_model(LATEST,"accuracy","zh") is None
 
-@pytest.mark.parametrize("model",["qwen3-asr-flash","qwen3-asr-flash-legacy-date","qwen-audio-3.0-asr-flash","qwen-audio-3.1-asr-flash"])
+@pytest.mark.parametrize("model",["qwen3-asr-flash","qwen3-asr-flash-legacy-date"])
 def test_old_short_model_cannot_be_reintroduced_through_custom_provider(model):
     with pytest.raises(RuntimeError,match="Filetrans|长音频"):
         llm_config.validate_qwen_asr_endpoint(dict(provider="custom",protocol="openai_transcription",model=model,url="https://fixture.invalid/asr",api_key="fixture"))

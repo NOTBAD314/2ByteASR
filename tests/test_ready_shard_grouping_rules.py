@@ -2,12 +2,14 @@ from types import SimpleNamespace
 import json
 
 import subtitle_core as core
+from twobyteasr.recognition.run_context import RuntimeContext
 from twobyteasr.recognition.streaming_recognition import LongMediaPipeline, ShardResult
 from twobyteasr.recognition.vad import ALGORITHM
 
 
 def pipeline():
     instance = LongMediaPipeline.__new__(LongMediaPipeline)
+    instance.context = RuntimeContext(requested_language='zh')
     instance.legacy = SimpleNamespace(
         GROUP_LOGIC_VERSION=core.GROUP_LOGIC_VERSION,
         serialize_cues=core.serialize_cues,

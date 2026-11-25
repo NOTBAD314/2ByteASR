@@ -8,7 +8,7 @@ import subtitle_core  # noqa: F401  (legacy core first: segmentation star-import
 
 from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
 from twobyteasr.recognition import asr, timing_evidence
-from twobyteasr.recognition.cue_forced_alignment import (CUE_ALIGNMENT_PREFIX, align_final_cues,
+from twobyteasr.recognition.cue_forced_alignment import (CUE_ALIGNMENT_PREFIX, align_final_cues, split_run_row,
                                                          attach_project_evidence, chinese_final_alignment)
 from twobyteasr.recognition.cue_word_alignment import cue_words
 
@@ -26,11 +26,32 @@ def _piece(a, b, start, end):
             "start_basis": "model", "end_basis": "model"}
 
 
+def _adjacent_source_captions():
+    first, second = "看开头这个路面", "画面很好看"
+    return [SimpleNamespace(start=10.0, end=12.0, speaker="S01", text=first,
+                            source_spans=[dict(source_id="shared-take", char_start=0, char_end=len(first),
+                                               raw_text=first, source_time=[10.0, 12.0])]),
+            SimpleNamespace(start=12.0, end=13.5, speaker="S01", text=second,
+                            source_spans=[dict(source_id="shared-take", char_start=len(first),
+                                               char_end=len(first + second), raw_text=second,
+                                               source_time=[12.0, 13.5])])]
+
+
+def test_legacy_word_piece_cannot_claim_pcm_outside_its_job():
+    run = dict(window_start_ms=12000, window_end_ms=13500,
+               members=[dict(start_ms=12000, end_ms=13500)], spans=[(0, 5)])
+    row = dict(text="画面很好看", segments=[_piece(0, 2, 10100, 10600), _piece(2, 5, 12600, 13400)])
+    part, = split_run_row(row, run)
+    assert part["segments"] == [_piece(2, 5, 12600, 13400)]
+    row["actual_measurement_range_ms"] = [12700, 13400]
+    part, = split_run_row(row, run)
+    assert not part["segments"]
+
+
 @pytest.fixture
 def aligned(monkeypatch, tmp_path):
     """Two adjacent captions of one speaker, aligned by a stand-in MFA worker."""
-    cues = [SimpleNamespace(start=10.0, end=12.0, speaker="S01", text="看开头这个路面"),
-            SimpleNamespace(start=12.0, end=13.5, speaker="S01", text="画面很好看")]
+    cues = _adjacent_source_captions()
     jobs_seen, events = [], []
 
     def worker(audio, jobs, engine=None):
@@ -77,8 +98,7 @@ def test_second_opinion_runs_beside_the_first_aligner(monkeypatch, tmp_path):
     # 2026-10-22: Qwen3 checked MFA's cuts only after MFA finished (22 s of a 491 s task).
     import threading
     from twobyteasr.recognition import cue_forced_alignment, mfa_aligner
-    cues = [SimpleNamespace(start=10.0, end=12.0, speaker="S01", text="看开头这个路面"),
-            SimpleNamespace(start=12.0, end=13.5, speaker="S01", text="画面很好看")]
+    cues = _adjacent_source_captions()
     second_started, events = threading.Event(), []
 
     def worker(audio, jobs, engine=None):

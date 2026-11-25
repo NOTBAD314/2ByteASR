@@ -196,6 +196,25 @@ def test_required_roles_depend_on_configuration():
     ) == ["main", "moss", "firered_llm"]
 
 
+def test_haas_native_does_not_require_torch_unless_a_selected_role_uses_it(monkeypatch):
+    from twobyteasr.system import hardware
+
+    models = dict(primary_asr_backend='haas_ja', firered_asr_backend='haas_native',
+                  qwen_asr_backend='off')
+    settings = {'models': models}
+    monkeypatch.setattr(hardware, 'ready_torch_probe',
+                        lambda: pytest.fail('Native CrispASR does not need the managed Torch probe'))
+    assert env_module.required_environment_roles(settings) == []
+    assert hardware.require_local_torch_runtime(settings) is None
+    assert env_module.required_environment_roles({
+        'models': dict(models, haas_diarization=True)}) == ['main']
+    assert env_module.required_environment_roles({
+        'models': dict(models, firered_asr_backend='qwen_ultra_aligner')}) == ['main']
+    assert env_module.required_environment_roles({
+        'models': dict(models, primary_asr_backend='api', firered_asr_backend='off',
+                       qwen_asr_backend='haas_ja')}) == []
+
+
 def test_human_message_is_structured():
     result = env_module.PreflightResult(
         role="moss", ok=False,

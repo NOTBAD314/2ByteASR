@@ -1322,7 +1322,7 @@ class SubtitleStudioPage(
             "review_adopt_2": lambda: self._adopt_review_candidate(1),
             "review_adopt_3": lambda: self._adopt_review_candidate(2),
             "review_adopt_4": lambda: self._adopt_review_candidate(3),
-            "review_flip_pronoun": self._flip_review_pronouns,
+            "review_cycle_pronoun": self._flip_review_pronouns,
             "adopt_suggestion": self._adopt_highlighted_suggestion,
         }
         # 2026-10-17: jump, zoom, nudge, export, panels... (one module, same registry).
@@ -1552,14 +1552,10 @@ class SubtitleStudioPage(
                 and not getattr(self, '_caption_following', False)
                 and event_type in {QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress}
                 and isinstance(event, QKeyEvent)
-                and (event.key() == Qt.Key_Escape and event.modifiers() == Qt.NoModifier
-                     or event.key() == Qt.Key_F and event.modifiers() == Qt.ShiftModifier)
+                and event.key() == Qt.Key_Escape and event.modifiers() == Qt.NoModifier
                 and not isinstance(watched, (QLineEdit, QPlainTextEdit, QAbstractSpinBox))):
             if event_type == QEvent.Type.KeyPress and not event.isAutoRepeat():
-                if event.key() == Qt.Key_Escape:
-                    self._exit_review()
-                else:
-                    self._cycle_review_pronoun()
+                self._exit_review()
             event.accept()
             return True
         if canvas_editor is not None and watched is canvas_editor:
@@ -2295,7 +2291,7 @@ class SubtitleStudioPage(
         if self.project is None:
             return
         messages = {
-            "studio": "Space：播放 / 暂停    Q / W：播放头处（或最近）字幕的起点 / 终点移到播放头；选中视频片段时为视频波纹剪切    双击时间轴字幕：直接编辑",
+            "studio": "Space：播放 / 暂停    Q / W：设置字幕入点 / 出点；选中视频片段时为波纹剪切    双击时间轴字幕：定位句首",
             "razor": "C：剃刀（移动鼠标看切分预览，点击切开，Esc 取消）    V：返回选择",
             "priority_review": "Enter：确认并继续    Space：重听    Ctrl+Shift+R：重新识别    E：编辑",
         }
@@ -2623,11 +2619,11 @@ class SubtitleStudioPage(
     def _studio_speaker_name(self, speaker_id: str) -> str:
         return _speaker_name(self.project, speaker_id)
 
-    def _schedule_render_refresh(self, cue_id: str = "") -> None:
-        """Single render entry shared by every Studio mutation path."""
+    def _schedule_render_refresh(self, cue_id: str = "") -> bool:
+        """Queue preview refresh and report whether a caption scene was requested."""
         if getattr(self,'_review_fast_select',False):
             self._preview_timer.start()
-            return
+            return False
         if cue_id and cue_id == self.selected_cue_id:
             cue = self._cue_lookup.get(cue_id)
             if cue is not None and hasattr(self, "position_overlay"):
@@ -2640,6 +2636,7 @@ class SubtitleStudioPage(
         # reload alone cannot refresh their paused pixels. Request this revision
         # now; the existing cache-ready signal publishes the completed scene.
         self._present_caption_scene()
+        return True
 
     def _flush_deferred_updates(self) -> None:
         if not self.project:
@@ -3495,13 +3492,27 @@ class SubtitleStudioPage(
             targets = self.selected_cue_ids() or ([self.selected_cue_id] if self.selected_cue_id else [])
             menu.addAction(_icon("fa5s.ruler-horizontal"), tr("重新对齐字词时间（{count} 条）", count=len(targets)),
                            lambda ids=list(targets): start_realign(self, ids))
+            from ..media.vocal_enhancement import assets_present
+            if targets and assets_present():
+                menu.addAction(tr("增强人声后重新对齐字词"),
+                               lambda ids=list(targets): start_realign(self, ids, enhance_voice=True))
         if self.project is not None and project_language(self.project) == "ja":
             from .studio_cut_refine import start_snap_cuts
             menu.addAction(_icon("fa5s.cut"), tr("按停顿校正日语切点（整个工程）"),
                            lambda: start_snap_cuts(self, None))
         loop_menu = menu.addMenu("当前字幕试听")
-        loop_menu.addAction("播放一次", lambda: self._seek((cue_by_id(self.project, self.selected_cue_id).start_ms - 250) / 1000.0) if self.project and self.selected_cue_id else None)
-        loop_menu.addAction("循环播放", self._toggle_loop_current)
+        for label, mode in (("整句", "full"), ("句首", "head"), ("句尾", "tail"), ("循环", "loop")):
+            loop_menu.addAction(tr(label), lambda selected=mode: self._audition_selected_cue(selected))
+        from .studio_audition_settings import show as show_audition_settings
+        loop_menu.addSeparator()
+        loop_menu.addAction(tr("试听设置…"), lambda: show_audition_settings(self))
+        insert_menu = menu.addMenu(tr("插入字幕"))
+        for label, mode in (("当前字幕之前", "before"), ("当前字幕之后", "after"), ("入点与出点之间", "range")):
+            insert_menu.addAction(tr(label), lambda selected=mode: self.cue_controller.insert_relative(selected))
+        from .studio_exact_timing import show as show_exact_timing
+        menu.addAction(tr("精确字幕时间…"), lambda: show_exact_timing(self))
+        from .studio_batch_timing import show as show_batch_timing
+        menu.addAction(tr("批量调整字幕时间…"), lambda: show_batch_timing(self))
         selected_ids = self.selected_cue_ids()
         offset_menu = menu.addMenu("整体偏移")
         for delta in (-100, -50, 50, 100):

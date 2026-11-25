@@ -135,10 +135,21 @@ def cmd_install(args) -> None:
     removed = sorted(set(before) - set(after))
     changed = sorted(k for k in set(before) & set(after) if before[k]["size"] != after[k]["size"]
                      or before[k]["sha256"] != after[k]["sha256"])
-    version = json.loads((paths["install"] / "2byteasr_version.json").read_text("utf-8-sig")).get("version")
+    version = None
+    version_error = None
+    try:
+        version_data = json.loads((paths["install"] / "2byteasr_version.json").read_text("utf-8-sig"))
+        version = version_data.get("version") if isinstance(version_data, dict) else None
+        if not isinstance(version, str) or not version:
+            version_error = "missing_installed_version"
+    except FileNotFoundError:
+        version_error = "missing_installed_version"
+    except (UnicodeError, ValueError):
+        version_error = "invalid_installed_version"
     shortcut = paths["shortcuts"] / "2ByteASR.lnk"
     record = {"label": args.label, "setup": str(setup), "setup_sha256": sha(setup), "exit_code": code,
-              "seconds": elapsed, "installed_version": version, "files": len(after), "added": len(added),
+              "seconds": elapsed, "installed_version": version, "version_error": version_error,
+              "files": len(after), "added": len(added),
               "removed": len(removed), "changed": len(changed), "removed_paths": removed[:200],
               "audit_registry": registry_entry(AUDIT_KEY), "real_registry_unchanged": registry_entry(REAL_KEY) == real_before,
               "shortcut": shortcut_target(shortcut) if shortcut.exists() else None,
@@ -146,7 +157,7 @@ def cmd_install(args) -> None:
               "finished": datetime.now(timezone.utc).isoformat()}
     write(paths, f"install-{args.label}.json", {**record, "manifest": after})
     print(json.dumps(record, ensure_ascii=False, indent=1)[:4000])
-    if code != 0 or (args.expect_version and version != args.expect_version):
+    if code != 0 or version_error or (args.expect_version and version != args.expect_version):
         raise SystemExit(1)
 
 

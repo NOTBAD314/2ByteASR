@@ -34,6 +34,29 @@ def actor_fixture(monkeypatch):
     return actor
 
 
+def test_subscribe_all_observers_in_one_write_and_wait_for_every_ack(monkeypatch):
+    actor = actor_fixture(monkeypatch)
+    actor.OBSERVED_PROPERTIES = ('path', 'pause', 'time-pos')
+    writes, events = [], []
+    actor._pipe = SimpleNamespace(write=writes.append)
+    actor._handle_event = events.append
+    event = {'event': 'property-change', 'name': 'path', 'data': 'test.mp4'}
+    responses = iter((event, {'request_id': 3, 'error': 'success'},
+                      {'request_id': 1, 'error': 'success'}, {'request_id': 2, 'error': 'success'}))
+    actor._readline_with_timeout = lambda *args, **kwargs: json.dumps(next(responses)).encode()
+
+    actor._subscribe_properties(mpv.time.monotonic() + 1)
+    assert len(writes) == 1
+    requests = [json.loads(line) for line in writes[0].splitlines()]
+    assert [row['request_id'] for row in requests] == [1, 2, 3]
+    assert [row['command'] for row in requests] == [
+        ['observe_property', 1, 'path'], ['observe_property', 2, 'pause'],
+        ['observe_property', 3, 'time-pos'],
+    ]
+    assert events == [event]
+    assert next(responses, None) is None
+
+
 def test_each_request_has_independent_receipt_and_real_zero_is_distinct(monkeypatch):
     actor = actor_fixture(monkeypatch)
     first = actor.exchange(['overlay-add', 0])['_ipc_poll_receipt']

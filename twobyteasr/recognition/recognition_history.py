@@ -1869,6 +1869,18 @@ class RecognitionHistoryDetail(QWidget):
         meta.setObjectName("historyMuted")
         meta.setWordWrap(True)
         title_box.addWidget(meta)
+        committed = _dict(result.get("outputs")).get("result_ref_json")
+        if isinstance(committed, str) and len(committed) <= 16384:
+            try:
+                project_id = _dict(json.loads(committed)).get("project_id")
+            except ValueError:
+                project_id = None
+            if isinstance(project_id, str) and project_id:
+                from ..app.project_stage_summary import ProjectStageSummary
+
+                self.project_stages = ProjectStageSummary(self)
+                self.project_stages.set_project(project_id)
+                title_box.addWidget(self.project_stages)
         header.addLayout(title_box, 1)
         self.raw_button = QPushButton()
         bind_text(self.raw_button, "原始 JSON")
@@ -1888,6 +1900,43 @@ class RecognitionHistoryDetail(QWidget):
             close.clicked.connect(self.close_requested)
             header.addWidget(close, 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(header)
+
+        media_index = str(task.get('media_index', 1))
+        guard = _dict(_dict(task.get('language_guard')).get(media_index))
+        requests = _dict(_dict(task.get('language_requests')).get(media_index)) or _dict(task.get('remote_requests'))
+        latest_requests = list(requests.values())
+        if not guard or not latest_requests:
+            events = record.payload.get('events') or []
+            relevant = [row for row in events if isinstance(row, dict)] if isinstance(events, list) else []
+            guard = guard or next((row for row in reversed(relevant) if row.get('event') == 'language_guard_summary'), {})
+            latest_requests = latest_requests or [row for row in relevant if row.get('event') == 'asr_language_request']
+        receipts = {}
+        for request in latest_requests:
+            parameters = _dict(_dict(request).get('parameters'))
+            selected = {key: parameters[key] for key in ('language', 'language_hints',
+                        'speaker_diarization_enabled', 'diarization_enabled', 'keep_dialect') if key in parameters}
+            if selected:
+                signature = json.dumps(selected, ensure_ascii=False, sort_keys=True)
+                receipts[signature] = receipts.get(signature, False) or bool(request.get('conflict'))
+        if guard or receipts:
+            lines = []
+            if guard:
+                lines.append(str(tr('请求语言 {language} · 异常 {anomalies} · 修复 {repaired} · 待确认 {pending}',
+                    language=guard.get('requested_language', ''), anomalies=guard.get('anomalies', 0),
+                    repaired=guard.get('repaired', 0), pending=guard.get('pending', 0))))
+                lines.append(str(tr('重新识别 {count} 次 · 音频 {seconds} 秒',
+                    count=guard.get('requests', 0), seconds=guard.get('audio_seconds', 0))))
+                if guard.get('repaired_by'):
+                    lines.append(str(tr('修复来源 {sources}', sources=' · '.join(
+                        f'{source} ({count})' for source, count in _dict(guard['repaired_by']).items()))))
+            for signature, has_conflict in list(receipts.items())[:4]:
+                lines.append(signature + (' · ' + str(tr('检测到原生分轨语言冲突')) if has_conflict else ''))
+            language_receipt = QLabel('\n'.join(lines))
+            language_receipt.setObjectName('historyMuted')
+            language_receipt.setTextFormat(Qt.TextFormat.PlainText)
+            language_receipt.setWordWrap(True)
+            language_receipt.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            layout.addWidget(language_receipt)
 
         columns = QHBoxLayout()
         columns.setSpacing(20)
@@ -2584,6 +2633,7 @@ class RecognitionHistoryPage(QWidget):
     diagnose_requested = Signal(object)
     resume_requested = Signal(object)
     partial_requested = Signal(object)
+    online_requested = Signal()
     # (generation, payload) from the background report reader.
     _parsed = Signal(int, object)
     _repaired = Signal(object)
@@ -2821,6 +2871,11 @@ class RecognitionHistoryPage(QWidget):
         self.search.setMaximumWidth(340)
         self.search.textChanged.connect(self._search_changed)
         header.addWidget(self.search, 1)
+        online = QPushButton()
+        online.setObjectName("historyOnlineDownloads")
+        bind_text(online, "在线下载记录")
+        online.clicked.connect(self.online_requested)
+        header.addWidget(online)
         self.repair_button = QPushButton(translate("修复索引", language))
         self.repair_button.setObjectName("historyToolButton")
         self.repair_button.setIcon(qta.icon("fa5s.database", color=MUTED))

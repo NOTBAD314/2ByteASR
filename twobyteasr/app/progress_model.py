@@ -98,6 +98,8 @@ CLOUD_JOB_STATES = {
     "PENDING": "排队中",
     # MOSI already has as many requests as it takes at once (HTTP 429); asked again shortly.
     "waiting_for_slot": "排队中",
+    # 2026-11-25: a dropped connection while polling an accepted task is retried.
+    "network_retry": "网络中断，重新查询原任务",
     "RUNNING": "云端识别中",
     "PROCESSING": "云端识别中",
     "SUCCEEDED": "正在取回结果",

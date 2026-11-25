@@ -95,6 +95,7 @@ def spread_collapsed_runs(units, segment):
 
 def segment_content_timeline(segment, firered_tokens=()):
     """用 FireRed 的可信字级锚点重切段内边界；始终保留 MOSS 外边界与正文。"""
+    from ..recognition.cache import record_run_event
     if str(getattr(segment,'primary_source','')).startswith('vibevoice_'):
         if content_only(''.join(w.text for w in segment.words))!=content_only(segment.text):return []
         return [WordUnit(w.start,w.end,char,w.probability) for w in segment.words for char in content_only(w.text)]

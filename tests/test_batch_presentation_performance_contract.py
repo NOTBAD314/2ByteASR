@@ -64,7 +64,7 @@ from tests.test_style_effective_selection import page
 
 def test_style_revision_reuses_state_but_metadata_edit_recaptures(monkeypatch):
     from tests.test_studio_state_freeze_sharing import _project
-    from twobyteasr.projects.studio_revisions import StudioRevisionStore,freeze_json
+    from twobyteasr.projects.studio_revisions import StudioRevisionStore,freeze_json,thaw_json
     from twobyteasr.projects.studio_runtime_state import state_for,DirtyDomain as D
     project=_project(100)
     store=StudioRevisionStore(project)
@@ -75,7 +75,8 @@ def test_style_revision_reuses_state_but_metadata_edit_recaptures(monkeypatch):
     assert store.render.studio_state is old
     with state.transaction(project,action_id='metadata',dirty=D.PROJECT_METADATA):
         project.studio_state['manual_caption_text']['c3']='改过'
-    assert store.render.studio_state==freeze_json(project.studio_state)
+    assert thaw_json(store.render.studio_state) == thaw_json(freeze_json(project.studio_state))
+    assert thaw_json(store.render.studio_state)['manual_caption_text']['c3'] == '改过'
     assert store.render.studio_state is not old
 
 

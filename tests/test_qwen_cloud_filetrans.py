@@ -144,7 +144,9 @@ def test_filetrans_submits_oss_url_with_resolve_header_and_parses_words(tmp_path
     assert url.startswith('oss://dashscope-instant/abc/')
     assert submit['json']['parameters']['diarization_enabled'] is True
     assert rows and rows[0]['timing_precision'] == 'word'
-    assert [t['text'] for t in rows[0]['tokens']] == ['你好', '世界。']
+    assert rows[0]['text'] == '你好世界。'
+    assert [t['text'] for t in rows[0]['tokens']] == ['你好', '世界']
+    assert rows[0]['provider_source']['valid_word_times'][-1]['text'] == '世界。'
     state = json.loads(next(tmp_path.rglob('task.json')).read_text('utf8'))
     assert state['storage_kind'] == 'dashscope_temporary' and 'oss://' not in json.dumps(state)
 

@@ -227,23 +227,22 @@ def probe_script_path():
 def required_environment_roles(runtime_settings):
     """Roles the current pipeline configuration actually needs.
 
-    Main is required only when a selected stage runs a local model.  A
-    cloud-only plan (cloud primary, timeline off, review off/cloud) needs no
-    local Python environment at all: the cloud worker runs with the app's own
-    executable, and optional local helpers (FireRedVAD, Japanese morphology)
-    fall back gracefully when main is absent (2026-10-13).  MOSS only when the
+    Main is required when a selected stage uses the managed Torch runtime.
+    Cloud and native CrispASR stages use their own executables. Optional
+    helpers such as FireRedVAD can run with the resources already available.
+    MOSS is required when the
     primary backend uses the separate .venv-moss environment (a broken MOSS
     venv must not block e.g. a FireRed-only configuration).
     """
     if not runtime_settings:
         return ["main"]
-    from .hardware import LOCAL_PRIMARY, LOCAL_REVIEW, LOCAL_TIMELINE
+    from .hardware import selected_local_runtime_components
     models = runtime_settings.get("models", {})
     primary = str(models.get("primary_asr_backend", "moss"))
     timeline = str(models.get("firered_asr_backend", "local"))
     review = str(models.get("qwen_asr_backend", "off"))
     roles = []
-    if primary in LOCAL_PRIMARY or timeline in LOCAL_TIMELINE or review in LOCAL_REVIEW:
+    if selected_local_runtime_components(runtime_settings):
         roles.append("main")
     if primary == "moss":
         roles.append("moss")

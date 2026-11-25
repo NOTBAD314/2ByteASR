@@ -78,7 +78,8 @@ def apply_new_project_policy(project):
     cache = evidence.setdefault('cue_cache',{})
     for label in {cue.speaker_id for cue in project.cues}:
         cache[label]=[asdict(cue) for cue in project.cues if cue.speaker_id==label]
-    mode = normalized_speaker_mode(evidence.get('processing',{}).get('mode'))
+    processing = evidence.get('processing', {})
+    mode = normalized_speaker_mode(processing.get('mode'))
     # This policy only constructs NEW projects. Recognition-stage 'single'
     # bookmarks are retired; explicit editorial merges still use organize().
     if mode == 'single':
@@ -88,7 +89,8 @@ def apply_new_project_policy(project):
     state.update(mode=mode,threshold=int(state.get('threshold',10)),
         counting_unit='unique original ASR utterance before caption segmentation',
         utterance_counts=utterance_counts(evidence.get('raw_segments',[])))
-    if mode in {'moss','nemotron','native','filetrans','diarizen'}:
+    if mode in {'moss','nemotron','native','filetrans','diarizen'} or (
+            mode == 'ecapa' and processing.get('preserve_detected_tracks')):
         # Explicit diarization labels have no automatic editorial host identity.
         # Keep every lane until an explicit, undoable editorial decision.
         state['needs_manual_host_selection']=len(project.speakers) > 1

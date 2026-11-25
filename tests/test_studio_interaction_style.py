@@ -32,6 +32,26 @@ def select_one(page):
     page.cue_controller.apply_selection_scope(SelectionScope.explicit(['stable-0'], 'stable-0'))
 
 
+def test_plain_text_edit_keeps_bulk_style_controls_and_updates_the_preview(page, monkeypatch):
+    select_one(page)
+    click_scope(page, "all")
+    cue = page.project.cues[0]
+    original = cue.text
+    before = page.style_scope_summary.text()
+    reloaded = []
+    previews = []
+    monkeypatch.setattr(page, "_load_style_inspector", lambda *args, **kw: reloaded.append(args))
+    monkeypatch.setattr(page.style_preview, "set_sample_text", previews.append)
+
+    assert page.cue_controller.set_text(cue.id, "Updated subtitle")
+    assert cue.appearance_override["text_alignment"]["status"] == "needs_alignment"
+    assert page.style_scope_summary.text() == before
+    page.undo_stack.undo()
+    assert cue.text == original
+    assert previews[-2:] == ["Updated subtitle", original]
+    assert reloaded == []
+
+
 @pytest.mark.parametrize('scope', ['speaker', 'all', 'selected'])
 @pytest.mark.parametrize('preset_first', [True, False])
 def test_scope_and_preset_orders_apply_identical_targets(page, monkeypatch, scope, preset_first):

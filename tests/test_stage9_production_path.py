@@ -5,6 +5,13 @@ import pytest
 from tests.test_stage9_cache_and_budget import context
 
 
+@pytest.fixture(autouse=True)
+def resolved_chinese_source(context):
+    """These Stage 9 samples enter after the queue has resolved Chinese."""
+    _, runtime, _ = context
+    runtime.requested_language = runtime.task_language = 'zh'
+
+
 def segment(core, index=1, text="这里已经校对完成"):
     return core.SpeechSegment(index, 0, 2, text, .9, [], speaker="S01")
 

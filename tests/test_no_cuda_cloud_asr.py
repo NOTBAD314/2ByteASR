@@ -93,7 +93,11 @@ def test_qwen3_filetrans_uses_its_own_schema_and_word_timestamps(tmp_path):
     assert len(rows) == 1 and 'speaker' not in rows[0]
     assert rows[0]['timestamp_source'] == 'qwen3_filetrans_native_word'
     assert rows[0]['timing_precision'] == 'word'
-    assert [t['text'] for t in rows[0]['tokens']] == ['欢迎', '使用', '阿里云。']
+    # Word clocks are indexed by lexical spans. Sentence punctuation stays in
+    # the visible text and the raw provider timing receipt.
+    assert rows[0]['text'] == '欢迎使用阿里云。'
+    assert [t['text'] for t in rows[0]['tokens']] == ['欢迎', '使用', '阿里云']
+    assert rows[0]['provider_source']['valid_word_times'][-1]['text'] == '阿里云。'
     assert rows[0]['tokens'][0]['start'] == pytest.approx(.1)
     assert storage.deletes == 1
 
@@ -1183,7 +1187,7 @@ def test_qwen_audio_31_language_choice_becomes_language_hints():
     from twobyteasr.providers.asr_language_control import policy
     assert filetrans_hints_for_model(FILETRANS, [], language='zh')['filetrans_language'] == 'zh'
     assert 'filetrans_language' not in filetrans_hints_for_model(FILETRANS, [], language='auto')
-    assert filetrans_language_parameters(FILETRANS, 'zh') == {'language_hints': ['zh', 'en']}
+    assert filetrans_language_parameters(FILETRANS, 'zh') == {'language_hints': ['zh']}
     assert filetrans_language_parameters(FILETRANS, 'en') == {'language_hints': ['en']}
     assert filetrans_language_parameters(QWEN3_FILETRANS, 'zh') == {'language': 'zh'}
     receipt = policy(qwen_audio_endpoint(), 'zh')
@@ -1191,7 +1195,7 @@ def test_qwen_audio_31_language_choice_becomes_language_hints():
     assert not policy(qwen_audio_endpoint(), 'auto')['parameter_sent']
 
 
-def _submit(tmp_path, responses):
+def _submit(tmp_path, responses, error=OSError):
     from twobyteasr.providers.cloud_asr_jobs import filetrans
     sent = []
 
@@ -1205,22 +1209,21 @@ def _submit(tmp_path, responses):
         def get(url, **kw):
             raise OSError('pause')
 
-    with pytest.raises(OSError):
+    with pytest.raises(error):
         filetrans(np.zeros(16000), qwen_audio_endpoint(filetrans_language='zh'), tmp_path, Storage(), client=Client)
     return sent
 
 
 def test_qwen_audio_31_request_carries_language_hints(tmp_path):
     sent = _submit(tmp_path, [Response({'output': {'task_id': 't1', 'task_status': 'PENDING'}})])
-    assert len(sent) == 1 and sent[0]['parameters']['language_hints'] == ['zh', 'en']
+    assert len(sent) == 1 and sent[0]['parameters']['language_hints'] == ['zh']
     assert 'language' not in sent[0]['parameters']
 
 
-def test_an_endpoint_refusing_language_hints_gets_the_request_without_them(tmp_path):
+def test_an_endpoint_refusing_language_hints_preserves_the_failure(tmp_path):
     refused = Response({'code': 'InvalidParameter', 'message': 'language_hints is not supported'}, 400)
     refused.text = '{"code":"InvalidParameter","message":"language_hints is not supported"}'
-    sent = _submit(tmp_path, [refused, Response({'output': {'task_id': 't1', 'task_status': 'PENDING'}})])
-    assert len(sent) == 2 and 'language_hints' in sent[0]['parameters']
-    assert 'language_hints' not in sent[1]['parameters']
+    sent = _submit(tmp_path, [refused], error=ASRProtocolError)
+    assert len(sent) == 1 and sent[0]['parameters']['language_hints'] == ['zh']
     task, = tmp_path.glob('native-asr-v1/*/task.json')
-    assert json.loads(task.read_text('utf8'))['language_hints_rejected'] == ['zh', 'en']
+    assert json.loads(task.read_text('utf8'))['status'] == 'REJECTED'

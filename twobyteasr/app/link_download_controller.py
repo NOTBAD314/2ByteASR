@@ -6,6 +6,7 @@ in the Studio shows running work; finished imports raise a short notice.
 """
 from __future__ import annotations
 import copy
+from collections import deque
 import json
 from pathlib import Path
 import queue
@@ -103,12 +104,20 @@ class LinkDownloadController(QObject):
         self._analysis_owner = "dialog"
         self._analysis_request = None
         self._analysis_cancel = threading.Event()
+        self._browser_pending = deque()
+        self._browser_cancel = threading.Event()
+        self._browser_active = False
+        self._browser_note = ""
+        self._browser_choices = deque(maxlen=32)
+        self._browser_form_url = ""
         self._jobs = []
         self._preparing = set()
         self._enqueue_requests = {}
         self._event_details = {}
         self._thumbnails = {}
         self._tools_error = ""
+        self._tools_busy = False
+        self._tools_cancel = threading.Event()
         self._attention = set()
         self._states = {t["task_id"]: t["state"] for t in self.queue.snapshots()}
         self.timer = QTimer(self)
@@ -145,6 +154,39 @@ class LinkDownloadController(QObject):
                 self._dialog_creating = False
         return self.dialog
 
+    def receive_browser(self, request):
+        from .browser_link_intake import receive
+        return receive(self, request)
+
+    def offer_browser_choices(self, catalog, mode, auth):
+        self._browser_choices.append((catalog, mode, auth))
+        self._browser_note = tr("请在链接下载窗口选择兔白助手任务的字幕语言与来源。")
+        if not self.context()["project_id"]:
+            self.show("home")
+
+    def show_browser_choices(self):
+        if self.dialog is None or not self._browser_choices:
+            return
+        if self.dialog.cancel_parse.isEnabled() or (
+                self._browser_form_url and self._browser_form_url == self.dialog.url.text()):
+            return
+        catalog, mode, auth = self._browser_choices.popleft()
+        self.dialog.url.setText(catalog["url"])
+        self._browser_form_url = catalog["url"]
+        self.dialog.set_catalog(catalog)
+        self.dialog.apply_selection(dict(mode=mode, auto_import=mode != "subtitles"))
+        if auth and auth.valid_for(catalog["url"]):
+            self.dialog._authorization = auth
+            self.dialog._authorization_url = catalog["url"]
+            self.dialog.cookie.setText(tr("已接收浏览器授权"))
+        self.dialog.message.setText(tr("请选择要下载的原语字幕，再开始下载。"))
+
+    def browser_choice_submitted(self, url):
+        if self._browser_form_url == url:
+            self._browser_form_url = ""
+            if self._browser_choices:
+                QTimer.singleShot(0, self, self.show_browser_choices)
+
     def show(self, page_key=""):
         if self._closed:return
         if self._dialog_creating:
@@ -161,6 +203,10 @@ class LinkDownloadController(QObject):
         if dialog.isMinimized():
             dialog.setWindowState(dialog.windowState() & ~Qt.WindowMinimized)
         if not dialog.isVisible():dialog.show()
+        if self._browser_note:
+            dialog.message.setText(self._browser_note)
+        if page_key in ("", "home") and self._browser_choices:
+            self.show_browser_choices()
         dialog.raise_()
         dialog.activateWindow()
 
@@ -221,7 +267,7 @@ class LinkDownloadController(QObject):
         thread.start()
 
     def analyze(self, url, proxy="", cookie_file="", owner="dialog"):
-        request=(str(url).strip(),str(proxy),str(cookie_file),owner)
+        request=(str(url).strip(),str(proxy),id(cookie_file) if cookie_file else None,owner)
         if self._closed or request==self._analysis_request:return
         self.cancel_analysis()
         self._analysis_request=request
@@ -259,6 +305,18 @@ class LinkDownloadController(QObject):
         self._analysis_request = None
         self._analysis_cancel.set()
 
+    def read_firefox_authorization(self, url, path):
+        from .browser_profiles import load_firefox_site
+        import sqlite3
+        def work():
+            try:
+                return load_firefox_site(url, path)
+            except (sqlite3.Error, OSError, ValueError):
+                raise ValueError(tr("无法读取 Firefox 授权。请确认已登录，关闭 Firefox 后重试，或改用兔白助手。")) from None
+        token = uuid.uuid4().hex
+        self._background("profile_auth", token, work, url=url)
+        return token
+
     def _analysis_target(self):
         """The front end that asked for the running analysis, if still shown."""
         if self._analysis_owner == "card":
@@ -267,11 +325,42 @@ class LinkDownloadController(QObject):
 
     # ----------------------------------------------------------------- tools
     def install_tools(self):
+        self.change_tools("repair")
+
+    def change_tools(self, action):
+        if self._tools_busy:
+            return
+        self._tools_busy = True
+        self._tools_cancel.clear()
+        token = uuid.uuid4().hex
+
         def work():
             from ..media.link_tools import ensure_tools
-            self.engine.tools = ensure_tools()
+            from ..media.link_tool_updates import check_latest, install_latest, rollback_tools
+            root = getattr(self.engine, "root", None) or get_runtime_paths().install_root
+            if action == "check":
+                return check_latest(root=root)
+            if action in {"update", "rollback"}:
+                if action == "update":
+                    last = 0.
+
+                    def progress(done, total):
+                        nonlocal last
+                        now = time.monotonic()
+                        if now - last >= .35:
+                            self._mailbox.put(dict(kind="tools_progress", token=token,
+                                                   value=(done, total)))
+                            self.wake.emit()
+                            last = now
+
+                    self.engine.tools = install_latest(root=root, progress=progress, cancel=self._tools_cancel)
+                else:
+                    self.engine.tools = rollback_tools(root=root)
+            else:
+                self.engine.tools = ensure_tools(root=root, cancel=self._tools_cancel.is_set)
             return self.engine.tools["versions"]
-        self._background("tools", uuid.uuid4().hex, work)
+
+        self._background("tools_check" if action == "check" else "tools", token, work)
 
     def tool_versions(self) -> dict:
         tools = getattr(self.engine, "tools", None)
@@ -309,7 +398,7 @@ class LinkDownloadController(QObject):
         selection['target']={k:v for k,v in task['target'].items() if k!='position_ms'}
         request=json.dumps(dict(directory=os.path.normcase(str(Path(directory).expanduser().resolve())),
             selection=selection,
-            proxy=proxy,cookie_file=cookie_file),sort_keys=True,ensure_ascii=False)
+            proxy=proxy,authorization=id(cookie_file) if cookie_file else None),sort_keys=True,ensure_ascii=False)
         existing=self._enqueue_requests.get(request)
         if existing in active:
             self._refresh_views()
@@ -346,6 +435,19 @@ class LinkDownloadController(QObject):
                 self.open_editor(task_id, ai=name == "ai")
             elif name == "folder":
                 QDesktopServices.openUrl(QUrl.fromLocalFile(self.task(task_id)["directory"]))
+            elif name == "preview":
+                from .link_subtitle_preview import prepare
+                directory = self.task(task_id)["directory"]
+                self._background("subtitle_preview", task_id, lambda: prepare(directory, MANIFEST_NAME))
+            elif name == "reprocess":
+                from PySide6.QtWidgets import QInputDialog
+                modes = {"smart": tr("智能整句重建"), "original": tr("原始字幕"), "ai": tr("AI 精细断句")}
+                selected, accepted = QInputDialog.getItem(self.host, tr("重新处理字幕"),
+                    tr("从已保存的原稿重新生成字幕。已保存工程里的内容会保留。"),
+                    list(modes.values()), 0, False)
+                if accepted:
+                    mode = next(key for key, title in modes.items() if title == selected)
+                    self.queue.reprocess(task_id, mode)
             elif name == "locate":
                 self.locate(task_id)
         except (ValueError, KeyError, StopIteration) as exc:
@@ -426,10 +528,17 @@ class LinkDownloadController(QObject):
             task = self.task(task_id)
             def blank():
                 from ..projects.studio_project import SubtitleProject, StudioMedia, save_project
+                from ..projects.link_import import prepare_import
+                from ..media.link_catalog import safe_video_filename
                 project = SubtitleProject(media=StudioMedia(path="", display_name=task["title"]))
-                path = Path(task["directory"])/"project"/(task["video_id"]+"-"+uuid.uuid4().hex[:8]+".2byteproj")
+                basename = safe_video_filename(task["video_id"])
+                path = Path(task["directory"])/"project"/(basename+"-"+uuid.uuid4().hex[:8]+".2byteproj")
+                project.validate()
+                started = time.perf_counter()
+                prepared = prepare_import(project, bundle, bundle["media_result"])
+                planning_ms = round((time.perf_counter() - started) * 1000, 1)
                 save_project(project, path)
-                return str(path), project.project_id
+                return str(path), project.project_id, prepared, planning_ms
             self._background("blank", task_id, blank, bundle=bundle, target=target, automatic=automatic)
             return
         page = self.page()
@@ -439,23 +548,51 @@ class LinkDownloadController(QObject):
             return
         self._apply(page, task_id, bundle, target)
 
-    def _apply(self, page, task_id, bundle, target):
+    def _apply(self, page, task_id, bundle, target, *, prepared=None, background_planning_ms=None):
         try:
             if not target_matches(page, target):
                 raise ValueError("目标工程已失效；文件仍保留在下载目录。")
             page.video.set_paused(True)
+            planning_start = time.perf_counter()
             command = LinkImportCommand(page.project, bundle, bundle.get("media_result"),
+                prepared=prepared,
                 position_ms=target.get("position_ms", 0), clip_id=target.get("clip_id", ""),
                 confirmed_media=target.get("confirmed_media", False),
                 replace_source=target.get("replace_source", False))
+            transaction_start = time.perf_counter()
             page.undo_stack.push(command)
+            refresh_start = time.perf_counter()
             refresh_after_import(page, command.result)
             page._studio_trace("LINK_IMPORT_COMMIT", task_id=task_id, video_id=bundle["manifest"]["video_id"],
                 primary_track_id=bundle["manifest"].get("primary_track_id", ""),
                 output_file=bundle.get("media_path", ""), cue_count=command.result.get("cue_count", 0),
-                project_id=page.project.project_id)
+                project_id=page.project.project_id, background_planning_ms=background_planning_ms,
+                gui_planning_ms=round((transaction_start-planning_start)*1000, 1),
+                transaction_ms=round((refresh_start-transaction_start)*1000, 1),
+                refresh_ms=round((time.perf_counter()-refresh_start)*1000, 1))
             imported = dict(command.result, project_path=str(page.project_path or ""),
                             project_id=page.project.project_id, generation=page.session.generation)
+
+            def record_import():
+                from ..storage.project_stage_history import record_stage
+
+                project_id = imported["project_id"]
+                manifest = bundle["manifest"]
+                tracks = manifest.get("subtitles") or ()
+                platform = str(manifest.get("platform") or "").lower()
+                source = platform if platform in {"youtube", "bilibili"} else "online_media"
+                record_stage(project_id, "download", "partial" if manifest.get("errors") else "completed",
+                             source=source, tracks=len(tracks), media=int(bool(bundle.get("media_path"))))
+                json3_tracks = sum(row.get("actual_format") == "json3" for row in tracks)
+                if json3_tracks:
+                    record_stage(project_id, "json3", "completed", source="json3", tracks=json3_tracks)
+                rebuilt = [row for row in tracks if row.get("processing_mode") in ("smart", "ai")]
+                if rebuilt:
+                    record_stage(project_id, "reconstruction", "completed", tracks=len(rebuilt),
+                                 cues=sum(int(row.get("cue_count") or 0) for row in rebuilt))
+                record_stage(project_id, "import", "completed", source="studio",
+                             cues=int(imported.get("cue_count") or 0))
+
             if target.get("newly_created"):
                 completed = []
                 expected_project = page.project
@@ -467,12 +604,14 @@ class LinkDownloadController(QObject):
                         self._show_error(str(error))
                         return
                     self.queue.imported(task_id, imported)
+                    record_import()
                     if page.project is expected_project and page.session.generation == generation:
                         self._notify_imported(page, task_id)
                 if page.save(on_finished=saved) is None and not completed:
                     saved(None, RuntimeError('新工程尚未完成保存，导入内容仍保留在内存中。'))
             else:
                 self.queue.imported(task_id, imported)
+                record_import()
                 self._notify_imported(page, task_id)
         except Exception as exc:
             self.queue.pending(task_id, redact(exc))
@@ -484,12 +623,16 @@ class LinkDownloadController(QObject):
         if not page.isVisible():
             return
         try:
+            task = self.task(task_id)
+            project = page.project
+            if task.get("recognize") and hasattr(page, "_open_recognition_sheet"):
+                QTimer.singleShot(0, page, lambda: page._open_recognition_sheet() if page.project is project else None)
             from .link_quick_card import ImportToast
             if self.toast is None or self.toast.page is not page:
                 if self.toast is not None:
                     self.toast.deleteLater()
                 self.toast = ImportToast(self, page)
-            self.toast.show_task(self.task(task_id))
+            self.toast.show_task(task)
         except Exception as exc:  # the notice is a courtesy; the import already happened
             from ..diagnostics.event_log import emit
             emit("link.import.notice", result="failed", error=redact(exc))
@@ -576,6 +719,37 @@ class LinkDownloadController(QObject):
         while not self._mailbox.empty():
             item = self._mailbox.get()
             kind, token = item["kind"], item["token"]
+            if kind in {"tools", "tools_check"}:
+                self._tools_busy = False
+            if kind == "profile_auth":
+                if self.dialog is not None and self.dialog._profile_request == token:
+                    if item.get("error"):
+                        self.dialog.cookie.setText(tr("当前浏览器无法读取"))
+                        self.dialog.message.setText(item["error"])
+                    else:
+                        self.dialog.install_authorization(item["url"], item["value"])
+                continue
+            if kind == "browser_analysis":
+                from .browser_link_intake import enqueue, setup
+                self._browser_active = False
+                error = item.get("error")
+                if not error and not item.get("cancelled"):
+                    try:
+                        task = enqueue(self, item["value"])
+                        if task:
+                            self._browser_note = tr("已接收兔白助手任务，可在队列中查看。")
+                    except (ValueError, OSError) as exc:
+                        error = redact(exc)
+                if error:
+                    self._browser_note = tr("兔白助手任务未完成") + " · " + error
+                    if not self.context()["project_id"]:
+                        self.show("home")
+                        if self.dialog is not None:
+                            self.dialog.url.setText(item["browser_url"])
+                if self.dialog is not None and self.dialog.isVisible():
+                    self.dialog.message.setText(self._browser_note)
+                setup(self, self._browser_pending)
+                continue
             if kind in {"analyze", "analysis_progress", "preview", "cover"} and token != self._analysis_token:
                 continue
             if kind == "preview" and (item.get("error") or item.get("cancelled")):
@@ -590,6 +764,8 @@ class LinkDownloadController(QObject):
                 self._preparing.discard(token)
                 if kind == "analyze" and self.dialog and self._analysis_owner == "dialog":
                     self.dialog.parsing_finished()
+                    if self.dialog._authorization:
+                        self.dialog.cookie.setText(tr("授权可能过期或网站限制访问"))
                 if kind == "tools":
                     self._tools_error = item.get("error", "")
                 self._show_error(item.get("error") or tr("已取消"))
@@ -623,23 +799,39 @@ class LinkDownloadController(QObject):
                 self._show_error(tr("下载工具已校验") + " · " + " / ".join(f"{k} {v}" for k, v in item["value"].items()))
                 if self.dialog is not None and self.dialog.isVisible():
                     self.dialog._refresh_tools()
+            elif kind == "tools_check":
+                result = item["value"]
+                message = tr("已在使用签名清单的下载工具。")
+                if result["available"]:
+                    message = tr("可安装工具元件 · {version} · {size} MiB",
+                        version=result["release"], size=round(result["component"].archive.size / 1048576))
+                self._show_error(message)
+            elif kind == "tools_progress":
+                done, total = item["value"]
+                if total:
+                    self._show_error(tr("正在下载已签名工具元件 · {percent}%", percent=round(100 * done / total)))
             elif kind == "bundle":
                 self._route_bundle(token, item["value"], item["target"], item["automatic"])
+            elif kind == "subtitle_preview":
+                from .link_subtitle_preview import show_preview
+                show_preview(self.dialog if self.dialog and self.dialog.isVisible() else self.host, item["value"])
             elif kind == "blank":
                 target = item["target"]
                 if not self._automatic_allowed(target):
                     self._preparing.discard(token)
                     self.queue.pending(token, tr("目标工程已切换，下载完成，待导入。"))
                     continue
-                path, identity = item["value"]
-                def opened(page, task_id=token, bundle=item["bundle"], identity=identity):
+                path, identity, prepared, planning_ms = item["value"]
+                def opened(page, task_id=token, bundle=item["bundle"], identity=identity,
+                           prepared=prepared, planning_ms=planning_ms):
                     if self._closed:
                         return
                     if page.project is None or page.project.project_id != identity:
                         self._preparing.discard(task_id)
                         return
                     new_target = dict(self.context(), kind="current", newly_created=True, position_ms=0)
-                    self._apply(page, task_id, bundle, new_target)
+                    self._apply(page, task_id, bundle, new_target, prepared=prepared,
+                                background_planning_ms=planning_ms)
                 opener = getattr(self.host, "open_studio_project", None)
                 if callable(opener):
                     opener(path, source="link_download", on_ready=opened)
@@ -693,6 +885,10 @@ class LinkDownloadController(QObject):
             return
         self._closed = True
         self._analysis_cancel.set()
+        self._tools_cancel.set()
+        self._browser_cancel.set()
+        self._browser_pending.clear()
+        self._browser_choices.clear()
         self.timer.stop()
         self.queue.close()
         for widget in (self.card, self.popover, self.toast):

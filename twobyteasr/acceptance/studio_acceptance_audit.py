@@ -185,7 +185,7 @@ def isolate_acceptance_settings() -> None:
             from ..rendering.ass_compile_actor import AssCompileActor
             AssCompileActor.submit = lambda *args, **kwargs: None
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'long-interactions', 'real-long-project', 'studio-interactions', 'mcp-production','long-pipeline-progress'}:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'long-interactions', 'real-long-project', 'studio-interactions', 'mcp-production','long-pipeline-progress','local-voice-preview'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -340,7 +340,7 @@ def isolate_acceptance_settings() -> None:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'editor-download', 'english-track-loudness', 'subtitle-navigation', 'timeline-cue-pill', 'navigation-performance', 'studio-loading', 'caption-first-display', 'loading-faces', 'theme-loading'}:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'professional-timing', 'editor-download', 'english-track-loudness', 'subtitle-navigation', 'timeline-cue-pill', 'navigation-performance', 'studio-loading', 'caption-first-display', 'loading-faces', 'theme-loading'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -765,6 +765,11 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'local-voice-preview':
+        from .local_voice_preview_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'real-long-project':
         from .real_long_project_audit import start
         output = audit_directory()
@@ -983,6 +988,12 @@ def start_acceptance(window) -> None:
         from .studio_loading_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'professional-timing':
+        from .professional_timing_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'subtitle-navigation':
         from .subtitle_navigation_audit import start

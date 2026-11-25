@@ -1510,18 +1510,19 @@ def japanese_break_candidates(source_text, mandatory=()):
     """Offsets a Japanese cut may use: bunsetsu ends, the mandatory breaks and the end.
 
     None when the text cannot be marked by content offsets (the request then keeps the
-    per-character index). Without a morphology document every offset is a candidate.
+    per-character index).
+
+    2026-11-25: one engine (``japanese_grouping.build_candidates``). Without a
+    morphology document the script-class phrases are used; offering every
+    character gap (the MOSS long-material shards, 30/30 requests) is gone, and a
+    mandatory break inside a word moves to the nearest phrase edge.
     """
-    content = content_exact(source_text)
-    total = len(content)
-    if total <= 0 or sum(len(content_exact(char)) for char in source_text) != total:
+    if sum(len(content_exact(char)) for char in source_text) != len(content_exact(source_text)):
         return None
-    from .japanese_morphology import document_phrase_spans
-    spans = document_phrase_spans(content)
-    allowed = set(range(1, total + 1)) if spans is None else {end for _start, end, _word in spans}
-    allowed.update(int(offset) for offset in mandatory if 0 < int(offset) < total)
-    allowed.add(total)
-    return sorted(offset for offset in allowed if 0 < offset <= total)
+    from .japanese_grouping import build_candidates
+    from .segmentation_profiles import profile_for
+    result = build_candidates(source_text, mandatory, hard_max=int(profile_for("ja").hard_max))
+    return None if result is None else result.candidates
 
 
 def marked_break_text(source_text, candidates):

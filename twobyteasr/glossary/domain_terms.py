@@ -688,6 +688,8 @@ def _has_search_evidence(evidence):
 
 def _publish_term_summary(result, *, scope_ids=(), distinct_terms=0, batches=0,
                           capability=None, reason='', requested=True, cached=False, conflict_count=0):
+    from ..recognition.cache import record_run_event
+
     owner = get_runtime_context()
     scope = set(scope_ids)
     capability = capability or {'available': False}

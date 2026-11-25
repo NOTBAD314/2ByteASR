@@ -39,6 +39,9 @@ def show_candidates(page, region, requested):
     candidates.setWordWrap(True)
     for row in rows:
         candidates.addItem(f"{row['start']:.3f}–{row['end']:.3f}  {row.get('speaker') or ''}\n{row.get('text') or ''}")
+    for attempt in region.get('attempts') or []:
+        for text in attempt.get('candidates') or []:
+            candidates.addItem(str(tr('补识别候选 · {backend}\n{text}', backend=attempt.get('backend') or '', text=text)))
     layout.addWidget(candidates, 1)
     if rows:
         candidates.setCurrentRow(0)
@@ -73,6 +76,18 @@ def show_candidates(page, region, requested):
     local.setObjectName('languageCandidateLocal')
     for button in (reuse, cloud, local):
         layout.addWidget(button)
+    if region.get('reason') == 'language_guard_pending':
+        mixed = QPushButton(tr('确认正常混语并保留字幕'))
+        mixed.setObjectName('languageCandidateConfirmMixed')
+        layout.addWidget(mixed)
+
+        def confirm_mixed():
+            if page.project is project and not getattr(page, '_recognition_running', False):
+                from ..timeline.language_review_commands import ConfirmMixedLanguageCommand
+                page.undo_stack.push(ConfirmMixedLanguageCommand(project, region['id'], page._changed))
+                dialog.accept()
+
+        mixed.clicked.connect(confirm_mixed)
     from ..recognition.language_decision import mode_for
     from ..subtitle_rules.language_rules import normalize_language
     def can_continue():

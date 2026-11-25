@@ -471,9 +471,48 @@ class SegmentCard(QFrame):
         self.lines.addStretch(1)
 
 
+class VoiceComparison(QWidget):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setFixedHeight(42)
+        self.peaks = (), ()
+        self.hide()
+
+    def set_peaks(self, original=(), enhanced=()):
+        peaks = tuple(original), tuple(enhanced)
+        self.setVisible(bool(peaks[0] and peaks[1]))
+        if self.peaks != peaks:
+            self.peaks = peaks
+            self.update()
+
+    def paintEvent(self, _event):
+        from ..i18n import tr
+
+        painter = QPainter(self)
+        label_width = max(painter.fontMetrics().horizontalAdvance(str(tr(label)))
+                          for label in ('原音', '增强人声')) + 12
+        width = max(1, self.width() - label_width)
+        for y, label, color, peaks in (
+            (10, '原音', self.palette().mid().color(), self.peaks[0]),
+            (31, '增强人声', self.palette().highlight().color(), self.peaks[1]),
+        ):
+            painter.setPen(self.palette().windowText().color())
+            painter.drawText(QRectF(0, y - 10, label_width, 20), Qt.AlignmentFlag.AlignVCenter, str(tr(label)))
+            painter.setPen(QPen(color, 1))
+            n = max(1, len(peaks))
+            for index, peak in enumerate(peaks):
+                x = label_width + (index + .5) * width / n
+                height = min(1., max(0., float(peak))) * 8
+                painter.drawLine(QPointF(x, y - height), QPointF(x, y + height))
+        painter.end()
+
+
 class SubtitleTaskPanel(QDialog):
     locate = Signal(object)
     retry = Signal(object)
+    adopt = Signal(object)
+    audition = Signal(object)
+    preview_dismissed = Signal()
     cancel = Signal(str)
     PILLS = 4
 
@@ -608,6 +647,8 @@ class SubtitleTaskPanel(QDialog):
         raw_layout.addWidget(self.details, 1)
         self.detail.addWidget(raw_page)
         layout.addWidget(self.detail)
+        self.voice_comparison = VoiceComparison(self)
+        layout.addWidget(self.voice_comparison)
 
         actions = QHBoxLayout()
         actions.setSpacing(8)
@@ -616,6 +657,14 @@ class SubtitleTaskPanel(QDialog):
         actions.addWidget(self.locate_button)
         self.retry_button = _button('重试这一段', 'taskAction', self._retry)
         actions.addWidget(self.retry_button)
+        self.adopt_button = _button('采用建议', 'taskAction', self._adopt)
+        self.adopt_button.hide()
+        actions.addWidget(self.adopt_button)
+        self.listen_original = _button('听原音', 'taskAction', lambda: self._audition(False))
+        self.listen_enhanced = _button('听增强人声', 'taskAction', lambda: self._audition(True))
+        for button in (self.listen_original, self.listen_enhanced):
+            button.hide()
+            actions.addWidget(button)
         self.retry_why = QLabel()
         self.retry_why.setObjectName('taskWhy')
         actions.addWidget(self.retry_why)
@@ -880,6 +929,11 @@ class SubtitleTaskPanel(QDialog):
         reason = self._retry_reason(row)
         self.locate_button.setEnabled(row is not None)
         self.retry_button.setEnabled(row is not None and not reason)
+        self.adopt_button.setVisible(bool(self.current and self.current.kind == '批量重新识别'
+                                          and row and row.get('status') == 'suggestion'))
+        compare_audio = bool(row and row.get('audio_preview'))
+        self.listen_original.setVisible(compare_audio)
+        self.listen_enhanced.setVisible(compare_audio)
         if self.retry_why.text() != reason:
             self.retry_why.setText(reason)
 
@@ -887,6 +941,7 @@ class SubtitleTaskPanel(QDialog):
         row = self.selected_record()
         self._update_actions()
         if row is None:
+            self.voice_comparison.set_peaks()
             self.detail.setCurrentIndex(0)
             return
         if self.detail.currentIndex() == 0:
@@ -898,8 +953,13 @@ class SubtitleTaskPanel(QDialog):
         final = [str(text) for text in row.get('final_texts', ()) if str(text).strip()]
         kept = status in {'failed', 'cancelled'}
         self.input_card.set_lines(f'原文 · {label}', inputs, '没有记录原文')
-        self.validated_card.set_lines('模型分段（已校验）', validated,
+        label = ('重新识别 · 增强人声' if row.get('audio_source') == 'htdemucs'
+                 else '重新识别 · 原音' if row.get('audio_source') == 'original' else '模型分段（已校验）')
+        if row.get('separation_backend') in {'cpu', 'cuda'}:
+            label += ' · ' + row['separation_backend'].upper()
+        self.validated_card.set_lines(label, validated,
                                       '没有通过校验的分段' if status in TERMINAL else '还没有结果')
+        self.voice_comparison.set_peaks(row.get('original_peaks', ()), row.get('enhanced_peaks', ()))
         self.final_card.set_lines('实际写回 · 保留原文' if kept else '实际写回', final or (inputs if kept else []),
                                   '还没写回' if status not in TERMINAL else '没有写回内容')
         lead, text = NEXT_STEP.get(status, NEXT_STEP['pending'])
@@ -935,3 +995,17 @@ class SubtitleTaskPanel(QDialog):
         row = self.selected_record()
         if row and row.get('status') in TODO and self.current.ended:
             self.retry.emit(dict(task_id=self.current.task_id, record=row))
+
+    def _adopt(self):
+        row = self.selected_record()
+        if row and self.current.kind == '批量重新识别' and row.get('status') == 'suggestion':
+            self.adopt.emit(dict(task_id=self.current.task_id, record=row))
+
+    def _audition(self, enhanced):
+        row = self.selected_record()
+        if self.current and row and row.get('audio_preview'):
+            self.audition.emit(dict(task_id=self.current.task_id, record=row, enhanced=enhanced))
+
+    def hideEvent(self, event):
+        self.preview_dismissed.emit()
+        super().hideEvent(event)

@@ -165,7 +165,8 @@ def test_translation_companion_reads_its_draft_and_keeps_own_timing(app):
     page=SimpleNamespace(project=project,_prepared_caption=lambda key:lookup.get(key),
         _live_edit_text_overrides={'cue-0#tr':'Draft translation'},_live_transform_overrides={},
         _caption_transform_preview={},_revision_store=SimpleNamespace(render=object()))
-    owner=SimpleNamespace(page=page,_instance_layout=SimpleNamespace(for_cues=lambda *args:SimpleNamespace(offsets={},warnings=())))
+    from twobyteasr.caption_style.collision_layout import CollisionLayout
+    owner=SimpleNamespace(page=page,_instance_layout=SimpleNamespace(for_cues=lambda *args, **kwargs: CollisionLayout({})))
     owner.prepare=lambda cue:CaptionScene.prepare(owner,cue)
     cue=StudioCue('cue-0',0,2000,'TRACK 1')
     values=dict(CaptionScene.scene_items(owner,[cue]))

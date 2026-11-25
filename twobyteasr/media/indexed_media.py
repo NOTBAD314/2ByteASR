@@ -37,6 +37,7 @@ class IndexedMediaCache:
             from ..runtime_paths import get_runtime_paths
             self.root = get_runtime_paths().cache_root / "media" / "seek"
         self._ready = {}
+        self._ready_durations = {}
         self._requested = set()
         self._queue: Queue[str] = Queue()
         self._lock = threading.Lock()
@@ -109,6 +110,7 @@ class IndexedMediaCache:
                 if key[1]==source:self._gui_reads.pop(key,None)
             self._audio_seek.pop(source,None)
             self._ready.pop(source,None)
+            self._ready_durations.pop(source,None)
             self._ready_identities.pop(source,None)
 
     # ------------------------------------------------------------------ API
@@ -126,6 +128,18 @@ class IndexedMediaCache:
         source = str(source)
         if not source.lower().endswith(".flv"):
             return source
+        if not reason:
+            with self._lock:
+                missing = source not in self._ready
+            if missing:
+                cached = self._restored_optimized(source)
+                if cached is not None:
+                    path, identity, duration_ms = cached
+                    with self._lock:
+                        if source not in self._ready:
+                            self._ready[source] = str(path)
+                            self._ready_identities[source] = identity
+                            self._ready_durations[source] = duration_ms
         with self._lock:
             ready = self._ready.get(source)
             changed = False
@@ -134,6 +148,7 @@ class IndexedMediaCache:
                 changed = self._ready_identities[source] != (stat.st_size, stat.st_mtime_ns)
             if ready and (changed or not Path(ready).is_file()):
                 self._ready.pop(source, None)
+                self._ready_durations.pop(source, None)
                 self._ready_identities.pop(source, None)
                 self._requested.discard(source)
                 self.errors.pop(source, None)
@@ -206,6 +221,11 @@ class IndexedMediaCache:
             return Path(target)
         return None
 
+    def verified_duration_ms(self, source: str) -> int:
+        """Source duration from a matching, validated stream-copy receipt."""
+        with self._lock:
+            return self._ready_durations.get(str(source), 0)
+
     def _cache_folder(self, source: str) -> Path | None:
         target = self.optimized_target(source)
         if target is not None:
@@ -218,6 +238,31 @@ class IndexedMediaCache:
             f"optimize-v2|{source}|{stat.st_size}|{stat.st_mtime_ns}".encode()
         ).hexdigest()[:32]
         return self.root / "v2" / key
+
+    def _restored_optimized(self, source: str):
+        """Reuse a validated stream copy from a previous Studio process."""
+        from ..storage.storage_service import safe_path
+
+        folder = self._cache_folder(source)
+        if folder is None:
+            return None
+        try:
+            manifest = folder / "ready.json"
+            if not safe_path(manifest, (self.root,)):
+                return None
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            stat = Path(source).stat()
+            container = payload.get("container")
+            identity = stat.st_size, stat.st_mtime_ns
+            if (payload.get("source") != source or container not in {"mp4", "mkv"}
+                    or (payload.get("size"), payload.get("mtime_ns")) != identity):
+                return None
+            target = folder / f"optimized.{container}"
+            if safe_path(target, (self.root,)) and target.is_file():
+                return target, identity, max(0, int(payload.get('duration_ms') or 0))
+        except (OSError, ValueError, AttributeError):
+            return None
+        return None
 
     def sync_map(self, source: str):
         return self._gui_read('sync_map',source,lambda:self._sync_map_blocking(source),None)
@@ -712,8 +757,16 @@ class IndexedMediaCache:
                     source_identity = (stat.st_size, stat.st_mtime_ns)
                 except OSError:
                     source_identity = None  # Keep the now-unique validated copy.
+                duration_ms = 0
+                try:
+                    receipt = json.loads((target.parent / 'ready.json').read_text('utf-8'))
+                    if (receipt.get('size'), receipt.get('mtime_ns')) == source_identity:
+                        duration_ms = max(0, int(receipt.get('duration_ms') or 0))
+                except (OSError, ValueError, TypeError):
+                    pass
                 with self._lock:
                     self._ready[source] = str(target)
+                    self._ready_durations[source] = duration_ms
                     if source_identity is not None:
                         self._ready_identities[source] = source_identity
                     self._status[source] = {
@@ -863,7 +916,7 @@ class IndexedMediaCache:
         def probe(path):
             result = run_hidden_subprocess(
                 [str(ffprobe), "-v", "error", "-show_entries",
-                 "format=start_time,duration:stream=codec_type,codec_name,start_time",
+                 "format=start_time,duration,format_name:stream=codec_type,codec_name,start_time",
                  "-of", "json", str(path)],
                 capture_output=True, timeout=90, purpose="validate optimized media")
             if result.returncode:
@@ -873,7 +926,8 @@ class IndexedMediaCache:
         original = probe(source)
         original_format = original['format']
         original_streams = original.get('streams', [])
-        duration_s = float(original_format.get('duration') or 0.0)
+        from .media_service import probe_duration_ms
+        duration_s = probe_duration_ms(original_format, original_streams, source=source) / 1000
         video_codecs = {
             str(s.get('codec_name') or '').lower()
             for s in original_streams if s.get('codec_type') == 'video'
@@ -908,7 +962,7 @@ class IndexedMediaCache:
                 if cancel_event.is_set():
                     raise InterruptedError("optimized media cancelled")
                 indexed = probe(partial)
-                self._validate(original, indexed)
+                self._validate(original, indexed, source=source, target=partial)
                 os.replace(partial, target)
                 manifest.write_text(json.dumps({
                     'source': str(source), 'size': stat.st_size,
@@ -949,15 +1003,25 @@ class IndexedMediaCache:
         raise RuntimeError(last_error or "optimized media preparation failed")
 
     @staticmethod
-    def _validate(original: dict, indexed: dict) -> None:
+    def _validate(original: dict, indexed: dict, *, source=None, target=None) -> None:
+        from .media_service import probe_duration_ms
+
         old_format, new_format = original['format'], indexed['format']
         old_start, new_start = float(old_format.get('start_time', 0)), float(new_format.get('start_time', 0))
-        if abs(float(old_format['duration']) - old_start - (float(new_format['duration']) - new_start)) > .2:
+        old_duration = probe_duration_ms(old_format, original['streams'], source=source)
+        new_duration = probe_duration_ms(new_format, indexed['streams'], source=target)
+        if not old_duration or not new_duration or abs(old_duration - new_duration) > 200:
             raise RuntimeError("Optimized media duration mismatch")
-        old_streams = [(s['codec_type'], float(s.get('start_time', old_start)) - old_start)
-                       for s in original['streams'] if s['codec_type'] in {'video', 'audio'}]
-        new_streams = [(s['codec_type'], float(s.get('start_time', new_start)) - new_start)
-                       for s in indexed['streams'] if s['codec_type'] in {'video', 'audio'}]
+
+        def stream_starts(payload, start):
+            # The remux always maps video then audio. Preserve order within
+            # each media kind, independent of interleaving in the source.
+            rows = [(s['codec_type'], float(s.get('start_time', start)) - start)
+                    for s in payload['streams'] if s['codec_type'] in {'video', 'audio'}]
+            return sorted(rows, key=lambda row: row[0])
+
+        old_streams = stream_starts(original, old_start)
+        new_streams = stream_starts(indexed, new_start)
         if len(old_streams) != len(new_streams) or any(
                 kind != new_kind or abs(t - new_t) > .05
                 for (kind, t), (new_kind, new_t) in zip(old_streams, new_streams)):

@@ -5,11 +5,31 @@ import pytest
 
 from twobyteasr.recognition.asr import (
     _funasr_generate,
+    aligner_tokens,
     align_qwen_transcript_segments,
     funasr_timestamp_tokens,
     reference_chunks_to_timeline_tokens,
 )
 from twobyteasr.storage.settings import DEFAULT_SETTINGS, _merge_known_settings
+
+
+def test_aligner_tokens_ignore_invalid_clocks_and_keep_original_word_order():
+    def piece(left, right, start, end):
+        return dict(char_start=left, char_end=right, start_ms=start, end_ms=end,
+                    start_basis="model", end_basis="model")
+
+    data = {"results": [
+        dict(id="window", text="one two three four five six", status="aligned",
+             window_start_ms=100, window_end_ms=1300, segments=[
+                 piece(0, 3, 100, 260), piece(4, 7, 270, 270), piece(8, 13, 20, 300),
+                 piece(14, 18, 400, 620), piece(19, 23, 370, 410),
+                 piece(24, 27, 700, 1600), piece(24, 27, 700, 900),
+                 piece(0, 3, 1000, 1100), piece(-4, 26, 1150, 1200),
+             ]),
+    ]}
+    assert [(row["text"], row["start"], row["end"]) for row in aligner_tokens(data)] == [
+        ("one", .1, .26), ("four", .4, .62), ("six", .7, .9),
+    ]
 
 
 def test_whisper_chunks_can_supply_a_conservative_subtitle_timeline():

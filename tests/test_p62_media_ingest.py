@@ -122,6 +122,58 @@ def test_p74c_probe_duration_uses_stream_when_format_is_missing():
     ]) == 176000
 
 
+def test_flv_duration_uses_packet_trailer_to_distinguish_absolute_end(tmp_path):
+    from twobyteasr.media.media_service import probe_duration_ms
+
+    def tag(timestamp):
+        prefix = bytes((9, 0, 0, 1)) + (timestamp & 0xFFFFFF).to_bytes(3, "big")
+        header = prefix + bytes((timestamp >> 24, 0, 0, 0))
+        return header + b"\x17" + (12).to_bytes(4, "big")
+
+    source = tmp_path / "offset.flv"
+    source.write_bytes(b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00" +
+                       tag(391670) + tag(9972640) + tag(9972649))
+    info = {"format_name": "flv", "start_time": "391.670", "duration": "9972.649"}
+    assert probe_duration_ms(info, [], source=source) == 9580979
+    elapsed = dict(info, duration="9580.979")
+    assert probe_duration_ms(elapsed, [], source=source) == 9580979
+    assert probe_duration_ms(dict(info, format_name="matroska"), [], source=source) == 9972649
+    from twobyteasr.media.indexed_media import IndexedMediaCache
+
+    old = {"format": info, "streams": [
+        {"codec_type": "audio", "start_time": "391.670"},
+        {"codec_type": "video", "start_time": "391.699"},
+    ]}
+    remuxed = {"format": {"format_name": "matroska", "start_time": "0", "duration": "9581.061"}, "streams": [
+        {"codec_type": "video", "start_time": "0.029"},
+        {"codec_type": "audio", "start_time": "0"},
+    ]}
+    IndexedMediaCache._validate(old, remuxed, source=source)
+    with source.open("ab") as file:
+        file.write(b"truncated")
+    assert probe_duration_ms(info, [], source=source) == 9972649
+
+
+def test_indexed_flv_lookup_restores_only_the_same_source_version(tmp_path):
+    from twobyteasr.media.indexed_media import IndexedMediaCache
+
+    source = tmp_path / "recording.flv"
+    source.write_bytes(b"test source")
+    cache = IndexedMediaCache(tmp_path / "index")
+    folder = cache._cache_folder(str(source))
+    folder.mkdir(parents=True)
+    target = folder / "optimized.mp4"
+    target.write_bytes(b"test validated copy")
+    stat = source.stat()
+    (folder / "ready.json").write_text(json.dumps({
+        "source": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "container": "mp4",
+    }), encoding="utf-8")
+    warm = IndexedMediaCache(cache.root)
+    assert warm._resolve_blocking(str(source)) == str(target)
+    source.write_bytes(b"test source replaced")
+    assert warm._resolve_blocking(str(source)) == str(source)
+
+
 def test_ingest_result_contains_probe_stat_and_unique_xml(tmp_path):
     media = tmp_path / "Session 01.flv"
     media.write_bytes(b"media")

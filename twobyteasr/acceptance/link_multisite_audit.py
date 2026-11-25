@@ -132,6 +132,46 @@ def start(window, out):
             reopened = load_project(saved)
             self.check('project save and reload keeps identity', reopened.project_id == page.project.project_id)
             self.shot('05-imported-project', window)
+            from PySide6.QtWidgets import QPushButton
+            from ..storage.project_stage_history import record_stage
+
+            # Stage receipts are controlled fixtures here. This GUI scenario
+            # tests their ownership and presentation without calling an API.
+            record_stage(reopened.project_id, "translation", "partial", applied=1, failed=1)
+            record_stage(reopened.project_id, "proofread", "suggestion", suggested=1)
+            record_stage("different-audit-project", "alignment", "completed", applied=4)
+
+            window._open_recognition_history()
+            history = window.history_page
+            entry = history.findChild(QPushButton, "historyOnlineDownloads")
+            yield lambda: entry.isVisible()
+            QTest.mouseClick(entry, Qt.MouseButton.LeftButton)
+            panel = history._online_download_page
+            yield lambda: panel.isVisible() and panel.model.rowCount() == 2
+            rows = {row["task_id"]: row for row in panel.model.rows}
+            self.check("online history contains both task identities", set(rows) == {task_id, generic_id})
+            self.check("online history shows imported state", all(row["state"] == "imported" for row in rows.values()))
+            panel.table.selectRow(0)
+            self.check("online history can reopen the saved project",
+                       "edit" in dict(panel.available(panel.row())))
+            yield lambda: panel.project_stages.isVisible()
+            stages = panel.project_stages.text()
+            self.check("same project stage receipts are visible and preserve partial decisions",
+                       "部分完成" in stages and "待采用" in stages and "字词对齐" not in stages)
+            self.check("real import publishes download and Studio import receipts",
+                       "下载" in stages and "导入" in stages)
+            self.shot("06-online-history", window)
+            from PySide6.QtWidgets import QDialog
+
+            panel.project_stages.linkActivated.emit("stages")
+            receipt_dialog = window.findChild(QDialog, "projectStageReceipts")
+            self.check("receipt detail opens", bool(receipt_dialog and receipt_dialog.isVisible()))
+            yield lambda: receipt_dialog.model.rowCount() > 0
+            self.check("download receipts retain verified phase sources", any(
+                row["stage"] == "download" and row.get("source") in {"bilibili", "online_media"}
+                for row in receipt_dialog.model.rows))
+            self.shot("07-project-receipts", receipt_dialog)
+            receipt_dialog.close()
 
         def finish(self):
             self.timer.stop()

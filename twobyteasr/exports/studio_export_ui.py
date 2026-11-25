@@ -1642,14 +1642,23 @@ class StudioExportWorkspace(QWidget):
         self._subtitle_task = None
         self._subtitle_task_project = None
         self.subtitle_export_button.setEnabled(True)
+        from ..storage.project_stage_history import record_stage
+
+        project_id = getattr(self.project, "project_id", "")
         if task.error is not None:
             self._last_subtitle_artifacts = list(task.artifacts)
+            record_stage(project_id, "export", "partial" if task.artifacts else "failed",
+                         subtitle_files=len(task.artifacts))
             bind_text(self.subtitle_export_status, '字幕导出失败：{value0}', value0=str(task.error))
             return
         artifacts = list(task.artifacts)
         layered = task.layered
         destination_reason = self._subtitle_destination_reason
         self._last_subtitle_artifacts = artifacts
+        missing = int(getattr(layered, "missing_translation_count", 0))
+        stale = int(getattr(layered, "needs_update_count", 0))
+        record_stage(project_id, "export", "partial" if missing or stale else "completed",
+                     subtitle_files=len(artifacts), missing_translations=missing, stale_translations=stale)
         self._settings.setValue(
             "subtitle/export_destination", self._selected_subtitle_destination_mode()
         )
@@ -3225,6 +3234,11 @@ class StudioExportWorkspace(QWidget):
             panel.error.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             panel.error.show()
         self._success_output = output
+        if receipt and output.is_file():
+            from ..storage.project_stage_history import record_stage
+
+            record_stage(getattr(self.project, "project_id", ""), "export", "completed",
+                         audio_files=int(bool(audio_output)), video_files=int(not audio_output))
         panel.painted = False   # ExportSuccessPanel.paintEvent sets it
         self.pages.setCurrentWidget(self.success_page)
         panel.play.setFocus()

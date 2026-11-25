@@ -76,6 +76,16 @@ class StudioSubtitleNavigationMixin:
         self.timeline.locate_subtitle_start(cue.start_ms)
         self._seek_subtitle_navigation(cue.start_ms, fixed_window=True)
 
+    def _timeline_jump_to_cue_start(self, cue_id):
+        if self.project is None or cue_id != self.selected_cue_id:
+            return
+        cue = self.timeline._timeline_cue_by_id.get(cue_id)
+        if cue is None or cue.end_ms <= cue.start_ms:
+            return
+        self._remember_subtitle_navigation(cue_id)
+        self._subtitle_endpoint_hold = True
+        self._seek_subtitle_navigation(cue.start_ms)
+
     def _select_cue_observation(self, cue_id, *, hydrate=True):
         # Restoring a project and hydrating a clock highlight are observations,
         # not a new user choice. Preserve the normal E-follow/default-layer path.

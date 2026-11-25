@@ -20,12 +20,23 @@ def row(estimated=False):
 
 
 def test_observer_sees_missing_hypothesis_before_uniform_fallback():
-    model=SimpleNamespace(_get_and_fix_timestamp=lambda hyp,ids,dur:[[str(ids[0]),0,dur]])
-    receipts=_install_timestamp_receipts(model)
-    failed=model._get_and_fix_timestamp({'timestamp':None},[1],38)
-    good=model._get_and_fix_timestamp({'timestamp':([0],[1])},[2],38)
-    assert receipts[id(failed)]['timestamp_reliability']=='estimated'
-    assert receipts[id(good)]['timestamp_reliability']=='measured'
+    def timestamp_engine(hypothesis, ids, duration):
+        raw = hypothesis["timestamp"]
+        if raw is None:
+            hypothesis["timestamp_geometry"] = "missing_hypothesis"
+            return [[str(ids[0]), 0, duration]]
+        hypothesis["timestamp_geometry"] = "validated"
+        return [[str(ids[0]), raw[0][0], raw[1][0]]]
+
+    model = SimpleNamespace(_get_and_fix_timestamp=timestamp_engine)
+    receipts = _install_timestamp_receipts(model)
+    failed = model._get_and_fix_timestamp({"timestamp": None}, [1], 38)
+    measured = model._get_and_fix_timestamp({"timestamp": ([.10], [.35])}, [2], 38)
+    too_wide = model._get_and_fix_timestamp({"timestamp": ([0], [38])}, [3], 38)
+    assert receipts[id(failed)]["timestamp_reliability"] == "estimated"
+    assert receipts[id(measured)]["timestamp_reliability"] == "measured"
+    assert receipts[id(too_wide)]["timestamp_geometry"] == "long_non_silence_token"
+    assert receipts[id(too_wide)]["timestamp_reliability"] == "estimated"
 
 
 def test_write_and_read_both_reject_failed_or_unversioned_checkpoints(tmp_path):

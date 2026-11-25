@@ -23,6 +23,7 @@ class SingleInstanceGuard(QObject):
     """Own a local endpoint and distinguish a live GUI from a stale endpoint."""
 
     paths_received = Signal(list)
+    browser_received = Signal(dict)
     MAX_MESSAGE = 1024 * 1024
 
     PING = b"2byteasr-ping\n"
@@ -45,6 +46,7 @@ class SingleInstanceGuard(QObject):
         self._seen_requests = {}
         self._buffers = {}
         self._receiver_ready = False
+        self.browser_handler = None
 
     @classmethod
     def application_name(cls, root: str | Path | None = None) -> str:
@@ -144,12 +146,24 @@ class SingleInstanceGuard(QObject):
     def enable_receiver(self):
         self._receiver_ready = True
         pending, self._requests = self._requests, []
-        for paths in pending:
-            self.paths_received.emit(paths)
+        for deliver, payload in pending:
+            deliver(payload)
+
+    def _deliver_browser(self, request):
+        if self.browser_handler is not None:
+            return self.browser_handler(request)
+        self.browser_received.emit(request)
+        return True
 
     def forward(self, paths, *, timeout_ms=1500, request_id=None):
+        return self._forward_payload({"paths": list(paths)}, timeout_ms, request_id)
+
+    def forward_browser(self, request, *, timeout_ms=1500, request_id=None):
+        return self._forward_payload({"browser": request}, timeout_ms, request_id)
+
+    def _forward_payload(self, body, timeout_ms, request_id):
         request_id = request_id or uuid.uuid4().hex
-        payload = json.dumps({"version": 1, "id": request_id, "paths": list(paths)},
+        payload = json.dumps({"version": 1, "id": request_id, **body},
                              ensure_ascii=False).encode("utf-8") + b"\n"
         if len(payload) > self.MAX_MESSAGE:
             return False
@@ -225,23 +239,37 @@ class SingleInstanceGuard(QObject):
         else:
             try:
                 payload = json.loads(line)
-                paths, request_id = payload["paths"], payload["id"]
+                request_id = payload["id"]
                 if (payload.get("version") != 1 or not isinstance(request_id, str)
-                    or not 1 <= len(request_id) <= 64 or not isinstance(paths, list)
-                    or len(paths) > 4096 or any(not isinstance(p, str) or "\0" in p for p in paths)):
+                    or not 1 <= len(request_id) <= 64):
                     raise ValueError("invalid request")
+                browser_request = set(payload) == {"version", "id", "browser"}
+                if browser_request:
+                    from .browser_link_protocol import NATIVE_LIMIT, validate
+                    if len(line) > NATIVE_LIMIT + 2048:
+                        raise ValueError("browser request too large")
+                    body, deliver = validate(payload["browser"]), self._deliver_browser
+                elif set(payload) == {"version", "id", "paths"}:
+                    body, deliver = payload["paths"], self.paths_received.emit
+                    if (not isinstance(body, list) or len(body) > 4096
+                            or any(not isinstance(p, str) or "\0" in p for p in body)):
+                        raise ValueError("invalid paths")
+                else:
+                    raise ValueError("invalid request fields")
                 if request_id not in self._seen_requests:
-                    if not self._receiver_ready and len(self._requests) >= 64:
-                        raise ValueError("startup queue full")
+                    if self._receiver_ready:
+                        if deliver(body) is False:
+                            raise ValueError("desktop queue full")
+                    else:
+                        limit = 32 if browser_request else 64
+                        if len(self._requests) >= limit:
+                            raise ValueError("startup queue full")
+                        self._requests.append((deliver, body))
                     self._seen_requests[request_id] = True
                     if len(self._seen_requests) > 1024:
                         self._seen_requests.pop(next(iter(self._seen_requests)))
-                    if self._receiver_ready:
-                        self.paths_received.emit(paths)
-                    else:
-                        self._requests.append(paths)
                 response = json.dumps({"id": request_id, "accepted": True}).encode() + b"\n"
-            except (ValueError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError, RecursionError):
                 response = b'{"accepted":false}\n'
         socket.write(response)
         socket.flush()

@@ -35,10 +35,12 @@ def _edge(row) -> str:
 
 def acoustic_span(project, cue) -> AcousticSpan | None:
     """The measured span of ``cue``'s current text, or None without measured words."""
-    from ..recognition.cue_word_alignment import MEASURED_ALIGNMENTS, cue_words
+    from ..recognition.cue_word_alignment import DOWNLOADED_WORD_ONSETS, MEASURED_ALIGNMENTS, cue_words
     from .text_split import graded_positions
     words, reason = cue_words(project, cue, allow_realign=False)
-    if not words or reason not in MEASURED_ALIGNMENTS:
+    if not words or reason not in MEASURED_ALIGNMENTS or reason == DOWNLOADED_WORD_ONSETS:
+        return None
+    if all(project.asr_evidence.get(word.evidence_ref, {}).get("link_source") for word in words):
         return None
     grades, _source = graded_positions(project, cue)
     return AcousticSpan(int(words[0].start_ms), int(max(word.end_ms for word in words)),

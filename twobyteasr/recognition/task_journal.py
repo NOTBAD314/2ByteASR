@@ -234,6 +234,7 @@ class TaskJournal:
                             "studio_project_failed", "queue_failed", "queue_cancelled", "subtitle_delivery",
                             "task_cache_prepared", "ready_shard_completed", "ready_shard_failed", "ready_shard_queued"}
         critical = critical or kind in {'remote_submission_intent', 'remote_task_accepted', 'mosi_scheduler', 'pipeline_work_progress'}
+        critical = critical or kind == 'language_guard_summary'
         if not critical and time.monotonic() - self._last_progress_write < 2.:
             return
         with self.lock:
@@ -273,9 +274,20 @@ class TaskJournal:
                     task["cache_files"][str(path)] = {"stage": payload.get("stage"), "bytes": path.stat().st_size,
                                                      "sha256": file_digest(path)}
             if kind in {"asr_language_request", "asr_shard_ready"}:
-                key = str(payload.get("request_index", payload.get("index", 0)))
+                index = payload.get('request_index')
+                key = str(index if index is not None else payload.get('index', 0))
+                if payload.get('repair'):
+                    key = 'language-repair:' + key
                 task["remote_requests"].setdefault(key, {}).update({k:v for k,v in payload.items()
-                    if k in {"remote_task_id", "raw_result_path", "start", "end", "request_index", "state"}})
+                    if k in {"remote_task_id", "raw_result_path", "start", "end", "request_index", "state",
+                             "requested_language", "strict_language", "parameters", "conflict", "model", "protocol"}})
+                if kind == 'asr_language_request' and 'parameters' in payload:
+                    media = str(task.get('media_index', 1))
+                    task.setdefault('language_requests', {}).setdefault(media, {})[key] = public_config({
+                        field: payload[field] for field in ('requested_language', 'parameters', 'conflict', 'model', 'protocol', 'repair')
+                        if field in payload})
+            if kind == 'language_guard_summary':
+                task.setdefault('language_guard', {})[str(task.get('media_index', 1))] = public_config(payload)
             if kind in {'remote_submission_intent','remote_task_accepted'}:
                 task.setdefault('submissions',{})[str(payload['request_key'])]=dict(payload)
             if kind == 'mosi_scheduler':

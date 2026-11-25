@@ -251,9 +251,12 @@ def test_japanese_candidates_hold_phrase_ends_mandatory_breaks_and_the_end(monke
     text = '本当だよ本当に坂本が'
     monkeypatch.setattr(japanese_morphology, 'document_phrase_spans',
                         lambda content: [(0, 4, '本当だよ'), (4, 7, '本当に'), (7, 10, '坂本が')])
-    assert japanese_break_candidates(text, mandatory=[2]) == [2, 4, 7, 10]
+    # 2026-11-25: a mandatory break inside a word moves to the nearest phrase edge.
+    assert japanese_break_candidates(text, mandatory=[2]) == [4, 7, 10]
+    assert japanese_break_candidates(text, mandatory=[7]) == [4, 7, 10]
+    # Without a morphology document: script-class phrases, never every character gap.
     monkeypatch.setattr(japanese_morphology, 'document_phrase_spans', lambda content: None)
-    assert japanese_break_candidates('本当だ', ()) == [1, 2, 3]
+    assert japanese_break_candidates('本当だ', ()) == [3]
 
 
 def test_japanese_request_sends_marks_and_reads_an_off_mark_pick(monkeypatch, tmp_path):

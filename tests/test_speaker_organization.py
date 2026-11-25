@@ -40,6 +40,17 @@ def test_original_utterance_threshold_deduplicates_and_survives_short_range():
     assert {s.id for s in loaded.speakers}=={'A',BACKGROUND}
 
 
+def test_explicit_haas_diarization_keeps_short_speaker_tracks_unconfirmed():
+    p = fixture()
+    p.generation_metadata['speaker_recovery']['processing']['preserve_detected_tracks'] = True
+    before = [(c.id, c.text, c.start_ms, c.end_ms, c.speaker_id) for c in p.cues]
+    apply_new_project_policy(p)
+    assert {speaker.id for speaker in p.speakers} == {'A', 'B'}
+    assert not any(speaker.is_host for speaker in p.speakers)
+    assert p.generation_metadata['speaker_recovery']['needs_confirmation']
+    assert [(c.id, c.text, c.start_ms, c.end_ms, c.speaker_id) for c in p.cues] == before
+
+
 def test_batch_delete_merge_restore_and_undo_redo():
     app=QApplication.instance() or QApplication([])
     p=fixture();stack=QUndoStack();before=p.to_dict()['cues']

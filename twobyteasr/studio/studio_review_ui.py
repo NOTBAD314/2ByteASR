@@ -1184,11 +1184,15 @@ class StudioReviewMixin:
             pass
         start, stop = review_playback_window(
             cue, runtime.visible_cues(cue.end_ms, cue.end_ms + REVIEW_TAIL_MS + REVIEW_NEXT_GUARD_MS + 1))
+        self._begin_bounded_cue_playback(cue_id, start, stop)
+
+    def _begin_bounded_cue_playback(self, cue_id, start, stop, *, audition=False, repeat=False):
+        self._release_review_playback()
         generation = getattr(self, "_review_play_generation", 0) + 1
         self._review_play_generation = generation
         # Set before the seek: the lead-in and tail cross neighbouring
         # captions, and the playhead-follow selection must stay on this one.
-        self._review_playback = ReviewPlayback(str(cue_id), start, stop, generation)
+        self._review_playback = ReviewPlayback(str(cue_id), start, stop, generation, audition=audition, repeat=repeat)
         self._review_fallback_playhead = None
         self._review_seeking = True
         try:
@@ -1204,6 +1208,30 @@ class StudioReviewMixin:
             self._show_video_error(str(exc))
             return
         self._arm_review_fallback(generation)
+
+    def _audition_selected_cue(self, mode):
+        if self.project is None or not self.video.controller:
+            return
+        cue = self.timeline._timeline_cue_by_id.get(self.selected_cue_id)
+        if cue is None or cue.start_ms >= cue.end_ms:
+            return
+        if self._loop_enabled:
+            self._toggle_loop_current()
+        current = getattr(self, "_review_playback", None)
+        if mode == "loop" and current is not None and current.repeat and not current.finished:
+            self._pause_review_context(current.generation)
+            self._release_review_playback()
+            return
+        start, stop = cue.start_ms, cue.end_ms
+        from .studio_audition_settings import values
+        settings = values(self._studio_preferences())
+        if mode == "head":
+            stop = min(stop, start + settings["head_ms"])
+            start = max(0, start - settings["before_ms"])
+        elif mode == "tail":
+            start = max(start, stop - settings["tail_ms"])
+            stop = self.timeline._bounded_time_ms(stop + settings["after_ms"])
+        self._begin_bounded_cue_playback(cue.id, start, stop, audition=True, repeat=mode == "loop")
 
     def _arm_review_fallback(self, generation: int) -> None:
         """Safety stop if the playhead never reports the end (stalled source)."""
@@ -1246,7 +1274,7 @@ class StudioReviewMixin:
             return
         remaining = review.stop_ms - int(milliseconds)
         if remaining <= 0:
-            self._pause_review_context(review.generation)
+            self._complete_bounded_cue_playback(review)
             return
         rate = max(0.25, float(getattr(self.video, "_playback_rate", 1.0) or 1.0))
         wall = remaining / rate
@@ -1266,7 +1294,14 @@ class StudioReviewMixin:
         generation = getattr(self, "_review_stop_generation", None)
         review = getattr(self, "_review_playback", None)
         if review is not None and review.generation == generation:
-            self._pause_review_context(generation)
+            self._complete_bounded_cue_playback(review)
+
+    def _complete_bounded_cue_playback(self, review):
+        if review.repeat:
+            self._begin_bounded_cue_playback(review.cue_id, review.start_ms, review.stop_ms,
+                                             audition=True, repeat=True)
+        else:
+            self._pause_review_context(review.generation)
 
     def _pause_review_context(self, generation: int) -> None:
         if generation != getattr(self, "_review_play_generation", 0) or not self.video.controller:
@@ -1288,6 +1323,8 @@ class StudioReviewMixin:
 
     def _release_review_playback(self) -> None:
         """The user moved on (seek, transport play, new selection, left Review)."""
+        if getattr(getattr(self, "_review_playback", None), "audition", False):
+            self._review_space_playing = False
         self._review_playback = None
         timer = getattr(self, "_review_stop_timer", None)
         if timer is not None:

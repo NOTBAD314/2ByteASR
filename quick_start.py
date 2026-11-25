@@ -22,7 +22,12 @@ import json
 import sys
 import traceback
 
-if len(sys.argv) >= 2 and sys.argv[1] in {'--mcp-stdio', '--playback-diagnostic', '--launch-motion', '--studio-audio-worker'}:
+_native_browser_launch = len(sys.argv) >= 2 and (
+    sys.argv[1].startswith("chrome-extension://")
+    or sys.argv[1].lower().replace("\\", "/").endswith("/browser-helper-host-firefox.json"))
+
+if len(sys.argv) >= 2 and (_native_browser_launch or sys.argv[1] in {
+        '--mcp-stdio', '--playback-diagnostic', '--launch-motion', '--studio-audio-worker'}):
     # No ordinary startup log before these isolated/windowless entry points.
     # The diagnostic coordinator installs its temporary profile first; audited
     # GUI children then use normal startup logging inside their own profiles.
@@ -228,6 +233,17 @@ def _tolerant_console() -> None:
 
 
 def main() -> int:
+    if _native_browser_launch:
+        from twobyteasr.app.browser_native_host import run
+        return run(application_root(), sys.argv[1:])
+    browser_request = None
+    if len(sys.argv) == 3 and sys.argv[1] == "--browser-link":
+        from twobyteasr.app.browser_link_protocol import public_protocol
+        try:
+            browser_request = public_protocol(sys.argv[2])
+        except ValueError:
+            return 2
+        del sys.argv[1:]
     if len(sys.argv) == 3 and sys.argv[1] == '--launch-motion':
         # 2026-11-20: the launch screen's animation, drawn by a helper process of its own so the
         # main process's loading (which holds Python's lock for long stretches) cannot stall it.
@@ -356,7 +372,9 @@ def main() -> int:
     instance_guard = SingleInstanceGuard(SingleInstanceGuard.application_name(application_root()))
     _startup_mark("EARLY_INSTANCE_GUARD_CREATED")
     if not instance_guard.acquire():
-        if instance_guard.forward(media_arguments, timeout_ms=30000):
+        forwarded = (instance_guard.forward_browser(browser_request, timeout_ms=30000) if browser_request
+                     else instance_guard.forward(media_arguments, timeout_ms=30000))
+        if forwarded:
             return 0
         # A crashed owner releases the OS mutex. A hung live owner is not safe to steal.
         if not instance_guard.acquire():
@@ -436,6 +454,10 @@ def main() -> int:
         # The fingerprint imports the Studio module tree to read its feature
         # symbols (~0.4 s); it is written once the window is interactive.
         after_startup_idle(write_runtime_fingerprint)
+        from threading import Thread
+        from twobyteasr.media.link_authorization import clean_expired_requests
+        after_startup_idle(lambda: Thread(target=clean_expired_requests, daemon=True,
+                                          name="link-request-cleanup").start())
 
         _startup_mark("IMPORTS_DONE")
 
@@ -453,6 +475,7 @@ def main() -> int:
             None,
             select_media=False,
             initial_paths=media_arguments,
+            browser_request=browser_request,
             instance_guard=instance_guard,
         )
         _append_startup_log(f"run_desktop_app returned {rc}")

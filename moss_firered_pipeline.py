@@ -649,6 +649,8 @@ def check_runtime(legacy):
     if cuda_components:
         require_cuda_runtime(cuda_components)
     primary_key = str(getattr(legacy, "PRIMARY_ASR_BACKEND", "moss"))
+    if legacy.FIRERED_ASR_BACKEND == 'haas_native' and primary_key != 'haas_ja':
+        raise ValueError('Haas 原生時間只適用於 Haas-ja-v1.0 主力轉寫。')
     if primary_key in {'vibevoice_1_5b', 'vibevoice_7b'}:
         raise RuntimeError('VibeVoice-ASR-Streaming 已移除，请在模型工坊选择现有主力模型。')
     if primary_key == "none":
@@ -756,6 +758,9 @@ def check_runtime(legacy):
         verify_model_files("firered_llm", paths["firered_llm"])
     elif primary_key == "whisper_turbo":
         verify_model_files("whisper_turbo", legacy.resolve_whisper_local_source())
+    elif primary_key == "haas_ja":
+        from twobyteasr.recognition.haas_backend import bundle, configuration
+        bundle(configuration(get_runtime_context().asr_settings_snapshot or legacy.RUNTIME_SETTINGS))
     elif primary_key in {"sensevoice", "funasr_nano", "paraformer"}:
         verify_model_files(primary_key, legacy.resolve_funasr_local_source(primary_key))
     if primary_key == "moss":
@@ -4146,7 +4151,9 @@ def process_media(
                 duration_ms=metadata.duration_ms,
                 backend=primary_backend,
                 model_revision=model_revision,
-                settings={"sample_rate": legacy.AUDIO_SAMPLE_RATE},
+                settings={"sample_rate": legacy.AUDIO_SAMPLE_RATE,
+                          "requested_locale": runtime_context.requested_language,
+                          "speaker_source": runtime_context.speaker_source},
                 ffmpeg_path=ffmpeg_path,
                 cache_root=Path(cache_context["cache_dir"]) / "incremental-asr",
                 recognize_chunk=recognize_incremental,
@@ -4286,6 +4293,7 @@ def process_media(
                 "sensevoice": "SenseVoice 主力转写",
                 "paraformer": "Paraformer 主力转写",
                 "funasr_nano": "Fun-ASR Nano 主力转写",
+                "haas_ja": "Haas-ja-v1.0 主力转写",
                 "api": api_primary_label,
             }
             resources = {
@@ -4294,6 +4302,7 @@ def process_media(
                 "sensevoice": "GPU/CPU",
                 "paraformer": "GPU/CPU",
                 "funasr_nano": "GPU/CPU",
+                "haas_ja": "GPU/CPU",
             }
             if incremental_primary_rows:
                 # Adjacent chunks share 0.5 s of audio; overlapping rows let a
@@ -4482,6 +4491,9 @@ def process_media(
                    # 2026-10-19: Spanish, German, French, Portuguese, Italian, Russian.
                    **{code: (name, f"{name.lower()}_audio", _EU_LABELS[code], f"{_EU_LABELS[code]}转写",
                              f"{_EU_LABELS[code]}单词时间轴") for code, name in _EU_NAMES.items()}}.get(task_language)
+        if timeline_backend == 'haas_native':
+            legacy.record_run_event('timeline_uses_primary_native', backend='haas_ja', precision='token')
+            return []
         if aligned and timeline_backend != "off":
             # FireRed/Paraformer/Whisper-as-timeline are Chinese timing tools here.
             language_name, reason, spoken, transcript, stage_label = aligned
@@ -4773,7 +4785,10 @@ def process_media(
     if long_pipeline is not None:
         long_pipeline.set_vad(speech_regions)
         moss_payload = long_pipeline.ensure_primary(moss_payload)
-    if moss_payload.get("cloud_gaps"):
+    provider_gaps = moss_payload.get('cloud_gaps') or []
+    moss_payload['provider_empty_windows'] = [gap for gap in provider_gaps if gap.get('reason') == 'provider_no_words']
+    moss_payload['cloud_gaps'] = [gap for gap in provider_gaps if gap.get('reason') != 'provider_no_words']
+    if moss_payload['cloud_gaps']:
         # The cloud's content review stopped part of the audio (2026-10-24):
         # an installed local primary model recognizes those ranges.
         from twobyteasr.recognition.cloud_gap_fill import fill_cloud_gaps
@@ -4845,6 +4860,40 @@ def process_media(
     runtime_context.language_evidence = language_evidence
     legacy.TASK_LANGUAGE = task_language
     legacy.record_run_event("TASK_LANGUAGE", language=task_language, **language_evidence)
+    from twobyteasr.recognition.language_guard import (
+        audit_cues, confirmed_mixed_reading, inspect_primary, probe_source_audio, protect_fusion, run_repair_window,
+        settings_policy, snapshot_text, validate_edits,
+    )
+    guard_policy = settings_policy(runtime_context.asr_settings_snapshot or legacy.RUNTIME_SETTINGS,
+                                   runtime_context.requested_language)
+    endpoint = runtime_context.asr_endpoint_snapshot or {}
+    configured_review = str(getattr(legacy, 'QWEN_ASR_BACKEND', 'off'))
+    backup = {'local': 'qwen_local', 'whisper_turbo': 'whisper_turbo', 'sensevoice': 'sensevoice',
+              'funasr_nano': 'funasr_nano', 'firered': 'firered', 'firered_llm': 'firered_llm',
+              'haas_ja': 'haas_ja' if guard_policy['language'] == 'ja' else None}.get(configured_review)
+    if backup == primary_backend:
+        backup = None
+    repair_primary = primary_backend
+    if primary_backend == 'api':
+        from twobyteasr.providers.asr_language_control import policy as request_policy
+        if not request_policy(endpoint, runtime_context.requested_language)['parameter_sent']:
+            repair_primary = None
+    if primary_backend == 'moss':
+        repair_primary = None  # MOSS has no target-language decode option.
+    def guarded_record(kind, **data):
+        if kind == 'language_guard_summary':
+            runtime_context.language_evidence['language_guard'] = data
+        legacy.record_run_event(kind, **data)
+    if not (runtime_context.recognition_snapshot.get('language_recovery_policy') or {}).get('reuse_candidates'):
+        checked = inspect_primary(moss_payload.get('segments', []), guard_policy, duration=audio_seconds,
+            speech=speech_regions, audio=shared_audio,
+            acoustic_probe=lambda windows: probe_source_audio(shared_audio, windows, cache_context, legacy),
+            confirmed_mixed=lambda row: confirmed_mixed_reading(shared_audio, runtime_context, row),
+            primary=repair_primary, backup=backup, event=guarded_record, review=legacy.add_review_item,
+            runner=lambda model, start, end: run_repair_window(model, media_path, shared_audio, start, end,
+                                                               cache_context, runtime_context, legacy))
+        if guard_policy['strict']:
+            moss_payload.update(segments=checked, references=checked)
     from twobyteasr.recognition.language_diagnostics import audit_primary_language
     language_audit = audit_primary_language(moss_payload.get('segments', []), runtime_context, legacy)
     from twobyteasr.recognition.transcript_acceptance import gate_primary
@@ -4886,6 +4935,7 @@ def process_media(
     from twobyteasr.recognition.speaker_evidence import label_summary
     speaker_processing.update(enabled=speaker_mode != 'single', selected_backend=speaker_mode,
         primary_backend=primary_backend, job_id=runtime_context.job_id,
+        preserve_detected_tracks=primary_backend == 'haas_ja' and speaker_mode == 'ecapa',
         stages={'primary': label_summary(moss_payload.get('segments', []))})
     if speaker_mode == 'moss' and primary_backend == 'moss':
         speaker_processing.update(status='completed', backend='moss')
@@ -4894,8 +4944,31 @@ def process_media(
     # capability simply yields one lane; no extra model runs or native-label
     # requirement is inferred from retired recognition-stage switches.
     if primary_backend != 'moss':
-        speaker_processing.update(status='native', moss_called=False,
+        speaker_processing.update(status='single' if speaker_mode == 'single' else 'native', moss_called=False,
             text_transcription_repeated=False)
+        from twobyteasr.providers.qwen31_asr import FLASH
+        if speaker_mode == 'ecapa' or (primary_backend == 'api' and endpoint.get('model') == FLASH
+                                     and guard_policy['strict'] and speaker_mode == 'native'):
+            from twobyteasr.recognition.speaker_diarization import diarize
+            speaker_processing.update(backend='ecapa', status='failed')
+            try:
+                worker = Path(legacy.SCRIPT_DIR) / 'workers' / 'speaker_embed_worker.py'
+                if not worker.is_file():
+                    worker = Path(legacy.SCRIPT_DIR) / 'speaker_embed_worker.py'
+                separated, evidence = diarize(moss_payload['segments'], shared_audio, speech_regions,
+                    sample_rate=legacy.AUDIO_SAMPLE_RATE, model_dir=paths['speaker_embedding'],
+                    cache_dir=cache_context['cache_dir'], worker_path=worker, python=paths['main_python'])
+                moss_payload.update(segments=separated, references=separated)
+                speaker_processing.update(status='completed', cache_hit=evidence['cache_hit'],
+                                          elapsed_seconds=evidence['elapsed_seconds'],
+                                          stages={'independent_diarization': label_summary(separated)})
+            except CancelledError:
+                raise
+            except Exception as exc:
+                from twobyteasr.providers.provider_diagnostics import redact_diagnostics
+                speaker_processing.update(failure_category=type(exc).__name__,
+                                          failure_reason=redact_diagnostics(str(exc))[:300])
+                legacy.add_review_item(0., '说话人需要确认', '獨立說話人分離失敗，已保留原辨識字幕。', priority=2)
         legacy.record_run_event('speaker_source', text_source=primary_backend,
             processing=speaker_processing)
 
@@ -4980,7 +5053,7 @@ def process_media(
             if review_backend == "api"
             else (
                 "GPU/CPU"
-                if review_backend in {"whisper_turbo", "sensevoice", "funasr_nano"}
+                if review_backend in {"whisper_turbo", "sensevoice", "funasr_nano", "haas_ja"}
                 else "GPU"
             )
         )
@@ -5007,7 +5080,7 @@ def process_media(
                 if review_backend == "whisper_turbo"
                 else (
                     f"{review_backend} 本地文字复核"
-                    if review_backend in {"sensevoice", "funasr_nano", "firered", "firered_llm"}
+                    if review_backend in {"sensevoice", "funasr_nano", "firered", "firered_llm", "haas_ja"}
                     else "Qwen3-ASR VAD短块复核"
                 )
             )
@@ -5018,7 +5091,7 @@ def process_media(
             legacy.record_run_event("CACHE_REJECTED", stage="qwen", reason="real_execution_required")
         return _run_audited_model_stage(
             legacy,
-            model_id=review_backend if review_backend in {"firered", "firered_llm"} else "qwen3-asr",
+            model_id=review_backend if review_backend in {"firered", "firered_llm", "haas_ja"} else "qwen3-asr",
             role="text_verification",
             backend=review_backend,
             media_path=media_path,
@@ -5150,7 +5223,7 @@ def process_media(
         flat_segment_count=len(firered_tokens),
     )
 
-    firered_selected = str(getattr(legacy, "FIRERED_ASR_BACKEND", "local")) != "off"
+    firered_selected = str(getattr(legacy, "FIRERED_ASR_BACKEND", "local")) not in {"off", "haas_native"}
     firered_failed = bool(firered_selected and not firered_tokens)
     if firered_failed:
         legacy.add_review_item(
@@ -5168,7 +5241,8 @@ def process_media(
             fallback_owner="moss",
             reason="no_firered_timeline_output",
         )
-    qwen_selected = bool(not analysis_transcript and legacy.USE_QWEN_ASR_REFERENCE)
+    qwen_selected = bool(not analysis_transcript and legacy.USE_QWEN_ASR_REFERENCE
+                         and not (legacy.QWEN_ASR_BACKEND == 'haas_ja' and task_language != 'ja'))
     # qwen_chunks is populated after the optional serial stage below.  The
     # selected/failed state is finalized there once every execution path has
     # had a chance to run.
@@ -5311,6 +5385,7 @@ def process_media(
         legacy.record_run_event('independent_asr_receipt', **{key: run[key] for key in
             ('execution_id', 'model_id', 'backend', 'role', 'result_type', 'status', 'reason', 'coverage_ms')},
             candidate_count=sum(row['status'] == 'decoded' for row in run['windows']))
+    pre_review_text = {str(segment.segment_id): segment.text for segment in segments}
     segments = attach_qwen_review_evidence(segments, qwen_chunks, legacy)
     if getattr(runtime_context, "task_language", "") == "ja" and not moss_payload.get("host_speakers"):
         # build_moss_host_primary_segments records the hosts on a validated
@@ -5322,6 +5397,7 @@ def process_media(
         moss_payload["host_speakers"] = list(selected or sorted({segment.speaker for segment in segments}))
         legacy.record_run_event("host_speakers_propagated", hosts=moss_payload["host_speakers"],
                                 reason="validated_copy_kept_host_speakers", language="ja")
+    before_fusion = [copy.copy(row) for row in segments] if guard_policy['strict'] else segments
     segments, _restored_dialogue_count = restore_qwen_supported_dialogue_segments(
         segments,
         qwen_chunks,
@@ -5338,6 +5414,7 @@ def process_media(
         legacy,
     )
     segments = reconcile_firered_moss_qwen(segments, legacy)
+    segments = protect_fusion(before_fusion, segments, guard_policy, legacy.record_run_event)
     duplicate_reference = (primary_backend == "api" and str(getattr(legacy,"QWEN_ASR_BACKEND","")) == "api")
     reference_has_text = any(str(chunk.get('text') or '').strip() for chunk in qwen_chunks)
     qwen_failed = bool(qwen_selected and not reference_has_text and not duplicate_reference
@@ -5488,8 +5565,10 @@ def process_media(
     source_segments = segments
     segments = _review_copy.deepcopy(segments)
     segments = apply_source_terms(segments, legacy, snapshot=term_snapshot)
+    validate_edits(snapshot_text(source_segments, guard_policy), segments, guard_policy, 'source_glossary', legacy.record_run_event)
 
     if text_plan.polish:
+        before_polish = snapshot_text(segments, guard_policy)
         stage_index += 1
         from twobyteasr.providers.asr_provider_snapshot import task_provider_snapshot
         polish_snapshot = task_provider_snapshot('polish')
@@ -5509,26 +5588,33 @@ def process_media(
                 extra_signature={'review_policy': REVIEW_POLICY, 'segments': legacy.serialize_segments(segments)},
             ),
         )
+        validate_edits(before_polish, segments, guard_policy, 'ai_proofread', legacy.record_run_event)
     post_polish_started = time.perf_counter()
     # Search owns an independent scope/cache and runs even after a text hit.
     from twobyteasr.glossary.domain_terms import run_optional_term_verification
+    before_term_verification = snapshot_text(segments, guard_policy)
     segments = run_optional_term_verification(segments, base_name, cache_context)
+    validate_edits(before_term_verification, segments, guard_policy, 'domain_terms', legacy.record_run_event)
     verified_at = time.perf_counter()
     # 即使命中旧缓存，仍在本地执行术语与成片规则；后续全文断句会依据
     # 规整后的文字和说话人插话边界重新计算缓存签名。
     save_speaker_evidence(speaker_audit_root, 'corrected-before-editorial', legacy.serialize_segments(segments))
+    before_editorial = snapshot_text(segments, guard_policy)
     segments = legacy.apply_editorial_segment_rules(segments)
+    validate_edits(before_editorial, segments, guard_policy, 'editorial', legacy.record_run_event)
     # Cloud/cached polishing and editorial formatting may alter casing. The
     # authoritative local pass runs before grouping and its word alignment.
+    before_final_glossary = snapshot_text(segments, guard_policy)
     segments = apply_source_terms(segments, legacy, snapshot=term_snapshot)
+    validate_edits(before_final_glossary, segments, guard_policy, 'source_glossary_final', legacy.record_run_event)
     segments = preserve_source_for_delivery(source_segments, segments, record=legacy.record_run_event,
         summary=runtime_context.polishing_summary)
     from twobyteasr.recognition.edited_text_alignment import realign_edited_segments
     from twobyteasr.subtitle_rules.language_rules import qwen_language_name
     alignment_backend = str(getattr(legacy, "FIRERED_ASR_BACKEND", "off"))
-    realign_edited_segments(segments, shared_audio, legacy, enabled=alignment_backend != "off",
+    realign_edited_segments(segments, shared_audio, legacy, enabled=alignment_backend not in {"off", "haas_native"},
         language=qwen_language_name(getattr(runtime_context, "task_language", "zh")),
-        evidence_dir=timing_evidence_root)
+        evidence_dir=timing_evidence_root, previous_text=pre_review_text)
     save_speaker_evidence(speaker_audit_root, "polished", legacy.serialize_segments(segments))
     # Segmentation conserves the adopted post-proofread source. Its legal
     # spelling/terminology edits are traced separately from later text loss.
@@ -5541,20 +5627,8 @@ def process_media(
         # (nagisa in the main runtime, no model). Without it the script-class
         # heuristic protects words but cannot split long hiragana stretches.
         from twobyteasr.subtitle_rules import japanese_morphology
-        texts = [segment.text for segment in segments]
-        try:
-            tagged = japanese_morphology.tag_texts(texts)
-        except Exception as error:
-            tagged = None
-            legacy.record_run_event("japanese_morphology_unavailable", error=str(error)[:300])
-            print(f"   [日语断句] 分词不可用，改用文字类别近似规则：{str(error)[:120]}")
-        document = japanese_morphology.build_document(texts, tagged)
-        japanese_morphology.install(document)
-        legacy.record_run_event("japanese_morphology", **document.receipt(),
-                                elapsed_ms=(tagged or {}).get("elapsed_ms"))
-        if tagged:
-            print(f"   [日语断句] nagisa 文节：{document.measured_segments}/{len(texts)} 段，"
-                  f"{len(document.allowed)} 个可断点，其中 {len(document.strong)} 个强断点。")
+        japanese_morphology.prepare_task_document([segment.text for segment in segments],
+                                                  legacy.record_run_event, scope="task")
 
     grouping_uses_ai = text_plan.group
     stage_index += 1
@@ -5584,7 +5658,7 @@ def process_media(
                 "grouped" if grouping_uses_ai else "grouped_local",
                 cache_context,
                 lambda: (english_segmentation.group_english_with_ai(
-                    segments, firered_tokens, runtime_context.provider_snapshot, lexicon=word_lexicon)
+                    segments, firered_tokens, runtime_context.provider_snapshot, lexicon=word_lexicon, speech_regions=speech_regions)
                     if grouping_uses_ai
                     else english_segmentation.group_english(segments, firered_tokens, lexicon=word_lexicon)),
                 encoder=legacy.serialize_cues,
@@ -5593,6 +5667,8 @@ def process_media(
                     **alternate_coverage_signature,
                     "segments": legacy.serialize_segments(segments),
                     "firered_tokens": firered_tokens,
+                    "speech_regions": speech_regions,
+                    "vad_execution": getattr(speech_regions, 'execution', {}),
                     "use_ai": grouping_uses_ai,
                     "english_rules": english_segmentation.grouping_prompt_version(word_lexicon),
                 },
@@ -5694,6 +5770,7 @@ def process_media(
         ),
     )
 
+    audit_cues(cues, segments, guard_policy, 'ai_grouping' if grouping_uses_ai else 'local_grouping', legacy.record_run_event)
     save_speaker_evidence(speaker_audit_root, 'grouped-before-final-timing', legacy.serialize_cues(cues))
     # 2026-10-22 (MFA plan step 5): every step that moves caption times, in order (timing_ledger).
     from twobyteasr.recognition.timing_ledger import TimingLedger
@@ -5751,7 +5828,7 @@ def process_media(
     from twobyteasr.recognition.cue_forced_alignment import chinese_final_alignment
     chinese_aligned = chinese_final_alignment(getattr(runtime_context, "task_language", ""),
                                               getattr(legacy, "FIRERED_ASR_BACKEND", "local"))
-    if (japanese_task or english_task or korean_task or european_task or chinese_aligned) and not analysis_transcript and str(getattr(legacy, "FIRERED_ASR_BACKEND", "local")) != "off":
+    if (japanese_task or english_task or korean_task or european_task or chinese_aligned) and not analysis_transcript and alignment_backend not in {"off", "haas_native"}:
         # Word timing must belong to the text the user will edit: align each
         # final caption's current text (adjacent same-speaker captions together).
         from twobyteasr.recognition.cue_forced_alignment import align_final_cues

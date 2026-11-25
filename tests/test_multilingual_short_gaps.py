@@ -1,4 +1,4 @@
-"""One end-only short-gap policy regardless of the language's reading limit."""
+"""Display handoffs preserve acoustic receipts, reading caps and true pauses."""
 import copy
 from types import SimpleNamespace
 
@@ -16,7 +16,7 @@ def cue(key, start, end, text="a complete sentence", speaker="S1"):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_long_cue_short_gap_closes_in_all_languages(language, monkeypatch):
+def test_handoff_respects_continuity_and_duration_in_all_languages(language, monkeypatch):
     monkeypatch.setattr(timing, "record_run_event", lambda *args, **kwargs: None)
     rows = [cue(170, 634.0416667, 640.0833333), cue(171, 640.3333333, 644.625),
             cue(172, 645.5, 649.542)]
@@ -24,10 +24,19 @@ def test_long_cue_short_gap_closes_in_all_languages(language, monkeypatch):
     starts = [c.start for c in rows]
     with language_scope(language):
         timing.bridge_short_display_gaps(rows, 1000, 24)
-    assert rows[0].end == pytest.approx(rows[1].start)
+    assert rows[0].end == 640.0833333  # a 250 ms gap without continuity evidence
     assert [c.start for c in rows] == starts
     assert rows[1].end == 644.625  # long silence remains
     assert [c.forced_alignment for c in rows] == evidence
+
+    continuous = [cue(173, 0, 2), cue(174, 2.25, 4)]
+    for index, item in enumerate(continuous):
+        item.source_spans = [dict(source_id="one-phrase", char_start=index * len(item.text),
+                                  char_end=(index + 1) * len(item.text))]
+    with language_scope(language):
+        timing.bridge_short_display_gaps(continuous, 10, 24)
+    assert continuous[0].end == continuous[1].start == 2.25
+    assert continuous[0].forced_alignment["segments"][0]["end"] == 1.9
 
 
 @pytest.mark.parametrize("language", ("en", "ko", "es", "fr", "de", "pt", "it", "ru"))
@@ -70,6 +79,7 @@ def test_closing_late_tail_keeps_real_overlap_and_media_end(monkeypatch):
 def test_natural_pause_survives_every_supported_grid(fps, monkeypatch):
     monkeypatch.setattr(timing, "record_run_event", lambda *args, **kwargs: None)
     rows = [cue(1, 0, 5), cue(2, 5.125, 6.5)]
+    rows[0].display_timing_receipt = {"measured_pause_after_ms": 125}
     timing.relock_display_timing(rows, 10, fps)
     boundary = round(rows[1].start*fps)
     assert rows[0].end < rows[1].start

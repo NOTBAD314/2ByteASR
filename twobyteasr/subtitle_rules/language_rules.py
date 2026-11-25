@@ -72,7 +72,9 @@ _LATIN_MARKERS = {
     PT: ("que não de é o os as eu você um uma para com isso está mas muito aqui vamos tá né ele ela do da "
          "no na gente em hoje também porque já pessoal", "ãõçâêô"),
     IT: ("che non di è il lo gli e un una per sono ho questo mi ma molto qui andiamo cosa del della ci "
-         "anche allora oggi perché già ragazzi la", "àèìòù"),
+         "anche allora oggi perché già ragazzi la al allo ai agli alla alle dal dallo dai dagli dalla dalle "
+         "dei degli delle nel nello nei negli nella nelle sul sullo sui sugli sulla sulle ha hai hanno abbiamo "
+         "aveva avevano essere stato stati stata state quale quali cui ciò tuttavia sempre ogni dove soltanto", "àèìòù"),
 }
 
 # Which roles each local model fills for each language. "transcribe" is

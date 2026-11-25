@@ -567,6 +567,9 @@ def submit(audio, endpoint, *, client, state_path: Path, state: dict, check=lamb
     return state
 
 
+POLL_NETWORK_RETRIES = 6   # 5+10+20+40+60+60 s of waiting before giving up for this run
+
+
 def poll(endpoint, *, client, state_path: Path, state: dict, duration: float, check=lambda: None,
          progress=lambda *a: None, sleep=time.sleep, max_wait: float = 7200.0, segment=None, timings=None) -> dict:
     """Wait for one submitted task. Each state reaches ``progress`` with a
@@ -576,13 +579,37 @@ def poll(endpoint, *, client, state_path: Path, state: dict, duration: float, ch
     deadline = time.monotonic() + max_wait
     interval = min(10.0, max(2.0, float(state.get('retry_after') or 3)))
     submitted = float(state.get('submitted_at') or time.time())
+    import requests
+    network_failures = 0
     while True:
         check()
         if time.monotonic() >= deadline:
             raise ASRProtocolError('本地等待达到时限；任务编号已保存，下次会继续查询原任务。', 'poll_timeout')
         request_started = _phase_clock()
-        response = client.get(task_url(endpoint['url'], state['task_id']), headers=_auth(endpoint),
-                              timeout=(10, 60), allow_redirects=False)
+        try:
+            response = client.get(task_url(endpoint['url'], state['task_id']), headers=_auth(endpoint),
+                                  timeout=(10, 60), allow_redirects=False)
+            network_failures = 0
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            # 2026-11-25 (真拳伝説 03): one TLS/connection failure while polling an
+            # accepted task ended the whole recognition. The task ID is saved;
+            # ask the same task again with backoff, never submit again.
+            network_failures += 1
+            state.update(last_poll_error=type(exc).__name__, last_poll_at=time.time())
+            _save(state_path, state)
+            if network_failures > POLL_NETWORK_RETRIES or time.monotonic() >= deadline:
+                category = 'tls_certificate' if isinstance(exc, requests.exceptions.SSLError) else 'network'
+                raise ASRProtocolError(('HTTPS 证书校验失败' if category == 'tls_certificate' else '网络连接中断')
+                                       + '：MOSI 任务已受理，任务编号已保存；网络恢复后重试会继续查询原任务，'
+                                       '不会重新上传或重复计费。', category) from exc
+            progress('network_retry', network_failures, POLL_NETWORK_RETRIES,
+                     dict(remote_waited_seconds=round(max(0.0, time.time() - submitted), 1),
+                          request_audio_seconds=round(float(duration), 1)))
+            pause = min(60.0, 5.0 * (2 ** (network_failures - 1)))
+            for _ in range(int(pause * 10)):
+                check()
+                sleep(.1)
+            continue
         if timings is not None:
             timings['poll_requests'] += 1
             timings['poll_http_seconds'] += _phase_clock() - request_started

@@ -264,6 +264,12 @@ class LanguageBadgeRow(QWidget):
         language = current_language()
         support = self._support or {}
         summary = support.get("summary") or ""
+        capability = support.get('request_capability')
+        if capability is not None:
+            label = {'decode': '可指定解码语言', 'hint': '支持指定语言提示',
+                     'detect': '由模型自动识别语言', 'fixed': '模型或端点使用固定语言模式'}.get(
+                         capability.language_mode, '语言参数依端点而定')
+            bind_text(self, label, property='toolTip')
         if not self.short and not self.grid_columns and self.isVisible():
             self._compact = self.width() < self.full_names_width()
         short = self.short or self._compact

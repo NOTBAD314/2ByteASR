@@ -36,7 +36,7 @@ def fake_provider(monkeypatch, response, callback=None):
                                   if not case.get("accept")], ids=lambda row: row["id"])
 def test_bad_response_cannot_be_validated_ai(monkeypatch, case):
     snapshot, calls = fake_provider(monkeypatch, case["response"])
-    with activate_runtime_context(RuntimeContext(), legacy=core):
+    with activate_runtime_context(RuntimeContext(task_language="zh"), legacy=core):
         result = grouping.call_grouping_api(sources(), provider_snapshot=snapshot, _packed=True)
     assert calls
     assert result.origin == "fallback"
@@ -62,7 +62,7 @@ def test_source_changed_during_request_cannot_commit(monkeypatch):
     rows = sources()
     snapshot, calls = fake_provider(monkeypatch, '{"boundaries":[8]}',
                                     callback=lambda: setattr(rows[0], "text", "用户已改成另外一句"))
-    with activate_runtime_context(RuntimeContext(), legacy=core):
+    with activate_runtime_context(RuntimeContext(task_language="zh"), legacy=core):
         with pytest.raises(Exception, match="来源|过期|变化|替换"):
             grouping.call_grouping_api(rows, provider_snapshot=snapshot, _packed=True)
 
@@ -128,11 +128,10 @@ def test_snapshot_changes_for_speaker_timing_and_word_evidence():
 
 
 def test_cancelled_no_cache_request_never_returns_fallback(monkeypatch):
-    from twobyteasr.recognition.service import CancelledError
-    token = SimpleNamespace(is_cancelled=False)
-    snapshot,_ = fake_provider(monkeypatch,'{"boundaries":[8]}',
-                               lambda:setattr(token,"is_cancelled",True))
-    with activate_runtime_context(RuntimeContext(cancellation_token=token),legacy=core):
+    from twobyteasr.recognition.service import CancelledError, CancellationToken
+    token = CancellationToken()
+    snapshot,_ = fake_provider(monkeypatch,'{"boundaries":[8]}', token.cancel)
+    with activate_runtime_context(RuntimeContext(task_language="zh", cancellation_token=token),legacy=core):
         with pytest.raises(CancelledError):
             grouping.call_grouping_api(sources(),provider_snapshot=snapshot,_packed=True)
 
@@ -191,7 +190,7 @@ def test_truncated_split_uses_same_retry_budget(monkeypatch):
         raise AIProviderError("truncated",category="structured_output_truncated")
     monkeypatch.setattr(grouping,"provider_for_stage",lambda *a,**k:SimpleNamespace(complete=complete))
     rows=[core.SpeechSegment(index,index,index+.8,"保留原文",.8,[],speaker="S01") for index in range(4)]
-    with activate_runtime_context(RuntimeContext(),legacy=core):
+    with activate_runtime_context(RuntimeContext(task_language="zh"),legacy=core):
         result=grouping.call_grouping_api(rows,provider_snapshot=snapshot,_packed=True,
                                          _retry_budget=RetryBudget(1))
     assert len(calls)==2
@@ -204,7 +203,7 @@ def test_postprocessing_cannot_add_unowned_cues(monkeypatch):
     def broken(cues):
         return list(original(cues))+[core.SubtitleCue(99,0,2,"未归属内容",speaker="S99")]
     monkeypatch.setattr(grouping,"merge_hanging_attribute_cues",broken)
-    with activate_runtime_context(RuntimeContext(),legacy=core):
+    with activate_runtime_context(RuntimeContext(task_language="zh"),legacy=core):
         result=grouping.group_subtitles(sources(),use_ai=False)
     assert [(cue.text,cue.speaker) for cue in result]==[(sources()[0].text,"S01")]
     assert result.data_validated and not result.validated
@@ -229,7 +228,7 @@ def test_second_pass_conflict_keeps_first_and_shares_budget(monkeypatch):
 
 def test_reused_runtime_object_cannot_commit_to_next_media(monkeypatch):
     from twobyteasr.recognition.service import CancelledError
-    context=RuntimeContext(media_index=1,studio_project_path="project-one")
+    context=RuntimeContext(task_language="zh", media_index=1,studio_project_path="project-one")
     snapshot,_=fake_provider(monkeypatch,'{"boundaries":[8]}',
         lambda:setattr(context,"media_index",2))
     with activate_runtime_context(context,legacy=core):
@@ -283,7 +282,7 @@ def test_case_normalization_that_expands_codepoints_never_sends_ambiguous_offset
     # generic timeline helpers cannot express that unit; retain source safely.
     rows=[core.SpeechSegment(1,0,1,"İ字幕",.8,[],speaker="S01")]
     snapshot,calls=fake_provider(monkeypatch,'{"boundaries":[3]}')
-    with activate_runtime_context(RuntimeContext(),legacy=core):
+    with activate_runtime_context(RuntimeContext(task_language="zh"),legacy=core):
         result=grouping.call_grouping_api(rows,provider_snapshot=snapshot,_packed=True)
     assert calls==[]
     assert result.origin=="fallback" and result.data_validated

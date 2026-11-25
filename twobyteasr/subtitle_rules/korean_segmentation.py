@@ -37,7 +37,9 @@ import difflib
 import json
 import re
 
-from .english_segmentation import (FORBIDDEN_BREAK, SOURCE_TIME_TOLERANCE, _fill_times, _note_sentence_kept,
+from .english_segmentation import (ai_pieces_with_local_repair, break_problem, drop_closing_break, refine_long_lines,
+                                   join_orphan_words,
+                                   FORBIDDEN_BREAK, SOURCE_TIME_TOLERANCE, _fill_times, _note_sentence_kept,
                                    _source_problem)
 from .korean_text import RULES, display_length, join, normalize_spaces, word_core, words as split_words
 from ..recognition.transcript_data import SubtitleCue
@@ -245,15 +247,39 @@ def group_korean(segments, firered_tokens=(), *, breaks_for=None, ai_only=False)
         gaps = [max(0.0, times[i + 1][0] - times[i][1]) for i in range(len(tokens) - 1)]
         durations = [max(0.0, end - start) for start, end in times]
         status = 'source_unchanged_short'
+        piece_origins = None
         pieces = [(0, len(tokens))] if ai_only else split_tokens(tokens, gaps, durations=durations, source_text=segment.text)
         if breaks_for is not None and display_length(segment.text) > RULES.cue_max_chars:
-            answer = pieces_from_breaks(tokens, breaks_for(segment, tokens), gaps=gaps, strict=ai_only)
+            raw_breaks = breaks_for(segment, tokens)
+            answer = pieces_from_breaks(tokens, raw_breaks, gaps=gaps, strict=ai_only)
+            from .segmentation_profiles import profile_for as _profile_for
+            repaired = None if answer or not ai_only else ai_pieces_with_local_repair(
+                tokens, raw_breaks, scores=break_scores(tokens, gaps),
+                forced={i for i, gap in enumerate(gaps) if gap >= _profile_for('ko').long_pause_seconds},
+                length_of=display_length, max_chars=RULES.cue_max_chars,
+                local_split=lambda a, b: split_tokens(tokens[a:b], gaps[a:b - 1], durations=durations[a:b],
+                                                      source_text=' '.join(tokens[a:b])))
             if answer and (ai_only or len(answer) <= len(pieces)):
                 pieces = answer
                 status = 'ai_accepted'
-            elif ai_only:
-                status = 'unresolved'
-                _note_sentence_kept(segment, 'ai_boundary_unresolved')
+            elif repaired:
+                pieces, piece_origins = repaired
+                status = 'ai_accepted' if set(piece_origins) == {'ai_accepted'} else 'local_fallback_split'
+            if ai_only and status in ('ai_accepted', 'local_fallback_split') and len(pieces) > 1:
+                joined, changed = join_orphan_words(pieces, tokens, length_of=display_length, max_chars=RULES.cue_max_chars)
+                if changed:
+                    before = dict(zip((b for a, b in pieces), piece_origins or [status] * len(pieces)))
+                    pieces = joined
+                    piece_origins = ['local_orphan_join' if b in changed else before.get(b, status) for a, b in pieces]
+            if ai_only and status == 'source_unchanged_short':
+                # 2026-11-25: unanswered after the retry -> local word rules, labelled local.
+                local = split_tokens(tokens, gaps, durations=durations, source_text=segment.text)
+                if local and len(local) > 1:
+                    pieces = local
+                    status = 'local_fallback_split'
+                else:
+                    status = 'unresolved'
+                    _note_sentence_kept(segment, 'ai_boundary_unresolved')
         locked, speaker = bool(getattr(segment, "timing_locked", False)), segment.speaker or "S00"
         own = []
         for (first,last),(a,b,raw_piece) in zip(pieces,slice_word_pieces(segment.text,pieces)):
@@ -265,6 +291,9 @@ def group_korean(segments, firered_tokens=(), *, breaks_for=None, ai_only=False)
                 index_unit='python_unicode_codepoint',source_time=[segment.start,segment.end])]
             own[-1].timing_basis='matched_word_evidence' if all(measured_mask[first:last]) else 'estimated_within_source_sentence'
             own[-1].segmentation_language='ko'
+        if piece_origins and len(piece_origins) == len(own):
+            for cue, origin in zip(own, piece_origins):
+                cue._piece_origin = origin
         problem = _source_problem(segment, own)
         if problem:
             own = [SubtitleCue(0, round(float(segment.start), 3),
@@ -277,7 +306,7 @@ def group_korean(segments, firered_tokens=(), *, breaks_for=None, ai_only=False)
             own[0].segmentation_language='ko'
         for cue in own:
             if ai_only:
-                cue.grouping_origin = 'unresolved' if problem else status
+                cue.grouping_origin = 'unresolved' if problem else getattr(cue, '_piece_origin', status)
             cue.cue_id = len(cues) + 1
             cues.append(cue)
     return cues
@@ -288,6 +317,7 @@ def pieces_from_breaks(tokens: list[str], breaks, gaps=None, *, strict=False) ->
     or a break is one the rules forbid (before an auxiliary verb, after a determiner…)."""
     if not isinstance(breaks,(list,tuple)):
         return None
+    breaks = drop_closing_break(tokens, breaks)
     from .segmentation_profiles import profile_for
     scores=break_scores(tokens,gaps)
     forced={i for i,gap in enumerate(gaps or ()) if gap>=profile_for('ko').long_pause_seconds}
@@ -318,10 +348,13 @@ Rules:
 Utterances that already fit need no breaks: return [] for them."""
 
 
-def build_ai_messages(batch: list[tuple[str, list[str]]]) -> list[dict]:
+def build_ai_messages(batch: list[tuple[str, list[str]]], problems=None) -> list[dict]:
     from .grouping_request import word_grouping_system_prompt
     payload = [{"id": key, "words": {str(i): token for i, token in enumerate(tokens)},
-                'allowed_break_after':[i for i,score in enumerate(break_scores(tokens)) if score>FORBIDDEN_BREAK]} for key, tokens in batch]
+                'allowed_break_after':[i for i,score in enumerate(break_scores(tokens)) if score>FORBIDDEN_BREAK],
+                'units_through_word':[display_length(' '.join(tokens[:i + 1])) for i in range(len(tokens))],
+                **(dict(previous_breaks=problems[key][0], problem=problems[key][1]) if problems and key in problems else {})}
+               for key, tokens in batch]
     return [{"role": "system", "content": word_grouping_system_prompt('ko')},
             {"role": "user", "content": json.dumps({"utterances": payload}, ensure_ascii=False)}]
 
@@ -343,23 +376,61 @@ def ai_breaks(segments, provider_snapshot, *, complete=None) -> dict:
             if display_length(segment.text) > RULES.cue_max_chars and len(split_words(segment.text))>1
             and any(s>FORBIDDEN_BREAK for s in break_scores(split_words(segment.text)))]
     found: dict = {}
+    import time
+    from ..recognition.cache import record_run_event
+    from ..recognition.service import CancelledError
     for offset in range(0, len(long), 40):
-        batch = long[offset:offset + 40]
-        try:
-            decoded=parse_ai_breaks(complete(build_ai_messages(batch)))
-            expected={key for key,tokens in batch}
-            accepted={key:value for key,value in decoded.items() if key in expected}
+        # 2026-11-25: same as English: one retry, then only the missing utterances.
+        pending = list(long[offset:offset + 40])
+        failures = resent = 0
+        problems = {}
+        for attempt in (1, 2, 3):
+            if not pending:
+                break
+            try:
+                decoded = parse_ai_breaks(complete(build_ai_messages(pending, problems)))
+            except CancelledError:
+                raise
+            except Exception as error:
+                record_run_event('word_grouping_batch_unresolved', language='ko', batch_index=offset//40+1,
+                    attempt=attempt, source_ids=[key for key, tokens in pending],
+                    reason=getattr(error, 'category', type(error).__name__),
+                    action='retry_once' if not failures else 'local_word_rules')
+                failures += 1
+                if failures > 1:
+                    break
+                if failures == 1:
+                    from ..providers.provider_input_budget import retry_delay
+                    delay = retry_delay(error, 1)
+                    if delay is None:
+                        break
+                    time.sleep(min(delay, 30.0))
+                continue
+            wanted = {key for key, tokens in pending}
+            # Answers are checked where they are used (group_english / group_korean);
+            # here only utterances that got no answer at all are asked again.
+            accepted = {key: value for key, value in decoded.items() if key in wanted}
             found.update(accepted)
-            from ..recognition.cache import record_run_event
-            record_run_event('word_grouping_batch',language='ko',prompt_version=grouping_prompt_version(),
-                batch_index=offset//40+1,source_ids=sorted(expected),received_ids=sorted(accepted),
-                partial_response=bool(decoded.partial),source_retained_ids=sorted(expected-set(accepted)))
-        except Exception as error:
-            from ..recognition.cache import record_run_event
-            record_run_event('word_grouping_batch_unresolved',language='ko',batch_index=offset//40+1,
-                source_ids=[key for key,tokens in batch],reason=getattr(error,'category',type(error).__name__),
-                action='retain_original_source')
-            continue
+            tokens_of = dict(pending)
+            problems = {}
+            for key, value in accepted.items():
+                problem = break_problem(tokens_of[key], value, length_of=display_length,
+                                        max_chars=RULES.cue_max_chars, scores=break_scores(tokens_of[key]),
+                                        preferred=RULES.cue_preferred_chars)
+                if problem:
+                    problems[key] = (value, problem)
+            accepted = {key: value for key, value in accepted.items() if key not in problems}
+            record_run_event('word_grouping_batch', language='ko', prompt_version=grouping_prompt_version(),
+                batch_index=offset//40+1, attempt=attempt, source_ids=sorted(wanted), received_ids=sorted(accepted),
+                partial_response=bool(decoded.partial), source_retained_ids=sorted(wanted-set(accepted)))
+            pending = [(key, tokens) for key, tokens in pending if key not in accepted]
+            if pending and resent:
+                break
+            resent = bool(pending)
+        refine_long_lines(found, dict(long[offset:offset + 40]), length_of=display_length,
+                          max_chars=RULES.cue_max_chars, scorer=lambda tokens: break_scores(tokens),
+                          ask=lambda work, problems: parse_ai_breaks(complete(build_ai_messages(work, problems))),
+                          record=record_run_event, language='ko')
     return found
 
 

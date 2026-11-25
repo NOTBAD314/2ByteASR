@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 import copy
+from pathlib import Path
 from .run_context import ContextExecutor as ThreadPoolExecutor
 
 from twobyteasr.recognition.run_context import get_runtime_context
@@ -121,7 +122,7 @@ def normalize_delivered_cue_text(cues, legacy=None):
         text = getattr(cue, "text", None)
         if not isinstance(text, str) or getattr(cue, 'grouping_origin', '') in {
                 'ai_accepted', 'ai_targeted_correction', 'unresolved', 'source_unchanged_short',
-                'source_retained_after_local_rejection'}:
+                'source_retained_after_local_rejection', 'local_measured_pause_fallback'}:
             continue
         cleaned = normalize_format_whitespace(text)
         if cleaned != text and cleaned.strip():
@@ -423,6 +424,7 @@ def complete_media_run(
     # 繁体中文 (2026-10-19): converted here once, so the project, its translation
     # source and every export hold the same Traditional text.
     from ..subtitle_rules.chinese_script import convert_delivered_cues, task_script
+    from .language_decision import metadata as language_metadata
     convert_delivered_cues(cues, runtime_context, legacy)
     # Keep this result with the delivery checkpoint so a retry can reuse it.
     if background_lyrics is None:
@@ -528,11 +530,7 @@ def complete_media_run(
                                 if getattr(runtime_context, "glossary_snapshot", None) is not None else {}),
                             # Spoken language of the media (not of any speaker) and how it was decided.
                             "language": {
-                                "code": str(getattr(runtime_context, "task_language", "") or "zh"),
-                                "requested": str(getattr(runtime_context, "requested_language", "auto") or "auto"),
-                                "mode": runtime_context.language_mode,
-                                "decision": copy.deepcopy(runtime_context.language_decision),
-                                "evidence": dict(getattr(runtime_context, "language_evidence", {}) or {}),
+                                **language_metadata(runtime_context),
                                 # Chinese subtitles only: zh-Hans or zh-Hant (2026-10-19).
                                 **({"script": task_script(runtime_context)}
                                    if str(getattr(runtime_context, "task_language", "") or "zh") == "zh" else {}),
@@ -640,6 +638,29 @@ def complete_media_run(
         getattr(runtime_context, 'speaker_recovery', {}).get('needs_confirmation')))
     if runtime_context.grouping_pending and output_details.get('project'):
         status = 'partial_recovery'
+    project_id = (runtime_context.committed_result_ref or {}).get("project_id")
+    if project_id:
+        from ..storage.project_stage_history import model_execution_receipt, record_stage
+
+        partial = status in {"partial_recovery", "degraded_success"}
+        stage_outcome = "completed" if status == "success" else "partial" if partial else "failed"
+        _, source = model_execution_receipt(model_statuses, "primary_transcription")
+        record_stage(project_id, "recognition", stage_outcome, source=source, cues=counts["saved_project_cue_count"])
+        vad = runtime_context.vad_execution
+        if vad.get("actual_backend"):
+            vad_status = vad.get("status")
+            if vad_status == "failed":
+                vad_outcome = "failed"
+            elif vad.get("degraded") or vad_status in {"partial_failed", "uncertain_no_speech"}:
+                vad_outcome = "partial"
+            else:
+                vad_outcome = "completed"
+            record_stage(project_id, "vad", vad_outcome, source=vad["actual_backend"], chunks=vad.get("chunks"))
+        alignment_outcome, alignment_source = model_execution_receipt(model_statuses, "timeline_alignment")
+        if alignment_outcome:
+            record_stage(project_id, "alignment", alignment_outcome, source=alignment_source)
+        if include_srt and srt_path and Path(srt_path).is_file():
+            record_stage(project_id, "export", "completed", source="recognition_pipeline", subtitle_files=1)
     legacy.record_run_event('subtitle_delivery', status=status, **counts)
     report_json_path, report_text_path = legacy.finish_media_report(
         status,

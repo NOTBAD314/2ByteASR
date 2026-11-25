@@ -21,10 +21,39 @@ def _project(media):
 def test_clip_bounds_are_padded_and_capped_to_thirty_seconds(tmp_path):
     project = _project(tmp_path / "video.mp4")
     assert clip_bounds(project, "a") == (8800, 13200)
+    assert clip_bounds(project, "a", padding_ms=0) == (10000, 12000)
     project.cues[0].start_ms = 1000
     project.cues[0].end_ms = 50_000
     start, end = clip_bounds(project, "a")
     assert end - start == 30_000
+
+
+def test_batch_reasr_keeps_manual_text_and_limits_speaker_scope(tmp_path):
+    from types import SimpleNamespace
+    from twobyteasr.projects.studio_revisions import StudioRevisionStore
+    from twobyteasr.studio.studio_reasr import LocalReASRResult
+    from twobyteasr.studio.studio_reasr_batch import BatchReASREvent, receive, targets_for
+    from twobyteasr.studio.studio_task_progress import SubtitleTask
+    from twobyteasr.subtitle_rules.sentence_refine_ranges import input_version
+
+    model = _project(tmp_path / "video.mp4")
+    model.cues.extend([StudioCue("b", 12000, 13000, "已确认"),
+                       StudioCue("c", 13000, 14000, "其他人", "other")])
+    model.studio_state["review_confirmations"] = {"b": True}
+    page = SimpleNamespace(project=model, selected_cue_id="a", timeline=SimpleNamespace(locked_speakers=set()),
+                           _revision_store=StudioRevisionStore(model))
+    assert [cue.id for cue in targets_for(page, speaker=True)] == ["a"]
+    assert [cue.id for cue in targets_for(page, ["c", "a", "b", "c"])] == ["c", "a"]
+    task = SubtitleTask("批量重新识别", ("a",))
+    task.project = model
+    task.results = {}
+    task.mapping_revision = page._revision_store.render.mapping_revision
+    task.input_versions = {"a": input_version([model.cues[0]], model)}
+    page._subtitle_tasks = {task.task_id: task}
+    found = LocalReASRResult("a", "当前", "主结果", "建议", (), "建议", "local")
+    receive(page, BatchReASREvent(task.task_id, "a", found))
+    assert task.rows["a"]["status"] == "suggestion"
+    assert model.cues[0].text == "当前"
 
 
 def test_clip_command_extracts_mono_16khz_pcm(tmp_path):

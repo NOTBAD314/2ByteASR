@@ -1,4 +1,4 @@
-﻿; Build only from the verified, clean frozen payload. No source checkout glob.
+; Build only from the verified, clean frozen payload. No source checkout glob.
 #ifndef PayloadDir
   #error PayloadDir is required
 #endif
@@ -67,8 +67,16 @@ WinVersionTooLowError=兔白字幕需要 64 位的 Windows 10 1809（版本号 1
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: checkedonce
 Name: "projectassociation"; Description: "关联兔白字幕工程（.2byteproj）"; GroupDescription: "工程文件："; Flags: checkedonce; Check: NotAudit
+Name: "browserhelper"; Description: "配置兔白助手的本机通信"; Flags: unchecked; Check: NotAudit
 
 [Registry]
+Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\org.twobyteasr.helper"; ValueType: string; ValueData: "{app}\assets\browser-helper-host.json"; Tasks: browserhelper; Check: NotAudit
+Root: HKCU; Subkey: "Software\Microsoft\Edge\NativeMessagingHosts\org.twobyteasr.helper"; ValueType: string; ValueData: "{app}\assets\browser-helper-host.json"; Tasks: browserhelper; Check: NotAudit
+Root: HKCU; Subkey: "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\org.twobyteasr.helper"; ValueType: string; ValueData: "{app}\assets\browser-helper-host.json"; Tasks: browserhelper; Check: NotAudit
+Root: HKCU; Subkey: "Software\Mozilla\NativeMessagingHosts\org.twobyteasr.helper"; ValueType: string; ValueData: "{app}\assets\browser-helper-host-firefox.json"; Tasks: browserhelper; Check: NotAudit
+Root: HKCU; Subkey: "Software\Classes\2byteasr"; ValueType: string; ValueData: "URL:2ByteASR"; Tasks: browserhelper; Check: NotAudit
+Root: HKCU; Subkey: "Software\Classes\2byteasr"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Tasks: browserhelper; Check: NotAudit
+Root: HKCU; Subkey: "Software\Classes\2byteasr\shell\open\command"; ValueType: string; ValueData: """{app}\2ByteASR.exe"" --browser-link ""%1"""; Tasks: browserhelper; Check: NotAudit
 Root: HKCU; Subkey: "Software\Classes\2ByteASR.Project"; ValueType: string; ValueName: ""; ValueData: "兔白字幕工程"; Tasks: projectassociation; Check: NotAudit
 Root: HKCU; Subkey: "Software\Classes\2ByteASR.Project\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\2ByteASR.exe"",0"; Tasks: projectassociation; Check: NotAudit
 Root: HKCU; Subkey: "Software\Classes\2ByteASR.Project\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\2ByteASR.exe"" ""%1"""; Tasks: projectassociation; Check: NotAudit
@@ -231,11 +239,30 @@ begin
 #endif
 end;
 
+procedure RemoveBrowserHost(Vendor, ManifestFile: String);
+var
+  Key, Owner: String;
+begin
+  Key := 'Software\' + Vendor + '\NativeMessagingHosts\org.twobyteasr.helper';
+  if RegQueryStringValue(HKCU, Key, '', Owner)
+     and (CompareText(Owner, ExpandConstant('{app}\assets\') + ManifestFile) = 0) then begin
+    RegDeleteValue(HKCU, Key, '');
+    RegDeleteKeyIfEmpty(HKCU, Key);
+  end;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Command, ExtensionDefault: String;
 begin
   if (CurUninstallStep = usPostUninstall) and NotAudit then begin
+    RemoveBrowserHost('Google\Chrome', 'browser-helper-host.json');
+    RemoveBrowserHost('Microsoft\Edge', 'browser-helper-host.json');
+    RemoveBrowserHost('BraveSoftware\Brave-Browser', 'browser-helper-host.json');
+    RemoveBrowserHost('Mozilla', 'browser-helper-host-firefox.json');
+    if RegQueryStringValue(HKCU, 'Software\Classes\2byteasr\shell\open\command', '', Command)
+       and (CompareText(Command, '"' + ExpandConstant('{app}\2ByteASR.exe') + '" --browser-link "%1"') = 0) then
+      RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\2byteasr');
     { A later repair/installation may now own the ProgID. Only remove our
       registration if its exact command still points to this installation. }
     if RegQueryStringValue(HKCU, 'Software\Classes\2ByteASR.Project\shell\open\command', '', Command)

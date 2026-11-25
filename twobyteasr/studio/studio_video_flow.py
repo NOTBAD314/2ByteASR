@@ -1346,6 +1346,7 @@ class StudioVideoFlowMixin:
         """
 
         from ..timeline.studio_media_pool import (
+            asset_has_video,
             media_graph_duration_ms,
             primary_video_track_id,
         )
@@ -1369,7 +1370,7 @@ class StudioVideoFlowMixin:
         clip = track.clips[0] if track and track.clips else None
         if clip is not None:
             asset = next((item for item in project.media_pool if item.asset_id == clip.asset_id), None)
-            if asset is not None and (asset.video_metadata or {}).get("has_video") is False:
+            if asset is not None and not asset_has_video(asset):
                 return None
         return {
             "key": "primary-salvage",
@@ -1542,6 +1543,7 @@ class StudioVideoFlowMixin:
         if project is None:
             return []
         from ..playback.playback_plan import playback_plan
+        from ..timeline.studio_media_pool import asset_has_video
         from ..timeline.studio_transitions import transition_effect, transition_fx_active
         plan = playback_plan(project)
         windows = plan.windows
@@ -1554,7 +1556,7 @@ class StudioVideoFlowMixin:
                 continue
             # An enabled V1 clip can be the legacy projection of an audio
             # source. It must not become a visual mpv layer or clock owner.
-            if (asset.video_metadata or {}).get("has_video") is False:
+            if not asset_has_video(asset):
                 continue
             from ..timeline.clip_time_mapper import map_project_time, record_clip_time_trace, ClipTimeTrace
 
@@ -1590,6 +1592,12 @@ class StudioVideoFlowMixin:
                 mapped = timeline_to_source(sequence_of(project), int(timeline_ms))
                 if mapped is not None:
                     source_ms = mapped.source_ms
+            if self._past_verified_source_end(asset, source_ms):
+                if getattr(self, '_explicit_project_seek', False):
+                    self._studio_trace('STUDIO_SOURCE_TAIL_UNAVAILABLE', project_ms=int(timeline_ms),
+                                       source_ms=int(source_ms), asset_id=asset.asset_id)
+                    self._show_studio_hint('此位置已超出素材實際存在的畫面範圍。')
+                continue
             transform = dict(vars(clip.transform))
             transform.update(
                 self._video_transform_preview_overrides.get(clip.id, {})
@@ -1634,11 +1642,28 @@ class StudioVideoFlowMixin:
                 layers.append(salvage)
         return layers
 
+    def _past_verified_source_end(self, asset, source_ms):
+        source = str(asset.canonical_source or '')
+        if not source.lower().endswith('.flv'):
+            return False
+        from ..media.indexed_media import GLOBAL_INDEXED_MEDIA
+        resolved = getattr(self, '_preview_resolved_paths', {}).get(source, source)
+        duration = GLOBAL_INDEXED_MEDIA.verified_duration_ms(resolved)
+        # Small clock differences near a valid file's final frame still use
+        # the ordinary EOF handling. Only materially stale imports create a
+        # timeline gap, while all authored clip/caption edits remain intact.
+        return bool(duration and asset.duration_ms > duration + 1000 and source_ms >= duration)
+
     def _multitrack_audio_layers(self, timeline_ms: int) -> list[dict[str, object]]:
         from ..playback.playback_plan import playback_plan
         if self.project is None:
             return []
-        layers = playback_plan(self.project).audio_at(timeline_ms)
+        plan = playback_plan(self.project)
+        layers = plan.audio_at(timeline_ms)
+        assets = plan.assets
+        layers = [layer for layer in layers
+                  if (layer.get('asset_id') not in assets
+                      or not self._past_verified_source_end(assets[layer['asset_id']], layer.get('source_ms', 0)))]
         overrides = getattr(self, '_gain_preview_values', {})
         # Reuse only the lossless index already selected by this project's
         # video preview. Audio never creates an index or changes the graph.

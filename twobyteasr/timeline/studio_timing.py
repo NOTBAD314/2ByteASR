@@ -354,6 +354,7 @@ def describe_split(
     min_duration_ms: int = SPLIT_MIN_CUE_DURATION_MS,
     project: SubtitleProject | None = None,
     alignment: tuple[tuple, str] | None = None,
+    snap_to_word: bool = True,
 ) -> SplitPreview | SplitBlocked:
     """Resolve a razor cut exactly the way the split command commits it.
 
@@ -391,7 +392,7 @@ def describe_split(
     position = right[0].char_start
     straddled = left[-1] if left[-1].end_ms > clamped else None
     cut, timing_reason = clamped, 'manual_time_preserved'
-    if straddled is not None:
+    if straddled is not None and snap_to_word:
         # 2026-10-22 (user report): a cut through a word's sound stayed where
         # the pointer was, so the right part started 0.4 s before its first
         # word. Move it to the measured boundary after that word, like a cut

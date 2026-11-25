@@ -162,10 +162,10 @@ def test_workshop_exposes_api_presets_and_downloadable_adapter_candidates(monkey
     assert page.api_target_role == 'review'
     sensevoice = page._cards["sensevoice"].model
     assert page._model_state(sensevoice) == "missing"
-    assert page._action_text(sensevoice, "missing") == ("下载", True)
+    assert page._action_text(sensevoice, "missing") == ("下载并准备", True)
     page._installed.add("sensevoice")
     assert page._model_state(sensevoice) == "installed"
-    assert page._action_text(sensevoice, "downloaded") == ("已下载 · 接入中", False)
+    assert page._action_text(sensevoice, "downloaded") == ("此用途不支持", False)
     assert {model.key for model in MODELS if "timeline" in (model.role, *model.extra_roles)} >= {
         "firered",
         "qwen_aligner",
@@ -456,7 +456,7 @@ def test_runtime_download_failure_names_the_stage_and_what_to_try():
     dialog.log.setPlainText(failure)
     message = dialog._actionable_failure_message(1)
     assert '运行环境准备阶段' in message and '尚未请求权重源' not in message
-    assert 'TUN' in message and 'HTTPS_PROXY' in message
+    assert '已校验的文件会保留' in message and '导出部署诊断' in message
     dialog.log.setPlainText('error: No solution found when resolving dependencies\n'+failure)
     assert '依赖版本冲突' in dialog._actionable_failure_message(1)
     dialog.deleteLater()

@@ -2,22 +2,20 @@
 from __future__ import annotations
 import hashlib
 import json
-import os
 import re
 from pathlib import Path
 
 from .link_catalog import digest
-from .link_subtitles import PARSER_VERSION, parse_subtitles, srt_bytes, words_vtt_bytes
+from .link_reconstruction import reconstruct
+from .link_subtitles import Caption, PARSER_VERSION, ParsedSubtitles, parse_subtitles, srt_bytes, subtitle_format, words_vtt_bytes
+from ..storage.atomic_files import write_text_atomic
 
 MANIFEST_NAME = "download.2byte-download.json"
 MANIFEST_VERSION = 1
 
 
 def atomic_json(path: Path, data) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temporary, path)
+    write_text_atomic(path, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def sha256(path: Path) -> str:
@@ -42,7 +40,8 @@ def file_receipt(root: Path, path: Path) -> dict:
                 bytes=path.stat().st_size, sha256=sha256(path))
 
 
-def preserve_subtitle(root: Path, track: dict, raw: bytes, expected_format: str) -> dict:
+def preserve_subtitle(root: Path, track: dict, raw: bytes, expected_format: str, *,
+                      mode="smart", keep_sound=True) -> dict:
     """Content-addressed originals are immutable, including failed parse inputs."""
     from .link_catalog import public_track
     content_hash = hashlib.sha256(raw).hexdigest()
@@ -50,8 +49,9 @@ def preserve_subtitle(root: Path, track: dict, raw: bytes, expected_format: str)
     raw_dir.mkdir(parents=True, exist_ok=True)
     # Detect the actual representation BEFORE giving the preserved file an extension.
     text = raw[:256].decode("utf-8-sig", errors="replace").lstrip()
-    actual = "json3" if text.startswith("{") else "vtt" if text.startswith("WEBVTT") else (
-        "srt" if "-->" in raw[:2048].decode("utf-8-sig", errors="replace") else "bin")
+    actual = subtitle_format(text)
+    if actual == "srt" and "-->" not in raw[:2048].decode("utf-8-sig", errors="replace"):
+        actual = "bin"
     name = f"{track['track_id']}.{content_hash[:16]}"
     original = raw_dir / f"{name}.{actual}"
     if not original.exists():
@@ -60,11 +60,12 @@ def preserve_subtitle(root: Path, track: dict, raw: bytes, expected_format: str)
     elif sha256(original) != content_hash:
         raise ValueError("原始字幕校验不一致；未覆盖已有文件。")
     parsed = parse_subtitles(raw, expected_format=expected_format, source=track.get("source", "unknown"))
-    from .link_tidy import tidy_captions
-    parsed = tidy_captions(parsed, language=track.get("language", ""), source=track.get("source", ""))
-    normalized = root / "subtitles" / f"{name}.parsed-v{PARSER_VERSION}.json"
-    srt = normalized.with_name(f"{name}.srt")
-    words = normalized.with_name(f"{name}.words.vtt")
+    parsed = reconstruct(parsed, language=track.get("language", ""), source=track.get("source", ""),
+                         mode="smart" if mode == "ai" else mode, keep_sound=keep_sound)
+    variant = f"{name}.v{PARSER_VERSION}.{mode}{'' if keep_sound else '-speech'}"
+    normalized = root / "subtitles" / f"{variant}.json"
+    srt = normalized.with_name(f"{variant}.srt")
+    words = normalized.with_name(f"{variant}.words.vtt")
     atomic_json(normalized, parsed.to_dict())
     srt.write_bytes(srt_bytes(parsed))
     words.write_bytes(words_vtt_bytes(parsed))
@@ -74,13 +75,83 @@ def preserve_subtitle(root: Path, track: dict, raw: bytes, expected_format: str)
     return dict(track=public_track(track), actual_format=parsed.format,
                 original=file_receipt(root, original), normalized=file_receipt(root, normalized),
                 srt=file_receipt(root, srt), words_vtt=file_receipt(root, words), tidy=parsed.tidy,
-                parser_version=PARSER_VERSION,
+                parser_version=PARSER_VERSION, processing_mode=mode, keep_sound=keep_sound,
                 timing_basis="media_elapsed_ms", input_events=parsed.input_events,
                 cue_count=len(parsed.captions), display_repeats=parsed.display_repeats,
                 warnings=parsed.warnings)
 
 
-def load_manifest(path: Path, *, verify_media=False) -> dict:
+def read_normalized(path):
+    data = json.loads(path.read_bytes())
+    data["captions"] = [Caption(**row) for row in data["captions"]]
+    return ParsedSubtitles(**data)
+
+
+def reprocess_subtitles(path, task_id, mode, *, cancel=None, notify=None):
+    """Rebuild derived files using previously verified originals without a network request."""
+    from .link_reconstruction import MODES
+    from .link_tools import check_cancel
+
+    root = path.parent
+    data = load_manifest(path, verify_derived=False)
+    if mode not in MODES or data["task_id"] != task_id or not data.get("subtitles"):
+        raise ValueError("没有可重新处理的字幕原稿。")
+    updated = []
+    primary = data.get("primary_track_id") or data["subtitles"][0]["track"]["track_id"]
+    for receipt in data["subtitles"]:
+        check_cancel(cancel)
+        original = resolve_relative(root, receipt["original"]["path"])
+        if notify:
+            notify(dict(stage="organizing"))
+        replacement = preserve_subtitle(root, receipt["track"], original.read_bytes(),
+            receipt["actual_format"], mode=mode, keep_sound=receipt.get("keep_sound", True))
+        if mode == "ai" and receipt["track"]["track_id"] == primary:
+            if notify:
+                notify(dict(stage="ai_refining"))
+            refine_saved_subtitle(root, replacement, cancel=cancel)
+        updated.append(replacement)
+    check_cancel(cancel)
+    data["subtitles"] = updated
+    atomic_json(path, data)
+    return path
+
+
+def refine_saved_subtitle(root, receipt, *, cancel=None, progress=None):
+    from .link_ai import refine_downloaded
+    from ..storage.settings import load_runtime_settings
+    loaded = load_runtime_settings()
+    settings = loaded[0] if isinstance(loaded, tuple) else loaded
+    group = settings.get("models", {}).get("group", {})
+    model = {key: group.get(key) for key in ("service", "model", "thinking", "temperature")}
+    identity = digest([receipt["original"]["sha256"], receipt["parser_version"], receipt["keep_sound"], model])[:20]
+    previous = receipt.get("ai", {})
+    if previous.get("identity") == identity and previous.get("status") == "completed":
+        return
+    fallback = receipt.get("smart_normalized") or receipt["normalized"]
+    parsed = read_normalized(resolve_relative(root, fallback["path"]))
+    final, state = refine_downloaded(parsed, receipt["track"].get("language", ""), settings,
+                                   cancel=cancel, on_progress=progress)
+    receipt["ai"] = dict(state, identity=identity)
+    receipt.setdefault("smart_normalized", fallback)
+    receipt.setdefault("smart_srt", receipt["srt"])
+    receipt.setdefault("smart_words_vtt", receipt["words_vtt"])
+    if not state["applied"]:
+        receipt.update(normalized=fallback, srt=receipt["smart_srt"], words_vtt=receipt["smart_words_vtt"],
+                       cue_count=len(parsed.captions))
+        return
+    source = resolve_relative(root, fallback["path"])
+    target = source.with_name(source.stem + f".{identity}.json")
+    final.tidy = dict(final.tidy, mode="ai", **state)
+    atomic_json(target, final.to_dict())
+    target_srt = target.with_suffix(".srt")
+    target_vtt = target.with_suffix(".words.vtt")
+    target_srt.write_bytes(srt_bytes(final))
+    target_vtt.write_bytes(words_vtt_bytes(final))
+    receipt.update(normalized=file_receipt(root, target), srt=file_receipt(root, target_srt),
+                   words_vtt=file_receipt(root, target_vtt), cue_count=len(final.captions))
+
+
+def load_manifest(path: Path, *, verify_media=False, verify_derived=True) -> dict:
     if path.stat().st_size > 4 * 1024 * 1024:
         raise ValueError("下载清单过大。")
     data = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -99,7 +170,7 @@ def load_manifest(path: Path, *, verify_media=False) -> dict:
         if identity in ids or sub["track"]["video_id"] != data["video_id"]:
             raise ValueError("字幕身份重复或不属于该视频。")
         ids.add(identity)
-        for kind in ("original", "normalized"):
+        for kind in (("original", "normalized") if verify_derived else ("original",)):
             receipt = sub[kind]
             target = resolve_relative(path.parent, receipt["path"])
             if (not target.is_file() or target.stat().st_size != receipt["bytes"]
@@ -112,6 +183,10 @@ def load_bundle(path: Path, *, verify_media=False) -> dict:
     data = load_manifest(path, verify_media=verify_media)
     captions = {}
     for sub in data.get("subtitles", []):
+        if sub.get("parser_version") == PARSER_VERSION and sub.get("processing_mode"):
+            normalized = resolve_relative(path.parent, sub["normalized"]["path"])
+            captions[sub["track"]["track_id"]] = json.loads(normalized.read_bytes())
+            continue
         # Parse immutable original again using current parser; normalized file is a receipt.
         original = resolve_relative(path.parent, sub["original"]["path"])
         parsed = parse_subtitles(original.read_bytes(), expected_format=sub["actual_format"],

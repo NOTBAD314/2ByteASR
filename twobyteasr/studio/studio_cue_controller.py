@@ -429,6 +429,13 @@ class StudioCueController:
         self._smart_align(project, [cue_id], single=True)
 
     def _smart_align(self, project, cue_ids, *, single=False, measure=True):
+        from .studio_batch_timing import protected_cue_ids
+
+        protected = protected_cue_ids(project, project.cues, self.page.timeline.locked_speakers)
+        cue_ids = [cue_id for cue_id in cue_ids if cue_id not in protected]
+        if not cue_ids:
+            self.page._show_studio_hint(tr('选中的字幕已确认、锁定或没有可用字幕'))
+            return
         if measure and self._measure_first(project, cue_ids, single=single):
             return
         report = recommend_many(project, cue_ids)
@@ -519,6 +526,11 @@ class StudioCueController:
     ) -> None:
         self._table_refresh_serial += 1
         self._pending_table_activation = None
+        audition = getattr(self.page, '_review_playback', None)
+        if audition is not None and getattr(audition, 'audition', False) and audition.cue_id != str(cue_id or ''):
+            if not audition.finished:
+                self.page._pause_review_context(audition.generation)
+            self.page._release_review_playback()
         # Explicit selection has its own stable edit target. Clock-follow uses
         # _mirror_clock_selection and cannot replace this last user choice.
         remembered=getattr(self.page,'_caption_canvas_edit_target',None)
@@ -568,6 +580,7 @@ class StudioCueController:
 
     def _select_cue_ui(
         self, cue_id: str, *, refresh_advanced: bool = False, hydrate: bool = True,
+        hydrate_style: bool = True,
     ) -> None:
         page = self.page
         project = self.session.project
@@ -686,7 +699,7 @@ class StudioCueController:
                 page.duration_ms.setValue(cue.end_ms - cue.start_ms)
                 speaker_index = page.speaker.findData(cue.speaker_id)
                 page.speaker.setCurrentIndex(max(0, speaker_index))
-                if hasattr(page, "style_preset"):
+                if hydrate_style and hasattr(page, "style_preset"):
                     # Preset identity is explicit domain state. A derived style id
                     # created by an appearance/Transform transaction must never be
                     # parsed back into a preset choice.
@@ -727,6 +740,8 @@ class StudioCueController:
                     mark("motion_controls")
                     page._load_style_inspector()
                     mark("style_inspector")
+                elif not hydrate_style and hasattr(page, "style_preview"):
+                    page.style_preview.set_sample_text(page.style_controller._preview_cue_text())
                 page._refresh_selected_cue_properties(cue)
                 mark("cue_properties")
                 if hasattr(page, "position_overlay"):
@@ -744,7 +759,7 @@ class StudioCueController:
                     page._overlay_cue_id = cue.id
                     page._sync_transform_visual_overlay()
                 mark("transform_sync")
-                if refresh_advanced:
+                if refresh_advanced and hydrate_style:
                     page._sync_selected_cue_advanced(project.style_recipes.get(cue.style_id))
                 page._refresh_current_review_context(cue)
                 mark("review_context")
@@ -850,17 +865,24 @@ class StudioCueController:
             | DirtyDomain.CUE_TIMING
             | DirtyDomain.CUE_STYLE
         ):
-            runtime = state_for(project)
-            self.session._cue_lookup = dict(runtime.cue_by_id)
-            columns = None
-            if dirty & DirtyDomain.CUE_CONTENT and not dirty & DirtyDomain.CUE_TIMING:
-                columns = (3, 4)
-            if len(affected) > 1 or dirty & DirtyDomain.CUE_STYLE:
-                page.cue_model.refresh_cues(affected, columns,
-                    recheck_filter=bool(dirty & (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_TIMING)))
-            else:
-                for cue_id in affected:
-                    page.cue_model.refresh_cue(cue_id, columns)
+            # A prepared geometry command changes only transform and appearance
+            # generation. Canonical table rows already hold those cue objects,
+            # and none of their columns or filters displays those fields.
+            runtime = getattr(project, '_studio_state_runtime', None)
+            shared_geometry = (delta.action_id == 'bulk_caption_transform'
+                               and getattr(runtime, '_view_cues', None) is project.cues)
+            if not shared_geometry:
+                runtime = state_for(project)
+                self.session._cue_lookup = dict(runtime.cue_by_id)
+                columns = None
+                if dirty & DirtyDomain.CUE_CONTENT and not dirty & DirtyDomain.CUE_TIMING:
+                    columns = (3, 4)
+                if len(affected) > 1 or dirty & DirtyDomain.CUE_STYLE:
+                    page.cue_model.refresh_cues(affected, columns,
+                        recheck_filter=bool(dirty & (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_TIMING)))
+                else:
+                    for cue_id in affected:
+                        page.cue_model.refresh_cue(cue_id, columns)
 
         sequence_handled = False
         if (
@@ -926,6 +948,7 @@ class StudioCueController:
             DirtyDomain.NATIVE_SUBTITLE
             | DirtyDomain.ADVANCED_PREVIEW
         )
+        scene_requested = False
         if visual_dirty:
             page._initial_preview_timer.stop()
             if not page._visual_update_timer.isActive():page._visual_update_timer.start()
@@ -934,9 +957,9 @@ class StudioCueController:
             selected = self.session.selected_cue_id
             targets = affected or {selected}
             if selected and selected in targets:
-                page._schedule_render_refresh(selected)
+                scene_requested = page._schedule_render_refresh(selected)
             elif any(targets):
-                page._schedule_render_refresh(next(cue_id for cue_id in targets if cue_id))
+                scene_requested = page._schedule_render_refresh(next(cue_id for cue_id in targets if cue_id))
 
         selected_id = self.session.selected_cue_id
         selected_affected = bool(selected_id and selected_id in affected)
@@ -949,9 +972,14 @@ class StudioCueController:
             | DirtyDomain.CUE_STYLE
             | DirtyDomain.CUE_MODEL
         ):
+            hydrate_style = (getattr(page, '_selection_needs_hydration', False)
+                             or bool(dirty & (DirtyDomain.CUE_STYLE | DirtyDomain.CUE_TIMING
+                                              | DirtyDomain.CUE_MODEL | DirtyDomain.PROJECT_METADATA
+                                              | DirtyDomain.TRANSFORM)))
             self._select_cue_ui(
                 selected_id,
                 refresh_advanced=bool(dirty & DirtyDomain.ADVANCED_PREVIEW),
+                hydrate_style=hydrate_style,
             )
 
         if dirty & (DirtyDomain.CLIP_STATUS | DirtyDomain.VIDEO_TRACKS | DirtyDomain.MEDIA_POOL) and hasattr(page, "highlight_panel"):
@@ -966,7 +994,7 @@ class StudioCueController:
                 page.timeline._highlight_key_moment=mapped[0] if mapped else None
         if dirty & DirtyDomain.AUTOSAVE:
             page._schedule_autosave()
-        if visual_dirty:
+        if visual_dirty and not scene_requested:
             # Paused edits have no following playback tick. Re-evaluate the
             # active set now, retire the old scene token, and prepare only the
             # current captions. The ready callback publishes the replacement.
@@ -1368,10 +1396,15 @@ class StudioCueController:
         if selected_id:
             current = self.session._cue_lookup.get(selected_id)
             style_id = current.style_id if current else style_id
+        self._insert_empty_cue(start, start + duration, speaker_id, style_id)
+
+    def _insert_empty_cue(self, start, end, speaker_id, style_id):
+        project = self.session.project
+        page = self.page
         cue = StudioCue(
             id=f"cue-{uuid.uuid4().hex[:10]}",
             start_ms=start,
-            end_ms=start + duration,
+            end_ms=end,
             text="",
             original_text="",
             speaker_id=speaker_id,
@@ -1387,6 +1420,59 @@ class StudioCueController:
             page._pending_new_cue_previous_id = previous_id
             page._pending_new_cue_undo_index = self.session.undo_stack.index()
             page._begin_canvas_inline_edit()
+
+    def insert_relative(self, mode):
+        from ..projects.project_range import range_points
+        from ..timeline.studio_edit_sequence import caption_projection_sequence, timeline_duration_ms
+        from ..timeline.studio_sequence_mapper import timeline_to_source
+
+        page = self.page
+        project = self.session.project
+        if project is None:
+            return
+        timeline = page.timeline
+        cue = timeline._timeline_cue_by_id.get(self.session.selected_cue_id)
+        if cue is None or len(self.selected_cue_ids()) > 1:
+            bind_text(page.save_state, '请先选中一条字幕')
+            return
+        if cue.speaker_id in timeline.locked_speakers:
+            bind_text(page.save_state, '轨道已锁定，请先解锁')
+            return
+        occupied = [other for other in timeline._timeline_cue_by_id.values() if other.speaker_id == cue.speaker_id]
+        if mode == 'range':
+            start, end = range_points(project)
+            if start is None or end is None:
+                bind_text(page.save_state, '先用 I 和 O 设置空白字幕的入点和出点')
+                return
+        elif mode == 'before':
+            end = cue.start_ms
+            start = max(0, end - 2000, *(other.end_ms for other in occupied if other.start_ms < end))
+        else:
+            start = cue.end_ms
+            end = min(timeline_duration_ms(project), start + 2000,
+                      *(other.start_ms for other in occupied if other.end_ms > start))
+        if end - start < MIN_CUE_DURATION_MS or any(other.start_ms < end and start < other.end_ms for other in occupied):
+            bind_text(page.save_state, '同轨空白时间不足，请先调整相邻字幕边界')
+            return
+        sequence = caption_projection_sequence(project)
+        recognition = project.generation_metadata.get('timeline_recognition')
+        if recognition and sequence.to_dict() != recognition.get('sequence'):
+            bind_text(page.save_state, '剪辑已变更，无法将新字幕无损映射到识别工程')
+            return
+        if not recognition and project.render_settings.get('_cue_domain') != 'timeline' and not sequence.is_identity():
+            first = timeline_to_source(sequence, start)
+            last = timeline_to_source(sequence, end - 1)
+            if first is None or last is None or first.segment_id != last.segment_id:
+                bind_text(page.save_state, '新字幕跨剪辑边界，请缩短空白范围')
+                return
+            source_segment = next(segment for segment in sequence.segments if segment.id == first.segment_id)
+            rate = source_segment.source_duration_ms / source_segment.duration_ms
+            start, end = first.source_ms, round(source_segment.source_in_ms + (end - source_segment.timeline_in_ms) * rate)
+            if end - start < MIN_CUE_DURATION_MS:
+                bind_text(page.save_state, '换算到原素材后的空白时间不足')
+                return
+        timeline.set_subtitle_layer('original')
+        self._insert_empty_cue(start, end, cue.speaker_id, cue.style_id)
 
     @observed('cue.track')
     def timeline_speaker_changed(
@@ -1489,7 +1575,7 @@ class StudioCueController:
         return self.session._cue_lookup.get(self.session.selected_cue_id)
 
     @observed('cue.split')
-    def split_at(self, cue_id: str, split_ms: int) -> None:
+    def split_at(self, cue_id: str, split_ms: int, *, require_measured=False) -> None:
         project = self.session.project
         if not project:
             return
@@ -1503,7 +1589,8 @@ class StudioCueController:
         from ..timeline.studio_edit_sequence import map_timing_to_source
         from ..timeline.studio_timing import describe_split, SplitBlocked
         view = self.session.runtime.cue_by_id.get(cue_id, cue)
-        preview = describe_split(view, int(split_ms), project=project)
+        preview = describe_split(view, int(split_ms), project=project,
+                                 snap_to_word=not require_measured or self.page.timeline.snap_enabled)
         shown = getattr(self.page.timeline, 'razor_committed_preview', None)
         if shown is not None:
             self.page.timeline.razor_committed_preview = None
@@ -1512,6 +1599,9 @@ class StudioCueController:
                 'before_first_word': '切点在首字发音之前，前段没有文字，未切分',
                 'after_last_word_onset': '切点在末字开始发音之后，后段没有文字，未切分',
             }.get(preview.reason, '这条字幕太短，无法在此切分'))
+            return
+        if require_measured and not preview.measured:
+            self.open_text_split(cue_id)
             return
         if shown is not None and shown[0] == cue_id and int(shown[1].split_ms) == int(preview.split_ms) and (
                 shown[1].left_text, shown[1].right_text) != (preview.left_text, preview.right_text):
@@ -1553,7 +1643,15 @@ class StudioCueController:
         if len(cue.text) < 2:
             return
         view = self.session.runtime.cue_by_id.get(cue_id, cue)
-        self.split_at(cue_id, (view.start_ms + view.end_ms) // 2)
+        point = int(self.page.timeline.playhead_ms)
+        from ..timeline.studio_timing import SPLIT_MIN_CUE_DURATION_MS
+        if not view.start_ms + SPLIT_MIN_CUE_DURATION_MS <= point <= view.end_ms - SPLIT_MIN_CUE_DURATION_MS:
+            bind_text(self.page.save_state, '把播放头移到选中字幕内部再切分')
+            return
+        if view.speaker_id in self.page.timeline.locked_speakers:
+            bind_text(self.page.save_state, '轨道已锁定，请先解锁')
+            return
+        self.split_at(cue_id, point, require_measured=True)
 
     # Why a position cannot be cut on its own (``text_split`` reasons, by prefix).
     TEXT_SPLIT_REASONS = (
@@ -1796,7 +1894,8 @@ class StudioCueController:
             # the highlight paint before editor/seek preparation runs.
             self._table_refresh_serial += 1
             serial = self._table_refresh_serial
-            self._pending_table_activation = (self.session.project,self.session.generation,str(cue_id))
+            self._pending_table_activation = (
+                self.session.project, self.session.generation, str(cue_id), self.session.selected_cue_id)
             self.page._selection_needs_hydration = True
             def activate():
                 if serial == self._table_refresh_serial:
@@ -1807,9 +1906,12 @@ class StudioCueController:
         request, self._pending_table_activation = self._pending_table_activation, None
         if request is None:
             return
-        project,generation,cue_id = request
+        project, generation, cue_id, previous = request
         if (self.session.project is not project or self.session.generation != generation
-                or self.session.selected_cue_id != cue_id or getattr(self.page,'_close_requested',False)):
+                or self.session.selected_cue_id not in {cue_id, previous} or getattr(self.page,'_close_requested',False)):
+            return
+        if self.session.selected_cue_id != cue_id and not self.page.selection_model.scope.contains(
+                cue_id, row=self.page.timeline._timeline_row_by_id.get(cue_id)):
             return
         self.select_cue(cue_id)
         cue = self._read_runtime(project).cue_by_id.get(cue_id)

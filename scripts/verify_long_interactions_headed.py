@@ -16,6 +16,11 @@ def main():
     p.add_argument('--preparation-off',action='store_true')
     p.add_argument('--baseline',type=Path)
     p.add_argument('--waveform-cache',type=Path)
+    p.add_argument('--random-seeks', type=int, default=0)
+    p.add_argument('--seek-ms', type=int, action='append', default=[])
+    p.add_argument('--expect-unavailable-seek-ms', type=int, action='append', default=[])
+    p.add_argument('--seek-cache', type=Path)
+    p.add_argument('--endurance-seconds', type=int, default=0)
     a=p.parse_args();out=a.output.resolve()
     if out.exists() or not out.is_relative_to(ROOT/'tmp'):
         p.error('A fresh directory under this source/tmp is required')
@@ -27,9 +32,13 @@ def main():
     env.update(TWOBYTEASR_TEST_ROOT=str(out),TWOBYTEASR_STARTUP_TRACE=str(out/'startup.jsonl'),
         TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1',TWOBYTEASR_STARTUP_OPEN_STUDIO='1',
         TWOBYTEASR_STARTUP_SIZE='1600x950',TWOBYTEASR_STARTUP_PROJECT=str(out/'project.2byteproj'),
-        TWOBYTEASR_SEEK_CACHE_ROOT=str(ROOT/'tmp/long-shared-seek'),
+        TWOBYTEASR_SEEK_CACHE_ROOT=str(a.seek_cache.resolve() if a.seek_cache else ROOT/'tmp/long-shared-seek'),
         TWOBYTEASR_ACCEPTANCE_SCENARIO='long-interactions',TWOBYTEASR_ACCEPTANCE_DIR=str(out),
         LONG_AUDIT_PROFILE=str(int(a.profile)),LONG_AUDIT_SECONDS=str(a.seconds),
+        LONG_AUDIT_RANDOM_SEEKS=str(max(0, a.random_seeks)),
+        LONG_AUDIT_EXACT_SEEKS=json.dumps(a.seek_ms),
+        LONG_AUDIT_UNAVAILABLE_SEEKS=json.dumps(a.expect_unavailable_seek_ms),
+        LONG_AUDIT_ENDURANCE_SECONDS=str(max(0, a.endurance_seconds)),
         LONG_AUDIT_PREPARATION_OFF=str(int(a.preparation_off)),LONG_AUDIT_EXTERNAL_RESOURCES='1',
         QT_QPA_PLATFORM='windows',QT_SCALE_FACTOR='1',PYTHONUTF8='1')
     trusted=ROOT.parents[2]/'dist/2ByteASR/tools/mpv/mpv.exe'
@@ -55,7 +64,8 @@ def main():
                              cwd=ROOT,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     try:
         code=run_on_desktop(command,cwd=ROOT,env=env,output=out/'process',
-            timeout=max(900,a.seconds+400),desktop_name='Default' if a.visible else None)
+            timeout=max(900, a.seconds + 400, a.endurance_seconds + 600),
+            desktop_name='Default' if a.visible else None)
     finally:
         (out/'resources-stop').touch()
         try:sampler.wait(timeout=8)
@@ -70,6 +80,7 @@ def main():
         original_sha256=hashlib.sha256(raw).hexdigest())
     result_file.write_text(json.dumps(r,ensure_ascii=False,indent=2,default=str),'utf8')
     print(json.dumps({k:r.get(k) for k in ('exit_code','error','finished','gui_shutdown','operations','checks')},ensure_ascii=False))
-    return 0 if code==0 and r.get('finished') and not r.get('error') and r.get('original_unchanged') else 1
+    return 0 if (code==0 and r.get('finished') and not r.get('error') and r.get('original_unchanged')
+                 and all(r.get('checks', {}).values())) else 1
 
 if __name__=='__main__':raise SystemExit(main())

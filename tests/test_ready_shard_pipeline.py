@@ -8,6 +8,7 @@ import pytest
 
 from twobyteasr.recognition.run_context import RuntimeContext,activate_runtime_context,get_runtime_context,ContextExecutor
 from twobyteasr.recognition.streaming_recognition import LongMediaPipeline,ShardResult,STRIDE
+from twobyteasr.recognition.vad import VadRegions, receipt
 
 
 class Legacy:
@@ -29,7 +30,7 @@ def create(tmp_path,context,legacy,process):
         cache_context={'cache_dir':str(tmp_path),'identity':{'audio':'immutable-fixture'}},audio=[],
         seconds=2400,fps=30,paths={},text_plan=SimpleNamespace(group=False,polish=False))
     pipeline._process=MethodType(process,pipeline)
-    pipeline.set_vad([])
+    pipeline.set_vad(VadRegions(execution=receipt('firered_vad', 'firered_vad', 2400)))
     return pipeline
 
 

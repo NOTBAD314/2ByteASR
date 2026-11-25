@@ -2932,23 +2932,36 @@ class _ReviewThread(QThread):
                 self.ready.emit(result)
                 return
             from .studio_glossary_service import preview_glossary_correction
+            from ..storage.project_stage_history import record_stage
             project, cue_ids, snapshot, settings = self.inputs
             if not self.use_ai and len(cue_ids) > self.LOCAL_CHUNK:
                 self.chunked = True
+                suggestions = 0
                 for start in range(0, len(cue_ids), self.LOCAL_CHUNK):
                     chunk = list(cue_ids[start:start+self.LOCAL_CHUNK])
                     result = preview_glossary_correction(project, chunk, snapshot, settings,
                                                          cancel_token=self.token, use_ai=False)
                     self.token.raise_if_cancelled()
+                    suggestions += len(result.hits)
                     self.partial.emit(result, chunk)
                     self.progress.emit(min(len(cue_ids), start+len(chunk)), len(cue_ids))
+                record_stage(getattr(project, "project_id", ""), "proofread",
+                             "suggestion" if suggestions else "unchanged", suggested=suggestions, checked=len(cue_ids))
                 self.ready.emit(None)
                 return
             result = preview_glossary_correction(*self.inputs, cancel_token=self.token, use_ai=self.use_ai,
                                                  progress=lambda done, total: self.progress.emit(done, total))
             self.token.raise_if_cancelled()
+            state = result.receipt.get("run_state")
+            outcome = state if state in {"partial", "failed"} else ("suggestion" if result.hits else "unchanged")
+            record_stage(getattr(project, "project_id", ""), "proofread", outcome,
+                         suggested=len(result.hits), checked=len(cue_ids))
             self.ready.emit(result)
         except Exception as exc:
+            if self.stand_in is None:
+                from ..storage.project_stage_history import record_stage
+                record_stage(getattr(self.inputs[0], "project_id", ""), "proofread",
+                             "cancelled" if self.token.is_cancelled else "failed")
             self.failed.emit("cancelled" if self.token.is_cancelled else str(exc))
 
 
@@ -6064,6 +6077,12 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
             self._sticky = (needle, set(values) | (previous if previous_needle == needle else set()))
         self._sync_from_project(set(values))
         self._persist_soon(project, studio)
+        if studio is not None and adopted:
+            from ..studio.studio_realign import schedule_proofread_alignment
+
+            schedule_proofread_alignment(studio, project, [
+                targets[key].target.cue_id for key in result.changed
+                if key in adopted and targets[key].target.storage == "cue"])
         if focus:
             self.list.ensure_visible(focus)
         from ..diagnostics.event_log import emit

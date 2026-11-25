@@ -21,6 +21,7 @@ from ..design.typography import emphasis_qss, weighted_font
 
 STAGES = dict(queued="排队中", running="正在下载", parsing="解析视频", tools="准备下载工具",
     downloading="下载音视频", merging="无损合并", subtitles="下载选定字幕", organizing="整理字幕",
+    ai_refining="AI 精细断句",
     verifying="校验文件", completed="下载完成", pending_import="下载完成，待导入",
     imported="已导入工程", partial="部分成功", failed="失败，可重试", cancelled="已取消",
     cancelling="正在取消", paused="已暂停", pausing="正在暂停")
@@ -517,6 +518,14 @@ class TaskCard(QFrame):
             info = tr("已保留成功文件，可仅重试字幕或手动导入。")
         if task.get("state") == "paused" and not info:
             info = tr("已暂停；继续时从已下载的部分接着下载。")
+        ai = task.get("subtitle_ai")
+        if ai:
+            note = tr("AI 已调整 {count} 个范围", count=ai["applied"])
+            if ai["status"] == "missing_settings":
+                note = tr("尚未配置 AI 断句，已保留智能重建结果")
+            elif ai["status"] != "completed":
+                note += " · " + tr("部分或全部范围未通过，已保留本地断句")
+            info = " · ".join(filter(None, (info, note)))
         values = (task.get("title") or task["task_id"], tr(STAGES.get(stage, stage)), state_tone(task),
                   info, fraction, stepper_html(task, detail), task.get("state"))
         self.cover.set_image(cover)
@@ -543,6 +552,7 @@ class TaskCard(QFrame):
     def available_actions(task: dict) -> list[tuple[str, str, bool]]:
         """(name, label, primary) in display order."""
         state = task.get("state", "")
+        preview = [("preview", "字幕预览…", False)] if task.get("downloaded_subtitles") else []
         subtitles_failed = task.get("mode") in ("both", "subtitles")
         if state == "running":
             return [("pause", "暂停", False), ("cancel", "取消任务", False)]
@@ -551,16 +561,16 @@ class TaskCard(QFrame):
         if state == "paused":
             return [("resume", "继续", True), ("cancel", "取消任务", False)]
         if state == "pending_import":
-            return [("import", "导入工程", True), ("folder", "打开所在文件夹", False)]
+            return [("import", "导入工程", True), *preview, ("folder", "打开所在文件夹", False)]
         if state == "imported":
             result = task.get("import_result", {})
             actions = [("edit", "进入编辑", True)]
             if result.get("cue_count"):
                 actions.append(("ai", "AI 精修…", False))
-            return actions + [("folder", "打开所在文件夹", False)]
+            return actions + preview + [("folder", "打开所在文件夹", False)]
         if state == "partial":
             actions = [("retry_subtitles", "仅重试字幕", True)] if subtitles_failed else []
-            return actions + [("import", "导入已下载部分", not subtitles_failed), ("folder", "打开所在文件夹", False)]
+            return actions + [("import", "导入已下载部分", not subtitles_failed), *preview, ("folder", "打开所在文件夹", False)]
         if state in ("failed", "cancelled"):
             return [("retry", "重试", state == "failed"), ("folder", "打开所在文件夹", False)]
         return []

@@ -500,10 +500,17 @@ class ProviderService:
         limit=min(limit,live_budget().ai_requests)
         if snapshot.playback or snapshot.dragging:
             limit = min(limit, 1)
+        # 2026-11-25: a limit the server reported in a 429 caps new schedulers too.
+        reported = [row.get('server_limit') for row in self._queue.snapshot().get('local_limits', ())
+                    if row.get('server_limit')]
+        account_limit = min(reported) if reported else None
+        if account_limit:
+            limit = min(limit, account_limit)
         return {"effective_workers": max(1, limit), "broker_workers": self._workers_requested,
                 "background_limit": snapshot.background_limit,
                 "interactive_limit": bool(snapshot.playback or snapshot.dragging),
-                "account_limit": None, "source": "local_broker_and_resource_governor"}
+                "account_limit": account_limit,
+                "source": "server_reported_limit" if account_limit else "local_broker_and_resource_governor"}
 
     def _assert_not_updating(self, runtime):
         """Call while holding _lock, together with registering the operation."""

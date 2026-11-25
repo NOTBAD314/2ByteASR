@@ -39,6 +39,29 @@ def test_japanese_ai_freeze_requires_measured_phrase_and_hard_boundary_evidence(
     assert grouping.accepted_japanese_boundaries(segments,[5,7],required={3}) is None
 
 
+def test_japanese_ai_keeps_project_cue_times_when_it_selects_the_existing_cuts(monkeypatch):
+    from twobyteasr.recognition.transcript_data import SpeechSegment, WordUnit
+    from twobyteasr.subtitle_rules import grouping
+    from twobyteasr.subtitle_rules.grouping_contract import validate_grouping_result
+
+    rows = [
+        SpeechSegment(11, 1., 2., '新しい', .9, [WordUnit(1., 2.12, '新しい', .9)], speaker='A'),
+        SpeechSegment(12, 2., 3., '映画です', .9, [WordUnit(1.92, 3., '映画です', .9)], speaker='A'),
+    ]
+
+    def unexpected_retime(*args):
+        raise AssertionError('Unchanged cuts must not be recalculated from word timestamps')
+
+    monkeypatch.setattr(grouping, 'cues_from_resegmented_texts', unexpected_retime)
+    with language_scope('ja'):
+        cues = grouping.accepted_japanese_boundaries(rows, [3, 7], required={3})
+        assert validate_grouping_result(rows, cues)
+    assert [(cue.start, cue.end, cue.text, cue.speaker) for cue in cues] == [
+        (row.start, row.end, row.text, row.speaker) for row in rows
+    ]
+    assert all(cue.grouping_origin == 'ai_accepted' for cue in cues)
+
+
 def test_editorial_filter_does_not_reuse_source_ids_after_empty_row():
     from twobyteasr.recognition.transcript_data import SpeechSegment
     from twobyteasr.subtitle_rules.text_rules import apply_editorial_segment_rules

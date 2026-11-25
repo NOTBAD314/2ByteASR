@@ -54,7 +54,8 @@ def deduplicate_review_items(items):
             continue
         identity=('cue',str(item['cue_id'])) if item.get('cue_id') is not None else (
             ('segment',str(item['segment_id'])) if item.get('segment_id') is not None else
-            ('unscoped',str(item.get('timestamp')),str(item.get('text') or '')))
+            ('unscoped', str(item.get('timestamp', item.get('start'))),
+             str(item.get('text') or item.get('message') or item.get('detail') or '')))
         output[(identity,str(item.get('category') or item.get('reason') or ''))]=item
     return list(output.values())
 

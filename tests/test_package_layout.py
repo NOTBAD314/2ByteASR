@@ -30,16 +30,17 @@ WORKER_IMPORTED = ("model_integrity", "read_only_weights", "forced_alignment",
 PACKAGES = {
     "app", "recognition", "providers", "glossary", "subtitle_rules", "projects", "timeline",
     "studio", "playback", "media", "exports", "caption_style", "caption_design", "rendering",
-    "cover", "design", "local_models", "system", "storage", "diagnostics", "local_mcp", "acceptance",
+    "cover", "design", "local_models", "system", "storage", "diagnostics", "local_mcp", "acceptance", "container",
 }
 # Packages whose modules must not load Qt at import time, with the named
 # screen modules that are allowed to.
 QT_FREE = {
     "subtitle_rules": set(), "system": set(), "media": set(),
-    "recognition": {"recognition_history", "history_diagnosis_panel"},
+    "recognition": {"recognition_history", "history_diagnosis_panel", "history_json_page"},
     "providers": {"api_setup_dialog", "endpoint_editor_ui"},
     "storage": {"storage_ui", "storage_relocation_ui"},
-    "local_models": {"model_storage", "model_workshop", "model_language_badges", "download_widgets", "model_picker_cards"},
+    "local_models": {"model_storage", "model_workshop", "model_language_badges", "download_widgets",
+                     "model_picker_cards", "bundle_summary", "model_loading_surface"},
 }
 QT_ROOTS = ("PySide6", "qtawesome", "shiboken6")
 

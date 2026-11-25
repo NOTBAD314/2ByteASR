@@ -207,7 +207,18 @@ class StudioPlaybackFlowMixin:
     def _advance_project_boundary(self, boundary_ms):
         end = timeline_duration_ms(self.project)
         point = min(end, max(0, int(boundary_ms)))
-        if self._loop_enabled and self._loop_region_ms and point >= self._loop_region_ms[1]:
+        replay = getattr(self, '_review_playback', None)
+        if replay is not None and getattr(replay, 'audition', False) and not replay.finished:
+            if point >= replay.stop_ms:
+                self._complete_bounded_cue_playback(replay)
+            elif point < end:
+                self._review_seeking = True
+                try:
+                    self._seek(point / 1000.0)
+                    self.video.set_paused(False)
+                finally:
+                    self._review_seeking = False
+        elif self._loop_enabled and self._loop_region_ms and point >= self._loop_region_ms[1]:
             self._seek(self._loop_region_ms[0] / 1000.0)
             self.video.set_paused(False)
         elif point < end:
@@ -674,6 +685,8 @@ class StudioPlaybackFlowMixin:
     @observed('player.seek')
     def _seek(self, seconds: float, *, accurate: bool = True, preserve_subtitle_target: bool = False) -> None:
         seconds = self.timeline._bounded_time_ms(round(seconds * 1000)) / 1000.0
+        if getattr(self, '_review_playback', None) is not None and not getattr(self, '_review_seeking', False):
+            self._release_review_playback()
         if not preserve_subtitle_target:
             self._subtitle_locate_window_target_ms = None
             self._subtitle_endpoint_hold = False
@@ -690,6 +703,7 @@ class StudioPlaybackFlowMixin:
         if getattr(self, "_empty_playback_state", False) or not self.video.controller:
             return
         timeline_ms = round(seconds * 1000)
+        self._flv_seek_index_request = None
         if (timeline_ms != getattr(self, '_subtitle_locate_window_target_ms', None)
                 and not getattr(self.timeline,'_viewport_manipulated',lambda:False)()):
             self.timeline._manual_view_hold = False
@@ -698,8 +712,6 @@ class StudioPlaybackFlowMixin:
         if not getattr(self, '_highlight_seeking', False):
             self._highlight_preview = None
         self._invalidate_audio_tail()
-        if getattr(self, '_review_playback', None) is not None and not getattr(self, '_review_seeking', False):
-            self._release_review_playback()
         self.cue_controller.sync_playhead_target(timeline_ms, force=True, rule=self._playhead_target_rule())
         visual_expectation = self._prepare_visual_route_for_time(timeline_ms)
         try:
@@ -738,8 +750,12 @@ class StudioPlaybackFlowMixin:
                 if mapped is not None:
                     source_seconds = mapped.source_ms / 1000.0
             self._defer_next_video_position_follow = True
+            from time import perf_counter
+            seek_begun = perf_counter()
             self.video.seek(source_seconds, accurate=accurate, project_ms=timeline_ms)
             self.video.set_seek_visual_expectation(visual_expectation)
+            if accurate:
+                self._watch_slow_flv_seek(timeline_ms, seek_begun)
             self._schedule_seek_trace_settlement()
             if self._defer_next_video_position_follow:
                 self._defer_next_video_position_follow = False
@@ -747,6 +763,39 @@ class StudioPlaybackFlowMixin:
         except RuntimeError as exc:
             self._defer_next_video_position_follow = False
             self._show_video_error(str(exc))
+
+    def _watch_slow_flv_seek(self, timeline_ms, seek_begun):
+        source = str(getattr(self.video, '_media_path', '') or '')
+        if (not source.lower().endswith('.flv') or self.project is None
+                or not callable(getattr(self.video.controller, 'observed_frame', None))):
+            return
+        request = (self.project, self.video.controller, source, timeline_ms, seek_begun)
+        self._flv_seek_index_request = request
+        QTimer.singleShot(2000, self, lambda: self._prepare_slow_flv_seek(request))
+
+    def _prepare_slow_flv_seek(self, request, *, indexing=False):
+        from ..media.indexed_media import GLOBAL_INDEXED_MEDIA
+        project, controller, source, timeline_ms, seek_begun = request
+        if (self._flv_seek_index_request is not request or self.project is not project
+                or getattr(self, '_close_requested', False) or self.video.controller is not controller
+                or self.video._media_path != source or abs(self.timeline.playhead_ms - timeline_ms) > 250):
+            return
+        frame = controller.observed_frame() or {}
+        if frame.get('status') == 'ready' and float(frame.get('command_ack_at') or 0) >= seek_begun:
+            return
+        if not indexing:
+            GLOBAL_INDEXED_MEDIA.resolve(source, reason='slow_exact_flv_seek')
+            self._studio_trace('STUDIO_FLV_SEEK_INDEX_REQUESTED', project_ms=timeline_ms)
+        state = GLOBAL_INDEXED_MEDIA.status(source).get('state')
+        recovering = (getattr(self.video, '_recovery_request', None) is not None
+                      or getattr(self.video, '_recovery_installing', False))
+        if state == 'READY' and not recovering:
+            memo = getattr(self, '_preview_playback_memo', {})
+            memo.pop(source, None)
+            self._flv_seek_index_request = None
+            self._sync_multitrack_preview_at(timeline_ms)
+        elif state not in {'FAILED', 'CANCELLED'}:
+            QTimer.singleShot(1000, self, lambda: self._prepare_slow_flv_seek(request, indexing=True))
 
     def _schedule_seek_trace_settlement(self, attempt: int = 0) -> None:
         trace = getattr(self.video, "_active_seek_trace", None)
@@ -1039,6 +1088,10 @@ class StudioPlaybackFlowMixin:
         QTimer.singleShot(20,apply)
 
     def _sync_play_button(self, paused: bool) -> None:
+        if not paused and getattr(self, "_reasr_preview_project", None) is not None:
+            from .studio_reasr_batch import stop_preview
+
+            stop_preview(self)
         if paused and not getattr(self, "_rate_transition", False):
             self._clear_shuttle_rate()
         # Registered (not just set) so a theme switch keeps the current glyph.

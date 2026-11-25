@@ -30,7 +30,8 @@ APPLE_GPU_PLAN_MODELS = frozenset({'moss', 'firered_vad', 'speaker_embedding', '
 MLX_PRIMARY = {'mlx_qwen3_asr': 'Apple Silicon 本地 Qwen3-ASR 0.6B（MLX）',
                'mlx_qwen3_asr_1_7b': 'Apple Silicon 本地 Qwen3-ASR 1.7B（MLX）'}
 REVIEW_LABELS = {'api': '云端识别服务', 'whisper_turbo': 'Whisper', 'sensevoice': 'SenseVoice',
-                 'funasr_nano': 'Fun-ASR Nano', 'firered': 'FireRedASR2-AED', 'firered_llm': 'FireRedASR2-LLM'}
+                 'funasr_nano': 'Fun-ASR Nano', 'haas_ja': 'Haas-ja-v1.0',
+                 'firered': 'FireRedASR2-AED', 'firered_llm': 'FireRedASR2-LLM'}
 # 2026-10-18: Japanese and English (2026-10-19: and Korean) audio is timed by Qwen3-ForcedAligner
 # whatever timeline model is chosen; FireRed / Whisper / Paraformer are Chinese
 # timing tools here and are rerouted (moss_firered_pipeline.run_firered_stage).
@@ -260,6 +261,8 @@ def language_timeline(timeline: str, spoken: str, settings: dict) -> dict | None
     timeline = str(timeline or 'off')
     if spoken not in ALIGNED_LANGUAGES or timeline == 'off':
         return None
+    if timeline == 'haas_native' and spoken == 'ja':
+        return {'spoken': spoken, 'rerouted': False, 'ctc': False, 'name': 'Haas 原生片段与 token 时间'}
     ctc = False  # legacy result field; the dedicated Japanese CTC stage is retired
     if timeline == MFA_TIMELINE:
         if spoken in MFA_LANGUAGES:
@@ -329,6 +332,12 @@ def run_disclosure(settings: dict) -> dict:
         info['speakers'] = '没有说话人区分（单轨）' if primary in {'sensevoice', 'whisper_turbo', 'paraformer'} else '取决于模型'
         native = '模型自带的时间'
         info['local'].append(primary)
+    if primary == 'haas_ja':
+        from .haas_backend import configuration
+        config = configuration(settings)
+        info['engine'] = f'Haas-ja-v1.0 · {config.quantization.upper()} · {config.device.upper()}'
+        info['speakers'] = '本机独立说话人分离' if models.get('haas_diarization') else '单轨'
+        native = 'Haas 原生片段与 token 时间'
     if timeline == MFA_TIMELINE:
         info['timestamps'] = ('本地 MFA（实验）实测的中文 / 日语字词时间，其他语言用 Qwen3 对齐（对不上的地方保留'
                               + native + '并标为估算）')
@@ -341,7 +350,7 @@ def run_disclosure(settings: dict) -> dict:
         info['timestamps'] = ('FireRed 字级时间轴（Apple 芯片 GPU）' if sys.platform == 'darwin'
                               else 'FireRed 字级时间轴（需要 NVIDIA 显卡）')
         info['local'].append('FireRed')
-    elif timeline == 'off':
+    elif timeline in {'off', 'haas_native'}:
         info['timestamps'] = native
     else:
         info['timestamps'] = f'{timeline} 时间轴'
@@ -349,8 +358,21 @@ def run_disclosure(settings: dict) -> dict:
     # 2026-10-21: measured word times exist only with a timeline model or a
     # cloud model that returns them; otherwise the primary's sentence times
     # are all there is (the pre-run check warns, ``MainWindow._confirm_run_limits``).
-    info['word_timing'] = timeline != 'off' or native_words
+    info['word_timing'] = timeline not in {'off', 'haas_native'} or native_words
     info['notes'] = []
+    from .language_guard import settings_policy
+    guard = settings_policy(settings, spoken_language(settings))
+    if guard['strict'] and primary == 'api':
+        from ..providers.qwen31_asr import FLASH
+        if model == FLASH:
+            info['speakers'] = '本机独立说话人分离（原生分轨会忽略指定语言）'
+            info['notes'].append('本机声纹分轨适合交替说话。明显叠话时，身份仍需要试听确认。')
+        if guard['repair'] and model not in {'moss-transcribe-diarize-pro', 'spark_asr_v2'}:
+            info['notes'].append('异常语言补识别沿用同一服务，按半小时及整项任务的额度限制，按该服务计费。')
+    elif primary == 'api' and guard['language'] != 'auto':
+        from ..providers.qwen31_asr import FLASH
+        if model == FLASH:
+            info['notes'].append('已关闭严格语言模式。Flash 3.1 原生分轨开启时，服务不会应用所选语言提示。')
     if language_stage is not None:
         from ..subtitle_rules.european_text import LABELS as european_labels
         spoken = {'ja': '日语', 'ko': '韩语', **european_labels}.get(language_stage['spoken'], '英语')

@@ -33,7 +33,7 @@ def _stream_start_ms(asset, ordinal):
 
 def capture_audio_graph(project):
     from .project_loudness import project_gain_db
-    from ..timeline.studio_media_pool import effective_audio_master_track_id, primary_video_track_id
+    from ..timeline.studio_media_pool import asset_has_video, effective_audio_master_track_id, primary_video_track_id
     assets = {a.asset_id:a for a in project.media_pool}
     associated = {g.video_track_id for g in project.av_track_groups}
     linked = {g.video_track_id:g.audio_track_id for g in project.av_track_groups if g.linked}
@@ -53,6 +53,7 @@ def capture_audio_graph(project):
         window = windows.get((sound.id, linked_clip.id), windows.get(linked_clip.id, {}))
         envelopes = window.get('envelopes', []) if not window.get('track_id') or window['track_id'] == sound.id else []
         geometry = window if envelopes else {}
+        audio_only = standalone or not asset_has_video(asset)
         layers.append(dict(track_id=track.id,audio_track_id=linked.get(track.id,track.id),
             track_name=track.name,clip_id=clip.id,asset_id=clip.asset_id,source_path=asset.canonical_source,
             audio_clip_id=linked_clip.id,stream_index=int(getattr(linked_clip,'stream_index',0)),
@@ -67,8 +68,7 @@ def capture_audio_graph(project):
             audio_enabled=bool(track.enabled and clip.enabled and sound.enabled and linked_clip.enabled
                                and getattr(clip,'audio_enabled',True)),
             track_muted=bool(track.muted or sound.muted),
-            audio_only=standalone or (asset.video_metadata or {}).get('has_video') is False,
-            audio_only_source=standalone or (asset.video_metadata or {}).get('has_video') is False,
+            audio_only=audio_only, audio_only_source=audio_only,
             primary_media=standalone or track.id==primary_video_track_id(project)))
 
     for track in tracks:

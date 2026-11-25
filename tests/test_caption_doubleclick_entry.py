@@ -9,6 +9,17 @@ from tests.test_review_replay_and_window_bounds import _page
 from twobyteasr.projects.studio_project import StudioCue,load_project
 
 
+def wait_for_saved_caption(page, expected):
+    from time import monotonic
+
+    deadline = monotonic() + 5.0
+    saved = load_project(page.project_path).cues[0].text
+    while saved != expected and monotonic() < deadline:
+        QTest.qWait(20)
+        saved = load_project(page.project_path).cues[0].text
+    assert saved == expected, page.save_state.text()
+
+
 def opened(tmp_path,monkeypatch,mode):
     app,page=_page(tmp_path,monkeypatch,[StudioCue('click-stable',6333,11417,'Nonempty English caption',speaker_id='S00')])
     page.timeline.set_subtitle_layer('original')
@@ -40,7 +51,8 @@ def test_mouse_double_click_edit_confirm_save_reopen(tmp_path,monkeypatch,mode,t
         else:QTest.keyClick(page.subtitle_edit_input,Qt.Key_Return)
         assert page.project.cues[0].text=='Confirmed from actual double click'
         assert page.undo_stack.count()==1
-        assert load_project(page.project_path).cues[0].text==page.project.cues[0].text
+        page.save()
+        wait_for_saved_caption(page, page.project.cues[0].text)
         page.undo_stack.undo();assert page.project.cues[0].text=='Nonempty English caption'
         page.undo_stack.redo();assert page.project.cues[0].text=='Confirmed from actual double click'
     finally:page.close_page();page.deleteLater();app.processEvents()
@@ -70,5 +82,6 @@ def test_mouse_double_click_reject_cancel_keeps_authority(tmp_path,monkeypatch,m
         assert page.project.cues[0].text==expected
         assert (page.undo_stack.index(),page.undo_stack.count())==(index,count)
         assert page._caption_draft is None and not page._live_edit_text_overrides
-        page.save();assert load_project(page.project_path).cues[0].text==expected
+        page.save()
+        wait_for_saved_caption(page, expected)
     finally:page.close_page();page.deleteLater();app.processEvents()

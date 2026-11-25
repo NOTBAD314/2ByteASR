@@ -6,6 +6,7 @@ def test_complete_short_material_keeps_every_id_and_speaker_in_one_request(monke
     import subtitle_core as core
     from twobyteasr.subtitle_rules import grouping
     from twobyteasr.providers.asr_provider_snapshot import GroupedBatchResult
+    from twobyteasr.subtitle_rules.language_rules import language_scope
     rows = [core.SpeechSegment(i + 1, i, i + .8, "保持ID7与重复二十一二十一", .8, [],
         speaker="S01" if i % 2 else "S02") for i in range(50)]
     requests = []
@@ -14,7 +15,8 @@ def test_complete_short_material_keeps_every_id_and_speaker_in_one_request(monke
         return GroupedBatchResult([core.SubtitleCue(row.segment_id, row.start, row.end,
             row.text, speaker=row.speaker) for row in batch], origin="ai", validated=True)
     monkeypatch.setattr(grouping, "call_grouping_api", complete)
-    result = grouping.group_subtitles(rows, use_ai=True)
+    with language_scope("zh"):
+        result = grouping.group_subtitles(rows, use_ai=True)
     assert len(requests) == 1
     assert [row.segment_id for row in requests[0][0]] == list(range(1, 51))
     assert {(cue.speaker, cue.text) for cue in result} == {(row.speaker, row.text) for row in rows}
@@ -26,13 +28,14 @@ def test_group_request_receives_shared_scene_and_protected_handoff():
     from twobyteasr.subtitle_rules.grouping import call_grouping_api
     from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
     from twobyteasr.glossary.terminology import GlossarySnapshot, GlossaryLibrary
+    from twobyteasr.subtitle_rules.language_rules import language_scope
     library = GlossaryLibrary("game", "用户保存游戏", "8", profile_json='{"game":"瓦罗兰特"}')
     # Constructor contracts are checked explicitly; content_scene receives the same frozen snapshot.
     snapshot = GlossarySnapshot((library,))
     context = RuntimeContext(game_name="", enable_domain_terms=True, glossary_snapshot=snapshot)
     rows = [core.SpeechSegment(1, 0, 1, "CHIOCHOO能奶自己", .8, [], speaker="S01"),
             core.SpeechSegment(2, 1, 2, "autumn来了吗", .8, [], speaker="S02")]
-    with activate_runtime_context(context, legacy=core):
+    with activate_runtime_context(context, legacy=core), language_scope("zh"):
         messages = call_grouping_api(rows, _messages_only=True)
     body = json.loads(messages[1]["content"])
     assert body["content_scene"]["domain"] == "瓦罗兰特"

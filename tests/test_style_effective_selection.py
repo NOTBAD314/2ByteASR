@@ -5,7 +5,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QItemSelectionModel, QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialogButtonBox
@@ -137,6 +137,7 @@ def test_secondary_group_members_include_folded_cues_and_exclude_locks(page, exp
     page.project.studio_state['speaker_roles'] = decide(
         page.project, manual={'S01':'main', 'S02':'secondary', 'S03':'secondary'}, expanded=expanded)
     page.timeline.reindex_project()
+    page.timeline.set_group_expanded(expanded)
     assert set(page.timeline._group_members) == {'S02', 'S03'}
     assert page.timeline._group_collapsed() == (not expanded)
     if locked:
@@ -215,7 +216,11 @@ def test_shadow_opacity_patch_keeps_each_cues_shape_and_other_styles(page):
 def test_clock_observation_and_row_seek_do_not_replace_manual_multiselection(page, monkeypatch):
     choose(page, 'multi')
     monkeypatch.setattr(page, '_seek', lambda seconds: page.cue_controller.sync_playhead_target(round(seconds*1000), force=True))
-    page.cue_controller.table_activated(page.cue_model.index(1, 3))
+    index = page.cue_model.index(page.cue_model.row_for_cue_id('b'), 3)
+    assert index.isValid()
+    page.cue_table.selectionModel().setCurrentIndex(index, QItemSelectionModel.SelectionFlag.NoUpdate)
+    page.cue_controller.table_activated(index)
+    page.cue_controller.flush_table_activation()
     assert set(page.selected_cue_ids()) == {'a', 'b'}
     assert page.session.selected_cue_id == 'b'
     assert page.session.observed_playhead_target_id == 'b'

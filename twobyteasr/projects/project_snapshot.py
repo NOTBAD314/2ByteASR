@@ -1,6 +1,7 @@
 """Detach document fields without copying live controllers or worker caches."""
 from copy import deepcopy
 from dataclasses import fields
+import marshal
 
 
 def copy_json_value(value, *, field='value'):
@@ -15,7 +16,6 @@ def copy_json_value(value, *, field='value'):
     types become plain values, a live Qt object is refused with the field
     name, other legacy runtime values keep the existing deepcopy behavior.
     """
-    import marshal
     try:
         return marshal.loads(marshal.dumps(value,4))
     except (TypeError,ValueError):

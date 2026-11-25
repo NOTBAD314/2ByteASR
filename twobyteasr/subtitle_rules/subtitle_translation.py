@@ -44,7 +44,7 @@ RECORDS_VERSION = 1
 PROMPT_VERSION = "ja-zh-subtitle-v1"
 EN_PROMPT_VERSION = "en-zh-subtitle-v1"   # 2026-10-14: English sources
 KO_PROMPT_VERSION = "ko-zh-subtitle-v1"   # 2026-10-19: Korean sources
-VALIDATION_VERSION = 'translation-language-quantities-repair-v3'
+VALIDATION_VERSION = 'translation-language-quantities-repair-v4'
 DEFAULT_TARGET = "zh-Hans"
 # 2026-10-19: Spanish, German, French, Portuguese, Italian and Russian as both
 # targets and (recognized) sources.
@@ -1677,7 +1677,16 @@ def validate_translation(source_text: str, text: str, target: str = DEFAULT_TARG
         if quantity_mismatch(source,output,source_language,target_language):
             return 'number_mismatch'
     if target_language != "zh":
-        return _validate_foreign(source, output, target_language, source_language_of(source_language))
+        issue = _validate_foreign(source, output, target_language, source_language_of(source_language))
+        if issue is None and target_language in {'en', 'de', 'it', 'fr', 'es', 'pt'}:
+            from ..recognition.language_guard import conflict
+            detected = conflict(output, target_language)
+            if detected:
+                from ..recognition.cache import record_run_event
+                record_run_event('language_guard_stage_conflict', stage='translation', requested_language=target_language,
+                                 language=detected)
+                return f'not_{LANGUAGE_NAMES[target_language].lower()}'
+        return issue
     if len(output) > 4 * len(source) + 20:
         return "too_long"
     if _letters(source)["hangul"]:

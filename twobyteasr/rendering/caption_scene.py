@@ -813,7 +813,21 @@ class CaptionScene(QObject):
         cache = getattr(self, '_instance_layout', None)
         if cache is None:
             cache = self._instance_layout = ProjectCollisionLayout()
-        layout = cache.for_cues(page.project, cues, page._revision_store.render)
+        layout = cache.for_cues(page.project, cues, page._revision_store.render, work_ms=5)
+        if not layout.ready:
+            if not getattr(self, "_layout_retry_pending", False):
+                from PySide6.QtCore import QTimer
+
+                def resume():
+                    self._layout_retry_pending = False
+                    if not self.closed and page.project is self.project:
+                        page._present_caption_scene()
+
+                self._layout_retry_pending = True
+                QTimer.singleShot(20, self, resume)
+            # An exact lease trace is still being computed. Reuse the existing
+            # "not prepared" path rather than displaying a guessed offset.
+            return tuple((key, None) for key, _ in items)
         items = [(key, replace(p, layout_offset=layout.offsets.get(key, 0.),
                               layout_warnings=layout.warnings) if p is not None and hasattr(p, 'snapshot') else p)
                  for key, p in items]

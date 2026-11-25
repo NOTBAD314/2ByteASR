@@ -125,7 +125,10 @@ def test_dispatch_one_press_one_command_and_review_precedence(qapp):
     page, dispatch, calls = _dispatch_page()
     assert dispatch("Q") and calls == ["trim_start"]
     assert dispatch("Space") and calls[-1] == "play_pause"
-    assert not dispatch("Ctrl+Return")          # review-only outside review
+    assert dispatch("Ctrl+Return") and calls[-1] == "insert_cue_after"
+    assert dispatch("Ctrl+Shift+Return") and calls[-1] == "insert_cue_before"
+    assert dispatch("Alt+Up") and calls[-1] == "previous_cue_alt"
+    assert dispatch("F6") and calls[-1] == "audition_head"
     page._review_mode = True
     assert dispatch("Space") and calls[-1] == "review_play_context"
     assert dispatch("Ctrl+Enter") and calls[-1] == "confirm_next_review"  # was unreachable before
@@ -137,7 +140,7 @@ def test_dispatch_one_press_one_command_and_review_precedence(qapp):
 
 def test_typing_never_triggers_letter_or_space_shortcuts(qapp):
     page, dispatch, calls = _dispatch_page(_editing_has_focus=lambda: True)
-    for key in ("Q", "W", "E", "Space", "A"):
+    for key in ("Q", "W", "E", "Space", "A", "Ctrl+Return", "Alt+Up", "F6"):
         assert not dispatch(key)
     page._editing_has_focus = lambda: False
     page._studio_ime_composing = True

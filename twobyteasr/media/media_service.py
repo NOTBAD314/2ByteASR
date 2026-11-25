@@ -19,7 +19,7 @@ from .audio_streams import probe_audio_streams
 
 
 # 4 (2026-10-24): every audio stream, not only the first (``audio_streams``).
-MEDIA_METADATA_SCHEMA = 4
+MEDIA_METADATA_SCHEMA = 5
 PROXY_MANIFEST_SCHEMA = 1
 
 
@@ -84,7 +84,38 @@ def _stream_start_time_ms(value: object) -> float:
         return 0.0
 
 
-def probe_duration_ms(format_info: Mapping, streams: object) -> int:
+def _flv_last_media_timestamp_ms(source: Path) -> int | None:
+    """Read the timestamp from the FLV's trailing tag chain without scanning media."""
+    try:
+        with source.open("rb") as stream:
+            header = stream.read(9)
+            if len(header) != 9 or header[:3] != b"FLV":
+                return None
+            data_start = int.from_bytes(header[5:9], "big") + 4
+            end = stream.seek(0, 2)
+            timestamps = []
+            for _ in range(32):
+                if end < data_start + 15:
+                    break
+                stream.seek(end - 4)
+                tag_size = int.from_bytes(stream.read(4), "big")
+                tag_start = end - 4 - tag_size
+                if tag_size < 11 or tag_start < data_start:
+                    return None
+                stream.seek(tag_start)
+                tag = stream.read(11)
+                if (len(tag) != 11 or int.from_bytes(tag[1:4], "big") + 11 != tag_size
+                        or tag[8:11] != b"\x00\x00\x00"):
+                    return None
+                if tag[0] in (8, 9):
+                    timestamps.append(int.from_bytes(tag[4:7], "big") | (tag[7] << 24))
+                end = tag_start
+            return max(timestamps) if len(timestamps) >= 2 else None
+    except OSError:
+        return None
+
+
+def probe_duration_ms(format_info: Mapping, streams: object, *, source: Path | None = None) -> int:
     """Prefer container duration, then the longest video/audio stream duration.
 
     Some game recordings and phone captures leave ``format.duration`` empty
@@ -94,6 +125,17 @@ def probe_duration_ms(format_info: Mapping, streams: object) -> int:
 
     duration = _seconds_to_ms(format_info.get("duration") if isinstance(format_info, Mapping) else 0)
     if duration:
+        # Some unfinalized FLV recordings publish the last absolute packet
+        # timestamp as the duration. Both elapsed and absolute fields exist
+        # in practice. Only normalize when the physical trailer corroborates
+        # the latter and the two interpretations are distinctly separated.
+        if source is not None and format_info.get("format_name") == "flv":
+            start = _seconds_to_ms(format_info.get("start_time"))
+            if 200 <= start < duration:
+                tail = _flv_last_media_timestamp_ms(source)
+                tolerance = max(75, min(500, start // 4))
+                if tail is not None and abs(tail - duration) <= tolerance:
+                    return duration - start
         return duration
     best = 0
     for stream in streams if isinstance(streams, list) else ():
@@ -316,7 +358,7 @@ class MediaService:
         completed = self._probe_runner(
             [
                 str(self.ffprobe_path), "-v", "error", "-show_entries",
-                "format=duration,size,start_time:stream=index,codec_type,codec_name,width,height,sample_rate,channels,channel_layout,avg_frame_rate,r_frame_rate,time_base,start_time,start_pts,best_effort_timestamp,duration,duration_ts:stream_tags=rotate,language,title,name,handler_name,DURATION:stream_disposition=default:stream_side_data=rotation",
+                "format=duration,size,start_time,format_name:stream=index,codec_type,codec_name,width,height,sample_rate,channels,channel_layout,avg_frame_rate,r_frame_rate,time_base,start_time,start_pts,best_effort_timestamp,duration,duration_ts:stream_tags=rotate,language,title,name,handler_name,DURATION:stream_disposition=default:stream_side_data=rotation",
                 "-of", "json", str(source),
             ],
             purpose="shared media metadata",
@@ -352,7 +394,7 @@ class MediaService:
             "path": str(source),
             "size": int(format_info.get("size") or stat.st_size),
             "mtime_ns": int(stat.st_mtime_ns),
-            "duration_ms": probe_duration_ms(format_info, streams),
+            "duration_ms": probe_duration_ms(format_info, streams, source=source),
             "video_codec": str(video.get("codec_name") or ""),
             "audio_codec": str(audio.get("codec_name") or ""),
             "width": int(video.get("width") or 0),

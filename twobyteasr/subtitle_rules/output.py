@@ -16,6 +16,12 @@ from twobyteasr.recognition import reporting as task_reporting
 from twobyteasr.recognition.run_context import get_runtime_context
 from twobyteasr.subtitle_rules.language_rules import finished_cue_limits
 
+# Grouping origins of lines kept on purpose: retained for a later AI retry, or
+# no legal cut inside. The final length gate reviews them instead of failing.
+OVERLIMIT_RETAINED_ORIGINS = frozenset({
+    'source_retained_after_local_rejection', 'unresolved', 'local_indivisible_retained',
+    'indivisible_atom', 'local_source_boundary_fallback'})
+
 __all__ = [
     'format_review_time',
     'print_review_summary',
@@ -232,6 +238,35 @@ def validate_final_cues(cues, segments, audio_seconds, validate_text=True):
                     add_review_item(cue.start, '不可拆字幕单元超长',
                         '该完整词或术语超过14字，保留原文与来源时间，需人工确认局部长度冲突。',
                         cue.text, priority=3, severity='warning', grouping_origin='indivisible_atom')
+    # 2026-11-25 (Ninja Spy: 794 lines, one 30-character retained source line
+    # failed the whole task): a line the grouping stage already marked as
+    # retained-for-retry or as having no legal cut is a local, reviewable
+    # conflict. The project is saved as partial and the line can be re-grouped;
+    # an over-long line with no such receipt is still a real grouping bug.
+    retained = []
+    for cue in cues:
+        if display_length(cue.text) <= max_chars or id(cue) in indivisible_conflicts:
+            continue
+        origin = str(getattr(cue, 'grouping_origin', '') or '')
+        receipt = getattr(cue, 'grouping_boundary_receipt', None) or {}
+        if origin in OVERLIMIT_RETAINED_ORIGINS or (isinstance(receipt, dict) and receipt.get('requires_review')):
+            indivisible_conflicts.add(id(cue))
+            retained.append(cue)
+            add_review_item(cue.start, '超长字幕待重新断句',
+                            f'这一条 {display_length(cue.text)} 字超过上限 {max_chars} 字，来自尚未完成的断句范围；'
+                            '已保留原文与时间，可在识别记录或工作台重试 AI 断句。',
+                            cue.text, priority=3, severity='warning', grouping_origin=origin or 'retained')
+    if retained:
+        try:
+            from ..recognition.cache import record_run_event
+            record_run_event('final_overlimit_retained', count=len(retained), max_chars=max_chars,
+                             samples=[dict(text=c.text[:60], units=display_length(c.text),
+                                           seconds=round(c.end - c.start, 2),
+                                           origin=str(getattr(c, 'grouping_origin', '') or ''))
+                                      for c in retained[:12]])
+        except Exception:
+            pass
+        print(f"   [部分完成] {len(retained)} 条超长字幕来自待重试断句范围，已保留并标为待复核。")
     invalid = [
         cue
         for cue in cues

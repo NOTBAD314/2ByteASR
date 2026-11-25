@@ -155,6 +155,8 @@ class ReviewPlayback:
     stop_ms: int
     generation: int
     finished: bool = False
+    audition: bool = False
+    repeat: bool = False
 
 
 def review_playback_window(cue, following: Iterable[Any] = ()) -> tuple[int, int]:

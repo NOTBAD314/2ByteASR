@@ -31,6 +31,8 @@ _RETIRED_DELIVERY_FILES = frozenset({
     'twobyteasr/acceptance/optional_models_audit.py',
     'twobyteasr/acceptance/optional_models_headed_audit.py',
     'twobyteasr/caption_style/style_library.py',
+    # 15db45cc folded Studio alignment into Qwen Ultra and retired the CTC chain.
+    'twobyteasr/studio/studio_ctc_refine.py',
 })
 _RETIRED_DELIVERY_ROOTS = ('third_party/DiariZen/', 'third_party/VibeVoice/')
 
@@ -61,6 +63,7 @@ _SOURCE_FILES = {
     "LICENSE", "PROJECT_LICENSE.md", "SOURCE_DELIVERY.md", "BUILD_FROM_SOURCE.md",
     "CONTRIBUTING.md", "THIRD_PARTY_NOTICES.md", "installer/2ByteASR-frozen.iss",
     "assets/diagnostics/speech_en.wav",
+    "assets/diagnostics/speech_ja.wav",
     "glm_asr_worker.py",
     "canary_asr_worker.py",
     "firered_llm_worker.py",

@@ -17,6 +17,7 @@ def fixture(monkeypatch):
         cues=[object()]
         def __eq__(self,other):raise AssertionError('project data must not be deeply compared on a seek tick')
     page=QObject();page.project=Project();page._readiness=NS(generation=1)
+    page.session=NS(generation=1,runtime=NS(revision=1))
     page._close_requested=False;page.save_state=QLabel('已保存');page.calls=[];page.positions=[]
     page._studio_trace=lambda *a,**k:None
     page.timeline=NS(set_playhead=page.positions.append)
@@ -28,7 +29,8 @@ def fixture(monkeypatch):
         controller=NS(instance_id='player',_subtitle_binding_epoch=1,screenshot_to_file=lambda *a,**k:None,
             post_raw_overlay=lambda *a,**k:True,applied_visual_state=lambda:{'overlays':applied}),
         visual_position=lambda:0.,begin_caption_seek_hold=lambda:None,rect=lambda:QRect(0,0,640,360),
-        _prepared_caption_publications=[],remove_compositor_overlay=lambda *a,**k:page.calls.append('remove-cover'))
+        _prepared_caption_publications=[],remove_compositor_overlay=lambda *a,**k:page.calls.append('remove-cover'),
+        set_paused=lambda value:page.calls.append(('paused',value)))
     page.video=video
     def commit(seconds,**kwargs):
         page.calls.append(seconds);video._playback_clock.generation+=1
@@ -75,6 +77,46 @@ def test_project_switch_rejects_late_capture_and_never_commits_old_target(monkey
         o.tick();o._captured(epoch,object(),'')
         assert o.pending is None and o.cover is None and not p.calls
     finally:o.cancel();p.deleteLater()
+
+
+def test_caption_seek_timeout_keeps_play_intent_through_the_fallback(monkeypatch):
+    page, owner, *_ = fixture(monkeypatch)
+    try:
+        page.video.playback_intended = True
+        page.video._seek_hold_active = True
+        assert owner.request(2, True)
+        owner.pending["started"] -= 9
+        owner.tick()
+        assert page.calls == [2., ("paused", False)]
+        assert owner.pending is None
+    finally:
+        owner.cancel()
+        page.deleteLater()
+
+
+def test_caption_seek_timeout_leaves_user_pause_and_replaced_session_alone(monkeypatch):
+    page, owner, *_ = fixture(monkeypatch)
+    try:
+        assert owner.request(2, True)
+        owner.pending["started"] -= 9
+        owner.tick()
+        assert page.calls == [2.]
+
+        seek = page._seek_immediate
+        def replace_at_seek(*args, **kwargs):
+            seek(*args, **kwargs)
+            page.session.generation += 1
+
+        page._seek_immediate = replace_at_seek
+        page.video.playback_intended = True
+        page.video._seek_hold_active = True
+        assert owner.request(3, True)
+        owner.pending["started"] -= 9
+        owner.tick()
+        assert page.calls == [2., 3.]
+    finally:
+        owner.cancel()
+        page.deleteLater()
 
 
 def test_seek_cover_is_foreground_and_not_a_caption_boundary_member():

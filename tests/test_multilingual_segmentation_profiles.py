@@ -110,7 +110,11 @@ def test_truncated_response_keeps_only_complete_known_utterances():
     calls=[]
     with language_scope('it'):
         answer=ai_breaks(rows,None,complete=lambda m:calls.append(m) or '{"breaks":{"1":[2],"2":[',lexicon=lexicon('it'))
-    assert answer=={'1':[2]} and len(calls)==1
+    # 2026-11-25: the utterance with no complete answer is asked once more on its own.
+    # The missing utterance and the one whose line is too long are asked again; the still too long
+    # line of utterance 1 is then asked once on its own (2026-11-25).
+    ids=[[u['id'] for u in json.loads(c[1]['content'])['utterances']] for c in calls]
+    assert answer=={'1':[2]} and ids[:2]==[['1','2'],['1','2']] and ids[2][0].startswith('1~') and len(calls)==3
 
 
 def test_source_and_translation_profiles_keep_stable_cue_ids_separate():

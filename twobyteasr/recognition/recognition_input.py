@@ -323,6 +323,7 @@ def _attach_range_result(captured, result, snapshot):
     captured.report_path = result.report_path
     captured.original_outputs = copy.deepcopy(result.original_outputs)
     info = {"fingerprint": snapshot["fingerprint"],
+            "request_fingerprint": snapshot.get("request_fingerprint") or snapshot["fingerprint"],
             "media_time_contract": snapshot.get('media_time_contract', 'legacy-v1'),
             "media_timebases": copy.deepcopy(snapshot.get('media_timebases', {})),
             "source_project_id": snapshot["project_id"],

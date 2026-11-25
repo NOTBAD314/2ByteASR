@@ -44,7 +44,10 @@ from __future__ import annotations
 
 import difflib
 import json
+import math
+import time
 import re
+from statistics import median
 
 from . import european_text
 from .english_text import RULES, display_length, join, normalize_spaces, word_core, words as split_words
@@ -229,7 +232,7 @@ MIN_SECONDS_PER_LETTER = 0.02
 SOURCE_TIME_TOLERANCE = 0.05
 
 
-def _word_times(segment, tokens: list[str], aligned: list[dict], core=word_core) -> list[tuple[float, float] | None]:
+def _word_times(segment, tokens: list[str], aligned: list[dict], core=word_core, *, measured_endpoints=False) -> list[tuple[float, float] | None]:
     """Each token's (start, end) from aligner words matched by spelling, else None."""
     pool = [row for row in aligned if float(row.get("end", 0)) > segment.start - 0.3
             and float(row.get("start", 0)) < segment.end + 0.3 and core(row.get("text", ""))]
@@ -247,7 +250,8 @@ def _word_times(segment, tokens: list[str], aligned: list[dict], core=word_core)
             # 2026-10-19 (real Russian clip): on garbled text the aligner can squeeze
             # several words into a few milliseconds, which left a one-frame subtitle.
             # Faster than 20 ms a letter is not speech: share it out like unmeasured words.
-            if end - start < MIN_SECONDS_PER_LETTER * max(1, len(left[block.a + offset])):
+            minimum = .02 if measured_endpoints else MIN_SECONDS_PER_LETTER * max(1, len(left[block.a + offset]))
+            if end - start < minimum:
                 continue
             # 2026-10-21 (real Russian clip): the aligner hears 0.3 s on either side of the
             # utterance and stretched "дом" 0.2 s past its end; a cut placed from it left the
@@ -285,7 +289,63 @@ def _fill_times(segment, tokens: list[str], times):
     return filled
 
 
-def group_english(segments, firered_tokens=(), *, breaks_for=None, lexicon=None, ai_only=False) -> list[SubtitleCue]:
+def _english_evidence(segment, tokens, aligned):
+    arbitration = getattr(segment, "caption_arbitration", {})
+    if (arbitration.get("edited_text_alignment") or {}).get("status") == "pending":
+        return [None] * len(tokens)
+    measured = (arbitration.get("word_timing") or {}).get("measured_words")
+    if not measured:
+        measured = arbitration.get("acoustic_words")
+    if measured:
+        aligned = [dict(row, start=row["start_ms"] / 1000, end=row["end_ms"] / 1000)
+                   for row in measured]
+    else:
+        job = (arbitration.get("forced_alignment_window") or {}).get("job")
+        aligned = [row for row in aligned
+                   if not row.get("alignment_key") or (job and row["alignment_key"] == job)]
+    measured_rows = [row for row in aligned
+                     if row.get("start_basis", "model") == row.get("end_basis", "model") == "model"
+                     and math.isfinite(float(row["start"]) + float(row["end"]))]
+    return _word_times(segment, tokens, measured_rows, measured_endpoints=True)
+
+
+def _measured_gaps(times):
+    return {index: round((right[0] - left[1]) * 1000)
+            for index, (left, right) in enumerate(zip(times, times[1:]))
+            if left is not None and right is not None and left[1] <= right[0]}
+
+
+def _vad_gap_activity(times, gaps, regions):
+    if not regions:
+        return {}
+    active = {}
+    for index, gap in gaps.items():
+        if gap < 150:
+            continue
+        left, right = times[index][1], times[index + 1][0]
+        active[index] = min(gap, round(1000 * sum(
+            max(0, min(right, row["end"]) - max(left, row["start"])) for row in regions
+            if row["start"] < right and left < row["end"])))
+    return active
+
+
+def _english_request(segment, aligned, regions=()):
+    from .segmentation_profiles import word_spans
+    tokens = [span[2] for span in word_spans(segment.text)]
+    times = _english_evidence(segment, tokens, aligned)
+    gaps = _measured_gaps(times)
+    vad = _vad_gap_activity(times, gaps, regions)
+    word_durations = [end - start for interval in times if interval is not None for start, end in [interval]]
+    threshold = max(950, min(1450, round(350 + 2600 * median(word_durations)))) if word_durations else 1100
+    quiet_gaps = {index: gap - vad.get(index, 0) for index, gap in gaps.items()}
+    scores = break_scores(tokens, [quiet_gaps.get(i, 0) / 1000 for i in range(len(tokens) - 1)])
+    required = [index for index, gap in quiet_gaps.items() if gap >= threshold and scores[index] > -1000]
+    allowed = [i for i in gaps if scores[i] > FORBIDDEN_BREAK or i in required]
+    return tokens, times, gaps, required, allowed, vad
+
+
+def group_english(segments, firered_tokens=(), *, breaks_for=None, lexicon=None,
+                  ai_only=False, timing_evidence=None) -> list[SubtitleCue]:
     """English cues from recognizer utterances: one per utterance, long ones split by the rules.
 
     ``breaks_for(segment, tokens)`` may return break indexes for one utterance
@@ -302,21 +362,85 @@ def group_english(segments, firered_tokens=(), *, breaks_for=None, lexicon=None,
         tokens=[part[2] for part in raw_spans]
         if not tokens:
             continue
-        measured_times=_word_times(segment,tokens,aligned,core_of)
+        measured_times = (timing_evidence[str(segment.segment_id)][1] if timing_evidence is not None
+                          else _english_evidence(segment, tokens, aligned) if lex.code == 'en'
+                          else _word_times(segment, tokens, aligned, core_of))
         measured_mask=[t is not None for t in measured_times]
         times = _fill_times(segment, tokens, measured_times)
         gaps = [max(0.0, times[i + 1][0] - times[i][1]) for i in range(len(tokens) - 1)]
         durations = [max(0.0, end - start) for start, end in times]
         status = 'source_unchanged_short'
+        piece_origins = None
         pieces = [(0, len(tokens))] if ai_only else split_tokens(tokens, gaps, durations=durations, lexicon=lex, source_text=segment.text)
-        if breaks_for is not None and length_of(segment.text) > lex.rules.cue_max_chars:
-            answer = pieces_from_breaks(tokens, breaks_for(segment, tokens), lexicon=lex, gaps=gaps, strict=ai_only)
+        if timing_evidence is not None:
+            _, _, _, required, allowed, _ = timing_evidence[str(segment.segment_id)]
+            needs_break = (bool(required) or length_of(segment.text) > lex.rules.cue_max_chars
+                           or segment.end - segment.start > lex.rules.max_seconds)
+            if needs_break:
+                answer = breaks_for(segment, tokens) if breaks_for is not None else None
+                if _valid_english_breaks(tokens, measured_times, required, allowed, answer):
+                    edges = [0, *(index + 1 for index in answer), len(tokens)]
+                    pieces = list(zip(edges, edges[1:]))
+                    status = 'ai_accepted'
+
+                    def can_join(first, last, cut):
+                        start, end = measured_times[first], measured_times[last - 1]
+                        return cut not in required and (start is not None and end is not None
+                                                       and end[1] - start[0] <= RULES.max_seconds)
+
+                    pieces, changed = join_orphan_words(pieces, tokens, length_of=length_of,
+                                                        max_chars=RULES.cue_max_chars, can_join=can_join)
+                    if changed:
+                        piece_origins = ['local_orphan_join' if last in changed else status for _, last in pieces]
+                elif required:
+                    edges = [0, *(index + 1 for index in sorted(required)), len(tokens)]
+                    pieces = list(zip(edges, edges[1:]))
+                    status = 'local_measured_pause_fallback'
+                else:
+                    local = split_tokens(tokens, gaps, durations=durations, lexicon=lex, source_text=segment.text)
+                    local_breaks = [last - 1 for _, last in local[:-1]]
+                    if _valid_english_breaks(tokens, measured_times, required, allowed, local_breaks):
+                        pieces = local
+                        status = 'local_fallback_split'
+                    else:
+                        status = 'unresolved'
+                        _note_sentence_kept(segment, 'no_accepted_measured_boundary')
+        elif breaks_for is not None and length_of(segment.text) > lex.rules.cue_max_chars:
+            raw_breaks = breaks_for(segment, tokens)
+            answer = pieces_from_breaks(tokens, raw_breaks, lexicon=lex, gaps=gaps, strict=ai_only)
+            from .segmentation_profiles import profile_for as _profile_for
+            repaired = None if answer or not ai_only else ai_pieces_with_local_repair(
+                tokens, raw_breaks, scores=break_scores(tokens, gaps, lex),
+                forced={i for i, gap in enumerate(gaps) if gap >= _profile_for(lex.code).long_pause_seconds},
+                length_of=length_of, max_chars=lex.rules.cue_max_chars,
+                local_split=lambda a, b: split_tokens(tokens[a:b], gaps[a:b - 1], durations=durations[a:b],
+                                                      lexicon=lex, source_text=' '.join(tokens[a:b])))
             if answer and (ai_only or len(answer) <= len(pieces)):
                 pieces = answer
                 status = 'ai_accepted'
-            elif ai_only:
-                status = 'unresolved'
-                _note_sentence_kept(segment, 'ai_boundary_unresolved')
+            elif repaired:
+                pieces, piece_origins = repaired
+                status = 'ai_accepted' if set(piece_origins) == {'ai_accepted'} else 'local_fallback_split'
+            if ai_only and status in ('ai_accepted', 'local_fallback_split') and len(pieces) > 1:
+                joined, changed = join_orphan_words(pieces, tokens, length_of=length_of, max_chars=lex.rules.cue_max_chars)
+                if changed:
+                    before = dict(zip((b for a, b in pieces), piece_origins or [status] * len(pieces)))
+                    pieces = joined
+                    piece_origins = ['local_orphan_join' if b in changed else before.get(b, status) for a, b in pieces]
+            if ai_only and status == 'source_unchanged_short':
+                # 2026-11-25: an utterance the AI could not answer after its retry
+                # is split by the local word rules instead of staying an over-long
+                # line that fails the final length gate. Labelled local, never AI.
+                local = split_tokens(tokens, gaps, durations=durations, lexicon=lex, source_text=segment.text)
+                if local and len(local) > 1:
+                    pieces = local
+                    status = 'local_fallback_split'
+                    from ..recognition.cache import record_run_event
+                    record_run_event('word_grouping_local_fallback', language=lex.code,
+                                     segment_id=getattr(segment, 'segment_id', None), pieces=len(local))
+                else:
+                    status = 'unresolved'
+                    _note_sentence_kept(segment, 'ai_boundary_unresolved')
         locked, speaker = bool(getattr(segment, "timing_locked", False)), segment.speaker or "S00"
         own = []
         source_pieces=slice_word_pieces(segment.text,pieces)
@@ -328,9 +452,29 @@ def group_english(segments, firered_tokens=(), *, breaks_for=None, lexicon=None,
             own[-1].source_spans=[dict(source_id=segment.segment_id,char_start=char_start,char_end=char_end,
                 raw_text=raw_piece,index_unit='python_unicode_codepoint',source_time=[segment.start,segment.end])]
             own[-1].timing_basis='matched_word_evidence' if all(measured_mask[first:last]) else 'estimated_within_source_sentence'
+            if timing_evidence is not None:
+                if len(pieces) == 1:
+                    own[-1].timing_basis = 'original_source_sentence'
+                else:
+                    _, _, actual_gaps, mandatory, _, vad = timing_evidence[str(segment.segment_id)]
+                    receipt = {"source_id": segment.segment_id, "source": status,
+                               "source_interval_ms": [round(cue_start * 1000), round(cue_end * 1000)]}
+                    if first:
+                        receipt["start_ms"] = round(cue_start * 1000)
+                        receipt["preceding_gap_ms"] = actual_gaps[first - 1]
+                    if last < len(tokens) and cue_end >= cue_start + .2 - 1e-8:
+                        receipt["end_ms"] = round(cue_end * 1000)
+                        receipt["following_gap_ms"] = actual_gaps[last - 1]
+                        receipt["required_pause"] = last - 1 in mandatory
+                        if last - 1 in vad:
+                            receipt["following_vad_activity_ms"] = vad[last - 1]
+                    own[-1].grouping_boundary_receipt = {"measured_english_break": receipt}
             tag=task_language_tag(lex.code)
             from .segmentation_profiles import profile_for
             own[-1].segmentation_language=tag if profile_for(tag).code==lex.code else lex.code
+        if piece_origins and len(piece_origins) == len(own):
+            for cue, origin in zip(own, piece_origins):
+                cue._piece_origin = origin
         problem = _source_problem(segment, own)
         if problem:
             own = [SubtitleCue(0, round(float(segment.start), 3),
@@ -343,7 +487,7 @@ def group_english(segments, firered_tokens=(), *, breaks_for=None, lexicon=None,
             own[0].segmentation_language=task_language_tag(lex.code)
         for cue in own:
             if ai_only:
-                cue.grouping_origin = 'unresolved' if problem else status
+                cue.grouping_origin = 'unresolved' if problem else getattr(cue, '_piece_origin', status)
             cue.cue_id = len(cues) + 1
             cues.append(cue)
     return cues
@@ -375,6 +519,165 @@ def _note_sentence_kept(segment, problem: str) -> None:
                     segment.text, priority=3, severity="warning", reason=problem)
 
 
+def drop_closing_break(tokens, breaks):
+    """A break after the last word is the utterance end, not a cut (2026-11-25: Arabic and
+    Hindi answers ended every list with it and every utterance was rejected)."""
+    return [v for v in breaks if not (type(v) is int and v == len(tokens) - 1)]
+
+
+def break_problem(tokens, breaks, *, length_of, max_chars, scores, preferred=None):
+    """Why an answer is not usable, in words the model can act on; '' when it is."""
+    if not isinstance(breaks, (list, tuple)):
+        return 'breaks must be a list of word IDs'
+    breaks = drop_closing_break(tokens, breaks)
+    bad = [v for v in breaks if type(v) is not int or not 0 <= v < len(tokens) - 1]
+    if bad:
+        return f'word IDs {bad[:5]} are outside 0..{len(tokens) - 2}'
+    hanging = [v for v in breaks if scores[v] <= FORBIDDEN_BREAK]
+    if hanging:
+        return 'a line may not end on ' + ', '.join(repr(tokens[v]) for v in hanging[:4])
+    edges = [0] + [v + 1 for v in sorted(set(breaks))] + [len(tokens)]
+    long = [(n + 1, length_of(' '.join(tokens[a:b]))) for n, (a, b) in enumerate(zip(edges, edges[1:]))
+            if b - a > 1 and length_of(' '.join(tokens[a:b])) > max_chars]
+    if long:
+        return '; '.join(f'line {n} has {size} characters' for n, size in long) + f' (max {max_chars})'
+    # 2026-11-25 (live Russian/German/Korean runs): a lone last word (…почти двойной | урон)
+    # and runs of very short lines the limit would let stay together.
+    pieces = list(zip(edges, edges[1:]))
+    lines = [' '.join(tokens[a:b]) for a, b in pieces]
+    for n, (a, b) in enumerate(pieces):
+        if b - a != 1 or len(pieces) == 1:
+            continue
+        neighbour = n - 1 if n == len(pieces) - 1 or n > 0 and length_of(lines[n - 1]) <= length_of(lines[n + 1]) else n + 1
+        if length_of(lines[min(n, neighbour)] + ' ' + lines[max(n, neighbour)]) <= max_chars:
+            return f'line {n + 1} is the single word {tokens[a]!r}; join it with line {neighbour + 1}'
+    if preferred:
+        for n in range(len(lines) - 1):
+            both = length_of(lines[n] + ' ' + lines[n + 1])
+            if length_of(lines[n]) <= preferred / 2 and length_of(lines[n + 1]) <= preferred / 2 and both <= preferred:
+                return (f'lines {n + 1} and {n + 2} are very short ({length_of(lines[n])} and {length_of(lines[n + 1])} '
+                        f'characters); together they have {both}, within the preferred {preferred:g}: join them '
+                        'unless they are separate sentences')
+    return ''
+
+
+def join_orphan_words(pieces, tokens, *, length_of, max_chars, can_join=None):
+    """Lone single-word lines joined to the shorter neighbour when it fits; returns (pieces, changed ends)."""
+    pieces = list(pieces)
+    changed = set()
+    n = 0
+    while n < len(pieces) and len(pieces) > 1:
+        a, b = pieces[n]
+        if b - a == 1:
+            options = [m for m in (n - 1, n + 1) if 0 <= m < len(pieces)]
+            options.sort(key=lambda m: length_of(' '.join(tokens[pieces[m][0]:pieces[m][1]])))
+            for m in options:
+                left, right = min(pieces[n][0], pieces[m][0]), max(pieces[n][1], pieces[m][1])
+                if can_join is not None and not can_join(left, right, pieces[min(n, m)][1] - 1):
+                    continue
+                if length_of(' '.join(tokens[left:right])) <= max_chars:
+                    pieces[min(n, m)] = (left, right)
+                    del pieces[max(n, m)]
+                    changed.add(right)
+                    n = -1
+                    break
+        n += 1
+    return pieces, changed
+
+
+def refine_long_lines(found, tokens_of, *, length_of, max_chars, scorer, ask, record=None, language='',
+                      allowed_of=None):
+    """Ask once more for only the lines that are still too long, each as its own short utterance.
+
+    2026-11-25 (live English run, deepseek-v4-flash): with a 40-character limit the
+    model kept good clause edges but could not count, also when given the lengths
+    and the exact error. Each over-long line (45-59 characters) sent alone needs one
+    cut, which it gets right. ``ask(batch) -> decoded answers``; returns the number
+    of lines fixed. ``found`` is updated in place with the merged cuts.
+    """
+    from ..recognition.service import CancelledError
+
+    work, sub_tokens, problems = [], {}, {}
+    for key, breaks in list(found.items()):
+        tokens = tokens_of.get(key)
+        if not tokens or not isinstance(breaks, (list, tuple)):
+            continue
+        allowed = (allowed_of(key) if allowed_of is not None
+                   else {i for i, score in enumerate(scorer(tokens)) if score > FORBIDDEN_BREAK})
+        legal = sorted({v for v in drop_closing_break(tokens, breaks)
+                        if type(v) is int and 0 <= v < len(tokens) - 1 and v in allowed})
+        edges = [0] + [v + 1 for v in legal] + [len(tokens)]
+        for n, (a, b) in enumerate(zip(edges, edges[1:]), 1):
+            if b - a > 1 and length_of(' '.join(tokens[a:b])) > max_chars:
+                sub = f'{key}~{n}'
+                size = length_of(' '.join(tokens[a:b]))
+                need = -(-size // max_chars)
+                sub_tokens[sub] = (key, a, legal, need)
+                problems[sub] = ([], f'this line has {size} characters (max {max_chars}); split it into {need} '
+                                     f'lines of similar length at a clause or phrase edge, not more')
+                work.append((sub, tokens[a:b]))
+    if not work:
+        return 0
+    try:
+        decoded = ask(work, problems)
+    except CancelledError:
+        raise
+    except Exception as error:
+        if record:
+            record('word_grouping_line_repair', language=language, lines=len(work), fixed=0,
+                   error=getattr(error, 'category', type(error).__name__))
+        return 0
+    fixed = 0
+    merged = {}
+    for sub, tokens in work:
+        key, offset, legal, need = sub_tokens[sub]
+        merged.setdefault(key, set(legal))
+        answer = decoded.get(sub)
+        if not isinstance(answer, (list, tuple)):
+            continue
+        allowed = ({i - offset for i in allowed_of(key)} if allowed_of is not None
+                   else {i for i, score in enumerate(scorer(tokens)) if score > FORBIDDEN_BREAK})
+        cuts = [v for v in drop_closing_break(tokens, answer) if type(v) is int and 0 <= v < len(tokens) - 1
+                and v in allowed]
+        edges = [0] + [v + 1 for v in sorted(set(cuts))] + [len(tokens)]
+        if (cuts and len(cuts) + 1 <= need + 1
+                and all(b - a == 1 or length_of(' '.join(tokens[a:b])) <= max_chars for a, b in zip(edges, edges[1:]))):
+            merged[key] |= {offset + v for v in cuts}
+            fixed += 1
+    for key, cuts in merged.items():
+        found[key] = sorted(cuts)
+    if record:
+        record('word_grouping_line_repair', language=language, lines=len(work), fixed=fixed)
+    return fixed
+
+
+def ai_pieces_with_local_repair(tokens, breaks, *, scores, forced, length_of, max_chars, local_split):
+    """The AI's legal cuts, with only its still over-long lines split locally.
+
+    Returns (pieces, origins) or None when the answer holds no legal cut at all.
+    2026-11-25 (live English run): the model's cuts were good clause edges but
+    every line was 45-59 characters for a 40 limit; the whole answer was thrown
+    away. Its cuts now stay and only the long lines are split by the word rules.
+    """
+    if not isinstance(breaks, (list, tuple)):
+        return None
+    legal = {v for v in drop_closing_break(tokens, breaks) if type(v) is int and 0 <= v < len(tokens) - 1
+             and (v in forced or scores[v] > FORBIDDEN_BREAK)} | set(forced)
+    if not legal:
+        return None
+    edges = [0] + [v + 1 for v in sorted(legal)] + [len(tokens)]
+    pieces, origins = [], []
+    for a, b in zip(edges, edges[1:]):
+        if b - a > 1 and length_of(' '.join(tokens[a:b])) > max_chars:
+            inner = local_split(a, b) or [(0, b - a)]
+            pieces.extend((a + x, a + y) for x, y in inner)
+            origins.extend(['local_fallback_split'] * len(inner))
+        else:
+            pieces.append((a, b))
+            origins.append('ai_accepted')
+    return pieces, origins
+
+
 # A break scoring this low leaves a line hanging on a word that needs the next one
 # (a subject pronoun waiting for its verb scores -35, a preposition -45, an article -90).
 FORBIDDEN_BREAK = -30
@@ -389,6 +692,7 @@ def pieces_from_breaks(tokens: list[str], breaks, lexicon=None, gaps=None, *, st
     """
     if not isinstance(breaks,(list,tuple)):
         return None
+    breaks = drop_closing_break(tokens, breaks)
     lex = lexicon or ENGLISH
     from .segmentation_profiles import profile_for
     scores=break_scores(tokens,gaps,lex)
@@ -449,10 +753,39 @@ def grouping_prompt_version(lexicon=None) -> str:
     return grouping_prompt_key(tag)
 
 
-def build_ai_messages(batch: list[tuple[str, list[str]]], lexicon=None) -> list[dict]:
+def _valid_english_breaks(tokens, times, required, allowed, breaks):
+    if not isinstance(breaks, list) or not breaks or any(type(value) is not int for value in breaks):
+        return False
+    if breaks != sorted(set(breaks)) or not set(required) <= set(breaks) <= set(allowed):
+        return False
+    edges = [0, *(index + 1 for index in breaks), len(tokens)]
+    for first, last in zip(edges, edges[1:]):
+        if last - first > 1 and display_length(" ".join(tokens[first:last])) > RULES.cue_max_chars:
+            return False
+        start, end = times[first], times[last - 1]
+        if start is not None and end is not None and end[1] - start[0] > RULES.max_seconds:
+            return False
+    return True
+
+
+def build_ai_messages(batch: list[tuple[str, list[str]]], lexicon=None, problems=None, *, evidence=None, retry_ids=()) -> list[dict]:
+    # 2026-11-25: characters_through_word[i] is the line length if a line ran from word 0
+    # through word i, so the model reads lengths instead of counting them.
+    length_of = _tools(lexicon or ENGLISH)[1]
     payload = [{"id": key, "words": {str(i): token for i, token in enumerate(tokens)},
-                'allowed_break_after':[i for i,score in enumerate(break_scores(tokens,lexicon=lexicon)) if score>FORBIDDEN_BREAK]}
+                'allowed_break_after':[i for i,score in enumerate(break_scores(tokens,lexicon=lexicon)) if score>FORBIDDEN_BREAK],
+                'characters_through_word':[length_of(' '.join(tokens[:i + 1])) for i in range(len(tokens))],
+                **(dict(previous_breaks=problems[key][0], problem=problems[key][1]) if problems and key in problems else {})}
                 for key, tokens in batch]
+    if evidence is not None:
+        for row in payload:
+            _, _, gaps, required, allowed, vad = evidence[row["id"]]
+            row.update(allowed_break_after=allowed, required_break_after=required, measured_gap_ms_after=gaps)
+            if vad:
+                row["speech_activity_ms_in_gap_after"] = vad
+            if row["id"] in retry_ids:
+                row["retry_reason"] = ("Previous response missing or invalid. Return sorted allowed IDs, "
+                                       "including every required ID, and keep each subtitle within the limits.")
     return [{"role": "system", "content": grouping_system_prompt(lexicon)},
             {"role": "user", "content": json.dumps({"utterances": payload}, ensure_ascii=False)}]
 
@@ -492,7 +825,7 @@ def parse_ai_breaks(content: str) -> dict[str, list[int]]:
     return result
 
 
-def ai_breaks(segments, provider_snapshot, *, complete=None, lexicon=None) -> dict:
+def ai_breaks(segments, provider_snapshot, *, complete=None, lexicon=None, timing_evidence=None) -> dict:
     """Break indexes per long utterance from the grouping AI (one request per ~40 utterances).
 
     ``complete(messages) -> str`` sends one request; by default the task's
@@ -510,36 +843,178 @@ def ai_breaks(segments, provider_snapshot, *, complete=None, lexicon=None) -> di
                                      response_format={"type": "json_object"})
     lex = lexicon or ENGLISH
     _core, length_of, split_of, _join = _tools(lex)
-    long = [(str(segment.segment_id), split_of(segment.text)) for segment in segments
-            if length_of(segment.text) > lex.rules.cue_max_chars and len(split_of(segment.text))>1
-            and any(s>FORBIDDEN_BREAK for s in break_scores(split_of(segment.text),lexicon=lex))]
+    if timing_evidence is not None:
+        long = []
+        for segment in segments:
+            key = str(segment.segment_id)
+            tokens, _, _, required, allowed, _ = timing_evidence[key]
+            if allowed and (required or length_of(segment.text) > lex.rules.cue_max_chars
+                            or segment.end - segment.start > lex.rules.max_seconds):
+                long.append((key, tokens))
+    else:
+        long = [(str(segment.segment_id), split_of(segment.text)) for segment in segments
+                if length_of(segment.text) > lex.rules.cue_max_chars and len(split_of(segment.text))>1
+                and any(s>FORBIDDEN_BREAK for s in break_scores(split_of(segment.text),lexicon=lex))]
     found: dict = {}
+    from ..recognition.cache import record_run_event
+    from ..recognition.service import CancelledError
     for offset in range(0, len(long), 40):
         batch = long[offset:offset + 40]
-        try:
-            decoded=parse_ai_breaks(complete(build_ai_messages(batch,lex)))
-            expected={key for key,tokens in batch}
-            accepted={key:value for key,value in decoded.items() if key in expected}
-            found.update(accepted)
-            from ..recognition.cache import record_run_event
-            record_run_event('word_grouping_batch',language=lex.code,prompt_version=grouping_prompt_version(lex),
-                batch_index=offset//40+1,source_ids=sorted(expected),received_ids=sorted(accepted),
-                partial_response=bool(decoded.partial),source_retained_ids=sorted(expected-set(accepted)))
-        except Exception as error:
-            from ..recognition.cache import record_run_event
-            record_run_event('word_grouping_batch_unresolved',language=lex.code,batch_index=offset//40+1,
-                source_ids=[key for key,tokens in batch],reason=getattr(error,'category',type(error).__name__),
-                action='retain_original_source')
+        if timing_evidence is not None:
+            found.update(_request_measured_breaks(batch, complete, lex, timing_evidence, offset // 40 + 1))
             continue
+        # 2026-11-25: one failed request (429, broken JSON) used to leave all 40
+        # utterances unanswered; a missing utterance was never asked again. Each
+        # batch now gets one retry, and a second request carries only what is
+        # still missing or invalid.
+        pending = list(batch)
+        failures = resent = 0
+        problems = {}
+        for attempt in (1, 2, 3):
+            if not pending:
+                break
+            try:
+                decoded = parse_ai_breaks(complete(build_ai_messages(pending, lex, problems)))
+            except CancelledError:
+                raise
+            except Exception as error:
+                record_run_event('word_grouping_batch_unresolved', language=lex.code, batch_index=offset//40+1,
+                    attempt=attempt, source_ids=[key for key, tokens in pending],
+                    reason=getattr(error, 'category', type(error).__name__),
+                    action='retry_once' if not failures else 'local_word_rules')
+                failures += 1
+                if failures > 1:
+                    break
+                if failures == 1:
+                    from ..providers.provider_input_budget import retry_delay
+                    delay = retry_delay(error, 1)
+                    if delay is None:
+                        break
+                    time.sleep(min(delay, 30.0))
+                continue
+            wanted = {key for key, tokens in pending}
+            # Every answer is kept (group_english keeps its legal cuts even if the resend
+            # fails); missing and failing utterances are asked again once.
+            accepted = {key: value for key, value in decoded.items() if key in wanted}
+            found.update(accepted)
+            # 2026-11-25: an answer that would fail the line check is asked again once,
+            # with the exact problem (which line, how long, the limit).
+            tokens_of = dict(pending)
+            problems = {}
+            for key, value in accepted.items():
+                problem = break_problem(tokens_of[key], value, length_of=length_of, max_chars=lex.rules.cue_max_chars,
+                                        scores=break_scores(tokens_of[key], lexicon=lex),
+                                        preferred=lex.rules.cue_preferred_chars)
+                if problem:
+                    problems[key] = (value, problem)
+            accepted = {key: value for key, value in accepted.items() if key not in problems}
+            record_run_event('word_grouping_batch', language=lex.code, prompt_version=grouping_prompt_version(lex),
+                batch_index=offset//40+1, attempt=attempt, source_ids=sorted(wanted), received_ids=sorted(accepted),
+                partial_response=bool(decoded.partial), source_retained_ids=sorted(wanted-set(accepted)))
+            pending = [(key, tokens) for key, tokens in pending if key not in accepted]
+            if pending and resent:
+                break
+            resent = bool(pending)
+        refine_long_lines(found, dict(batch), length_of=length_of, max_chars=lex.rules.cue_max_chars,
+                          scorer=lambda tokens: break_scores(tokens, lexicon=lex),
+                          ask=lambda work, problems: parse_ai_breaks(complete(build_ai_messages(work, lex, problems))),
+                          record=record_run_event, language=lex.code)
     return found
 
 
+def _request_measured_breaks(batch, complete, lex, evidence, batch_index):
+    from ..recognition.cache import record_run_event
+    from ..recognition.service import CancelledError
+
+    accepted = {}
+    overlong = {}
+    problems = {}
+    remaining = batch
+    for attempt in (1, 2):
+        expected = [key for key, _ in remaining]
+        try:
+            messages = build_ai_messages(remaining, lex, problems, evidence=evidence,
+                                         retry_ids=expected if attempt > 1 else ())
+            decoded = parse_ai_breaks(complete(messages))
+        except CancelledError:
+            raise
+        except Exception as error:
+            record_run_event('word_grouping_batch_unresolved', language=lex.code, batch_index=batch_index,
+                             attempt=attempt, source_ids=expected,
+                             reason=getattr(error, 'category', type(error).__name__))
+            if attempt == 1:
+                from ..providers.provider_input_budget import retry_delay
+                delay = retry_delay(error, 1)
+                if delay is None:
+                    break
+                time.sleep(min(delay, 30.0))
+            continue
+        for key in expected:
+            tokens, times, _, required, allowed, _ = evidence[key]
+            answer = decoded.get(key)
+            if answer is None:
+                continue
+            answer = drop_closing_break(tokens, answer)
+            if any(type(index) is not int for index in answer):
+                continue
+            if answer != sorted(set(answer)) or not set(required) <= set(answer) <= set(allowed):
+                continue
+            if _valid_english_breaks(tokens, times, required, allowed, answer):
+                accepted[key] = answer
+                continue
+            problem = break_problem(tokens, answer, length_of=display_length, max_chars=RULES.cue_max_chars,
+                                    scores=[0 if i in allowed else FORBIDDEN_BREAK for i in range(len(tokens))])
+            if problem.startswith('line ') and 'characters' in problem:
+                overlong[key] = answer
+            problems[key] = (answer, problem or 'Respect the measured times and the maximum cue duration.')
+        remaining = [(key, tokens) for key, tokens in remaining if key not in accepted]
+        record_run_event('word_grouping_batch', language=lex.code, batch_index=batch_index, attempt=attempt,
+                         source_ids=expected, received_ids=[key for key in expected if key in decoded],
+                         accepted_ids=[key for key in expected if key in accepted],
+                         source_retained_ids=[key for key, _ in remaining],
+                         partial_response=bool(decoded.partial))
+        if not remaining:
+            break
+
+    def ask_slices(work, details):
+        sliced = {}
+        for sub, words in work:
+            key, ordinal = sub.rsplit('~', 1)
+            tokens, times, gaps, required, allowed, vad = evidence[key]
+            first = ([0] + [index + 1 for index in overlong[key]])[int(ordinal) - 1]
+            last = first + len(words)
+            def inside(index):
+                return first <= index < last - 1
+            sliced[sub] = (words, times[first:last], {i - first: gap for i, gap in gaps.items() if inside(i)},
+                           [i - first for i in required if inside(i)], [i - first for i in allowed if inside(i)],
+                           {i - first: duration for i, duration in vad.items() if inside(i)})
+        return parse_ai_breaks(complete(build_ai_messages(work, lex, details, evidence=sliced)))
+
+    repairable = {key: value for key, value in overlong.items() if key not in accepted}
+    refine_long_lines(repairable, dict(batch), length_of=display_length, max_chars=RULES.cue_max_chars,
+                      scorer=break_scores, allowed_of=lambda key: evidence[key][4], ask=ask_slices,
+                      record=record_run_event, language=lex.code)
+    for key, answer in repairable.items():
+        tokens, times, _, required, allowed, _ = evidence[key]
+        if _valid_english_breaks(tokens, times, required, allowed, answer):
+            accepted[key] = answer
+    return accepted
+
+
 def group_english_with_ai(segments, firered_tokens=(), provider_snapshot=None, *, complete=None,
-                          lexicon=None) -> list[SubtitleCue]:
-    answers = (ai_breaks(segments, provider_snapshot, complete=complete, lexicon=lexicon)
+                          lexicon=None, speech_regions=()) -> list[SubtitleCue]:
+    segments = list(segments)
+    firered_tokens = list(firered_tokens)
+    vad_execution = getattr(speech_regions, "execution", {})
+    regions = ([row for row in speech_regions if not row.get("processing_only")]
+               if vad_execution.get("actual_backend") == "firered_vad" and not vad_execution.get("degraded") else [])
+    evidence = ({str(segment.segment_id): _english_request(segment, firered_tokens, regions) for segment in segments}
+                if (lexicon or ENGLISH).code == 'en' else None)
+    answers = (ai_breaks(segments, provider_snapshot, complete=complete, lexicon=lexicon, timing_evidence=evidence)
                if (provider_snapshot or complete) else {})
     return group_english(segments, firered_tokens, lexicon=lexicon,
-                         breaks_for=lambda segment, _tokens: answers.get(str(segment.segment_id)), ai_only=True)
+                         breaks_for=lambda segment, _tokens: answers.get(str(segment.segment_id)), ai_only=True,
+                         timing_evidence=evidence)
 
 
 def describe_rules() -> str:

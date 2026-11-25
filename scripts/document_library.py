@@ -20,6 +20,7 @@ from urllib.parse import quote, unquote
 ROOT = Path(__file__).resolve().parents[1]
 MANAGED = {'docs/CATALOG.md', 'docs/library.html'}
 CONFIG = 'docs/document-library-overrides.json'
+HISTORICAL_LINKS = 'docs/reports/archive/2026-11-25-external-document-links.json'
 EXCLUDED_ROOTS = {
     'tmp', 'reports', '2ByteASR Projects', 'models', 'dist', 'build',
     'archive', 'backups', 'tools', 'wheels', 'node_modules', 'output',
@@ -242,6 +243,16 @@ def render_html(config, records):
 
 def check(config, records, expected):
     errors = []
+    history = {}
+    history_path = ROOT / HISTORICAL_LINKS
+    if history_path.is_file():
+        for row in json.loads(history_path.read_text(encoding='utf-8'))['targets']:
+            if Path(row['target']).parts[0] not in {'archive', 'releases', 'sources', 'outputs'}:
+                errors.append(f'历史清单不能替代现行文档：{row["target"]}')
+                continue
+            for source in row['from']:
+                history[(source, row['target'])] = row['status']
+    historical_references = Counter()
     for name, text in expected.items():
         if not (ROOT / name).exists() or (ROOT / name).read_text(encoding='utf-8') != text:
             errors.append(f'目录已过期或不存在：{name}；先运行 build')
@@ -260,7 +271,13 @@ def check(config, records, expected):
             if re.match(r'^(?:[a-zA-Z][\w+.-]*:|#|/)', target):
                 continue
             target = unquote(target.split('#', 1)[0])
-            if not ((ROOT / name).parent / target).exists():
+            path = ((ROOT / name).parent / target).resolve()
+            if path.exists():
+                continue
+            status = history.get((name, path.relative_to(ROOT).as_posix())) if path.is_relative_to(ROOT) else None
+            if status:
+                historical_references[status] += 1
+            else:
                 errors.append(f'入口链接不可达：{name} -> {target}')
     # A few practical questions must find their authoritative navigation or record.
     examples = {
@@ -274,7 +291,8 @@ def check(config, records, expected):
         ranked = sorted((r for r in records if not r['historic'] and score(r, query)), key=lambda r: score(r, query), reverse=True)
         if target not in {r['path'] for r in ranked[:10]}:
             errors.append(f'检索前十项未找到预期说明：{query} -> {target}')
-    result = {'documents': len(records), 'categories': dict(Counter(r['kind'] for r in records)), 'errors': errors, 'passed': not errors}
+    result = {'documents': len(records), 'categories': dict(Counter(r['kind'] for r in records)),
+              'historical_references': dict(historical_references), 'errors': errors, 'passed': not errors}
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 1 if errors else 0
 

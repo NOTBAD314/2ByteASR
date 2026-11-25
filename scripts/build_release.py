@@ -21,7 +21,10 @@ EXCLUDED = {'.git', '__pycache__', '.pytest_cache', '.mimosa', '.cache', 'tmp',
             'logs', 'reports', '.venv', '.venv-main', '.venv-moss'}
 BAD_EXT = {'.pyc', '.pyo', '.log', '.2byteasr', '.2byteproj', '.mp4', '.mp3',
            '.mov', '.flv', '.wav', '.safetensors', '.ckpt', '.pt', '.pth'}
-PUBLIC_DIAGNOSTIC_AUDIO = {'assets/diagnostics/speech_zh.wav': '92fadad02200d5a9295f16c4e904855efd7771fc2cb7ab73935af2bf69a9b557'}
+PUBLIC_DIAGNOSTIC_AUDIO = {
+    'assets/diagnostics/speech_zh.wav': '92fadad02200d5a9295f16c4e904855efd7771fc2cb7ab73935af2bf69a9b557',
+    'assets/diagnostics/speech_ja.wav': '86a3f2ec4e22e84810282e2a4786f2b9bec47f59d78f082fdbd98006fac880f5',
+}
 PUBLIC_RENDERER_AUDIO = {
     'renderer/node_modules/@remotion/studio-server/web/beep.wav':
         '3cf5b39164b9f8282b10705ecff18d5c73d4e2efb8193a1e6e7ad8f53fc34d24',
@@ -81,6 +84,8 @@ def main():
     # Build fixed renderer code before freezing. End-user exports only provide
     # props; a missing/changed developer build can still be built persistently.
     sys.path.insert(0,str(ROOT))
+    from twobyteasr.local_models.haas_runtime import prepare_bundled_cpu
+    prepare_bundled_cpu(ROOT)
     from twobyteasr.system.processes import renderer_node_command
     subprocess.run(renderer_node_command(ROOT/'renderer',ROOT/'renderer/prebuild-export.mjs'),
                    cwd=ROOT/'renderer',check=True,
@@ -111,7 +116,7 @@ def main():
     # docs/api-setup: the in-app 「申请与设置 API」 tutorials are read at runtime (2026-10-14).
     for folder in ('assets', 'licenses', 'lexicons', 'renderer', 'scripts', 'twobyteasr', 'packaging', '.github/workflows',
                    'installer', 'launcher', 'third_party', 'tools/ffmpeg', 'tools/mpv', 'tools/vulkan-loader',
-                   'tools/node', 'tools/yt-dlp', 'tools/diagnostics', 'docs/api-setup'):
+                   'tools/node', 'tools/yt-dlp', 'tools/diagnostics', 'tools/crispasr', 'docs/api-setup'):
         for current, dirs, names in os.walk(ROOT / folder):
             dirs[:] = [n for n in dirs if n.lower() not in EXCLUDED and not n.endswith('.egg-info')]
             for name in names:

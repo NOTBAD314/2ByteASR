@@ -747,10 +747,10 @@ class StudioMediaFlowMixin:
         title = tr('导入字幕并替换此轨道…') if replace_track_id else tr('导入字幕')
         directory = str(self.project_path.parent if self.project_path else Path.home())
         if replace_track_id:
-            path, _selected = QFileDialog.getOpenFileName(self, title, directory, "字幕文件 (*.srt *.ass)")
+            path, _selected = QFileDialog.getOpenFileName(self, title, directory, "字幕与歌词 (*.srt *.ass *.lrc)")
             paths = [path] if path else []
         else:
-            paths, _selected = QFileDialog.getOpenFileNames(self, title, directory, "字幕文件 (*.srt *.ass)")
+            paths, _selected = QFileDialog.getOpenFileNames(self, title, directory, "字幕与歌词 (*.srt *.ass *.lrc)")
         if paths:
             self._import_subtitle_files([Path(path) for path in paths], replace_track_id=replace_track_id)
 
@@ -1520,7 +1520,7 @@ class StudioMediaFlowMixin:
                 problem.show()
                 return
             if local_analysis.isChecked():
-                if (str(primary_model.currentData()) not in {'moss','firered','qwen_local','whisper_turbo','paraformer'}
+                if (str(primary_model.currentData()) not in {'moss','firered','qwen_local','whisper_turbo','paraformer','haas_ja'}
                         or str(timeline_model.currentData()) == 'api'):
                     bind_text(problem, '仅本地识别需要本地的主力转写和时间轴模型；请点左边那一行换成本地模型。')
                     problem.show()
@@ -2406,7 +2406,7 @@ class StudioMediaFlowMixin:
             self._studio_mark_startup_milestone("WAVEFORM_REQUESTED", media_path=source)
         self._start_next_project_waveform()
 
-    def _reasr_current(self, _checked=False, *, cue_id=None) -> None:
+    def _reasr_current(self, _checked=False, *, cue_id=None, retry=False) -> None:
         if not self.project or not (cue_id or self.selected_cue_id):
             return
         active = getattr(self, '_reasr_task', None)
@@ -2429,6 +2429,7 @@ class StudioMediaFlowMixin:
         snapshot = copy.deepcopy(self.project)
         settings = copy.deepcopy(self.runtime_settings)
         task = self._new_subtitle_task('单条重新识别', [cue])
+        task.is_retry = retry
         self._reasr_task = task
         task.input_version = input_version([cue], self.project)
         task.cue_id = cue.id
@@ -2461,6 +2462,11 @@ class StudioMediaFlowMixin:
         self.save_state.setText('单条重新识别运行中 · 点击任务进度查看详情')
 
     def _reasr_ready(self, result: LocalReASRResult) -> None:
+        from .studio_reasr_batch import BatchReASREvent, receive
+
+        if isinstance(result, BatchReASREvent):
+            receive(self, result)
+            return
         task = getattr(self, '_subtitle_tasks', {}).get(result.task_id)
         if task is None:
             return

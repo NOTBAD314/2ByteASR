@@ -103,23 +103,33 @@ def test_settings_cancel_after_browsing_pages_asks_only_for_real_edits(app,monke
     app.processEvents()
 
 
-def test_settings_save_roundtrips_existing_preferences(app,monkeypatch):
+def test_settings_save_roundtrips_existing_preferences(app,monkeypatch,tmp_path):
+    import json
     from twobyteasr.app import application_settings as settings
     from twobyteasr.app.application_settings_ui import ApplicationSettingsDialog
-    from PySide6.QtWidgets import QDialog
-    writes=[]
-    monkeypatch.setattr(settings,'read_studio_preferences',lambda:{'recent_project_count':17,'recovery_policy':'official'})
-    monkeypatch.setattr(settings,'save_hub_preferences',lambda *args:writes.append(args))
+    from PySide6.QtWidgets import QDialog, QMessageBox
+    settings_file = tmp_path / 'settings.json'
+    settings_file.write_text(json.dumps({'studio_preferences': {
+        'recent_project_count': 17, 'recovery_policy': 'official', 'caption_default_layer': 'original',
+    }}), encoding='utf-8')
+    monkeypatch.setattr(settings,'studio_settings_path',lambda:settings_file)
     monkeypatch.setattr(settings,'apply_theme',lambda *a:None)
+    monkeypatch.setattr(QMessageBox,'warning',lambda *args:pytest.fail(args[2]))
     def accept(dialog):
         dialog.auto_save.setChecked(True)
         dialog.interval.setCurrentIndex(dialog.interval.findData(120))
+        dialog.ensure_section('外观')
         dialog.reduce_motion_box.setChecked(True)
-        assert dialog.pages.count()==4
+        assert dialog.pages.count() == dialog.navigation.count()
         return QDialog.DialogCode.Accepted
     monkeypatch.setattr(ApplicationSettingsDialog,'exec',accept)
     assert settings.open_application_settings(QWidget()) is True
-    assert writes[0][1:4]==(True,120,17)
-    assert writes[0][6:] == ('official',True)
+    prefs = settings.read_studio_preferences()
+    assert prefs['autosave_enabled'] is True
+    assert prefs['autosave_interval_seconds'] == 120
+    assert prefs['recent_project_count'] == 17
+    assert prefs['recovery_policy'] == 'official'
+    assert prefs['reduce_motion'] is True
+    assert prefs['caption_default_layer'] == 'original'
     assert motion_duration(180)==0
     app.setProperty('reduceMotion',False)

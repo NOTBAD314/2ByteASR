@@ -18,14 +18,29 @@ from PySide6.QtWidgets import QMessageBox
 from ..i18n import bind_text, tr
 
 
+def _has_protected_captions(page, project, cue_ids):
+    from ..timeline.studio_caption_timeline import locked_caption_speakers
+    from .studio_reasr import protected_reasr_ids
+
+    wanted = set(cue_ids)
+    affected = [cue for cue in project.cues if cue.id in wanted]
+    return bool(protected_reasr_ids(project, affected, locked_caption_speakers(project, page),
+                                   keep_manual_text=False))
+
+
 def range_state(page):
     """(problem, (in, out)) for the open project; problem '' when the range can be recognized."""
-    from ..recognition.range_recognition import range_problem, requested_range
+    from ..recognition.range_recognition import range_problem, recognition_window, requested_range
     from ..timeline.studio_caption_timeline import locked_caption_speakers
     project = getattr(page, "project", None)
     locked = locked_caption_speakers(project, page) if project is not None else ()
     problem = range_problem(project, running=bool(getattr(page, "_recognition_running", False)), locked=locked)
-    return problem, requested_range(project)
+    points = requested_range(project)
+    if not problem and points:
+        _, _, cue_ids = recognition_window(project, *points)
+        if _has_protected_captions(page, project, cue_ids):
+            problem = "这一段有已确认或受保护的字幕"
+    return problem, points
 
 
 def add_range_action(page, menu, icon=None):
@@ -130,8 +145,10 @@ def apply_range_result(page, result_path, snapshot) -> bool:
         _note(page, tr("识别期间时间轴的剪辑变了，这一段的新字幕可能对不上，没有替换；请重新识别这一段"))
         return False
     delivery = result.generation_metadata.get('timeline_recognition') or {}
+    delivered_request = delivery.get('request_fingerprint') or delivery.get('fingerprint')
+    expected_request = snapshot.get('request_fingerprint') or snapshot.get('fingerprint')
     if (delivery.get('source_project_id') != snapshot.get('project_id')
-            or delivery.get('fingerprint') != snapshot.get('fingerprint')
+            or delivered_request != expected_request
             or delivery.get('source_project_revision') != snapshot.get('project_revision')
             or list(info.get('window_ms') or ()) != list(snapshot.get('range_ms') or ())):
         _note(page, tr('这一段的识别结果与请求的工程、区间或版本不匹配，没有替换'))
@@ -146,6 +163,9 @@ def apply_range_result(page, result_path, snapshot) -> bool:
     plan = splice_range(project, info["window_ms"], payload, foreign_speakers=False)
     if not plan.inserted_ids:
         _note(page, tr('这一段没有生成可用字幕，已保留原字幕和人工修改'))
+        return False
+    if _has_protected_captions(page, project, plan.removed_ids):
+        _note(page, tr("这一段有已确认或受保护的字幕，已保留工程"))
         return False
     if any(row.get('result_key') == plan.result_key for row in project.generation_metadata.get('range_recognitions', ())):
         _note(page, tr('这一段的识别结果已经应用，没有重复替换'))
@@ -171,7 +191,8 @@ def apply_range_result(page, result_path, snapshot) -> bool:
                 or sequence_of(project).to_dict() != snapshot.get('sequence')
                 or current_ids != set(plan.removed_ids)
                 or cue_signature(project, current_ids) != current_signature
-                or _translation_signature(project.generation_metadata, current_ids) != translations):
+                or _translation_signature(project.generation_metadata, current_ids) != translations
+                or _has_protected_captions(page, project, current_ids)):
             _note(page, tr('确认期间工程或这一段字幕又有变化，已保留当前编辑，请重新识别'))
             return False
         plan = splice_range(project, info['window_ms'], payload, foreign_speakers=False)

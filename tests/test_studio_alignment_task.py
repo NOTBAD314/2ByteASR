@@ -51,13 +51,15 @@ def test_local_task_shows_phases_and_existing_cancel_action(monkeypatch):
     from twobyteasr.recognition.service import CancelledError
     global _qt_app
     _qt_app=QApplication.instance() or QApplication([])
-    class Project:pass
-    project=Project();project.project_id='fixture';project.cues=[SimpleNamespace(id='one',text='a',start_ms=1000,end_ms=2500)]
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+    project = SubtitleProject(media=StudioMedia(''), project_id='fixture',
+                              cues=[StudioCue('one', 1000, 2500, 'a')])
     class Page(QObject):
         def _new_subtitle_task(self,kind,cues):
             self.task=SubtitleTask(kind,tuple(cue.id for cue in cues));self.task.project=self.project;return self.task
         def _refresh_subtitle_task_entry(self):pass
     page=Page();page.project=project;page.runtime_settings={};page.save_state=QLabel()
+    page.timeline = SimpleNamespace(locked_speakers=set())
     monkeypatch.setattr(studio_caption_timeline,'independent_captions',lambda project:True)
     monkeypatch.setattr(realign,'alignment_audio_basis',lambda *args:'basis')
     def measure(project,ids,**kw):
@@ -79,3 +81,28 @@ def test_local_task_shows_phases_and_existing_cancel_action(monkeypatch):
     assert page.task.time_label=='工程时间'
     assert (page.task.rows['one']['start_ms'],page.task.rows['one']['end_ms'])==(1000,2500)
     page.deleteLater();page.save_state.deleteLater();QTest.qWait(20)
+
+
+def test_realign_removes_only_resolved_proofreading_marker_and_undo_restores_it():
+    from PySide6.QtGui import QUndoStack
+    from PySide6.QtWidgets import QApplication
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+    from twobyteasr.studio.studio_realign import RealignWordsCommand
+
+    app = QApplication.instance() or QApplication([])
+    project = SubtitleProject(media=StudioMedia('', duration_ms=6000),
+                              cues=[StudioCue('edited', 1000, 3000, 'correct'),
+                                    StudioCue('other', 3500, 5000, 'kept')])
+    pending = {'text': 'correct', 'words': [], 'requires_acoustic_alignment': True}
+    other = {'text': 'kept', 'words': [], 'requires_acoustic_alignment': True}
+    project.studio_state['term_word_overrides'] = {'edited': pending, 'other': other}
+    result = {'text': 'correct', 'status': 'aligned', 'cue_range_ms': [1000, 3000],
+              'measurement': {'state': 'measured'},
+              'words': [{'text': 'correct', 'char_start': 0, 'char_end': 7,
+                         'start_ms': 1110, 'end_ms': 1900}]}
+    stack = QUndoStack()
+    stack.push(RealignWordsCommand(project, {'edited': result}))
+    assert project.studio_state['term_word_overrides'] == {'other': other}
+    assert (project.cues[0].text, project.cues[0].start_ms, project.cues[0].end_ms) == ('correct', 1000, 3000)
+    stack.undo()
+    assert project.studio_state['term_word_overrides'] == {'edited': pending, 'other': other}

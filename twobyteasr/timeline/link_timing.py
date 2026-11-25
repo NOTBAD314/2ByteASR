@@ -31,6 +31,8 @@ def onset_words(text, anchors, start_ms, end_ms, evidence_ref):
     from ..recognition.cue_word_alignment import content_positions
     rows = []
     for anchor in sorted(anchors, key=lambda a: (int(a["char_start"]), int(a["start_ms"]))):
+        if anchor.get("precision") in {"estimated", "shared_segment", "row_start"}:
+            continue
         lo, hi = int(anchor["char_start"]), int(anchor["char_end"])
         while lo < hi and text[lo].isspace():
             lo += 1
@@ -79,6 +81,7 @@ def cue_start_anchors(project, cue):
     return [dict(row, start_ms=row["start_ms"]+delta,
                  **({"end_ms":row["end_ms"]+delta} if "end_ms" in row else {})) for row in receipt.get("segment_anchors", [])
             if cue.start_ms <= row["start_ms"]+delta < cue.end_ms
+            and row.get("precision") not in {"estimated", "shared_segment", "row_start"}
             and cue.text[row["char_start"]:row["char_end"]] == row["text"]]
 
 

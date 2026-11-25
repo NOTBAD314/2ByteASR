@@ -312,3 +312,18 @@ def test_recognition_writer_metadata_has_actual_byte_digest_and_row_scope(tmp_pa
         assert len(list(tmp_path.glob("*.srt.2byte.json"))) == 3
     finally:
         context.task_language = before_language
+
+
+def test_lrc_keeps_repeated_lyrics_and_records_estimated_end(tmp_path):
+    from twobyteasr.projects.subtitle_import import read_subtitles
+
+    file = tmp_path / "verse.lrc"
+    original = ("[offset:100]\n[00:01.50][00:09.50]別の歌，重复的副歌\n"
+                "[00:02.00]\n[00:17.00]Wait for the next phrase\n")
+    file.write_text(original, encoding="utf-8")
+    parsed = read_subtitles(file)
+    parts = parsed.rows
+    assert [p.text for p in parts] == ["別の歌，重复的副歌", "別の歌，重复的副歌", "Wait for the next phrase"]
+    assert [(p.start_ms, p.end_ms) for p in parts] == [(1400,1900),(9400,13400),(16900,20900)]
+    assert all(p.role == "lyrics" and p.association["end_basis"] == "estimated" for p in parts)
+    assert file.read_text(encoding="utf-8") == original

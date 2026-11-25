@@ -227,7 +227,9 @@ def _language_preference_selection(payload,audio,context,legacy,cache_context,au
     raw=copy.deepcopy(payload.get('segments') or [])
     policy=context.recognition_snapshot.get('language_recovery_policy') or {}
     path=Path(cache_context['cache_dir'])/f'primary-selection-{context.requested_language}.json'
-    identity=identity_for(audio,context.requested_language,context.media_identity) if audit.get('conflicts') or path.is_file() or policy.get('explicit_range') else None
+    guard_pending = [row for row in raw if (row.get('language_guard') or {}).get('pending')]
+    identity=identity_for(audio,context.requested_language,context.media_identity) if (
+        guard_pending or audit.get('conflicts') or path.is_file() or policy.get('explicit_range')) else None
     saved={}
     if path.is_file():
         try:saved=json.loads(path.read_text('utf8'))
@@ -268,6 +270,25 @@ def _language_preference_selection(payload,audio,context,legacy,cache_context,au
             accepted_rows=copy.deepcopy(selected),accepted_rows_sha256=digest(selected))])
     observed=_raw_conflicts(audit,identity or {'requested_language':context.task_language,'samples':len(audio)},raw)
     for row in observed:row.update(status='observation',reason='suspected_text_language',review_required=True)
+    if guard_pending:
+        # Existing Studio recovery uses this project-clock list. Per-row
+        # observations must remain actionable even when a whole request's
+        # dominant language matched the requested one.
+        for row in guard_pending:
+            guard = copy.deepcopy(row['language_guard'])
+            start = max(0, round(float(row['start'])*16000))
+            end = min(len(audio), round(float(row['end'])*16000))
+            if end <= start:
+                continue
+            observation = dict(id=digest([identity, start, end, guard['original_text']])[:24],
+                start=start/16000, end=end/16000, start_sample=start, end_sample=end,
+                status='observation', reason='language_guard_pending', review_required=True,
+                requested_language=context.requested_language, transcript_language=guard.get('language'),
+                acoustic_language=(guard.get('acoustic_observation') or {}).get('language'),
+                raw_rows=[copy.deepcopy(row)], attempts=guard.get('attempts', []), language_guard=guard)
+            observed = [item for item in observed if (item['start_sample'], item['end_sample']) != (start, end)]
+            observed.append(observation)
+        observed.sort(key=lambda item: (item['start_sample'], item['end_sample']))
     state['observed_ranges']=observed
     if observed or saved or state['ranges']:
         state['selection_store']=str(path);_save(path,state)

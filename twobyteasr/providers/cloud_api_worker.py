@@ -50,7 +50,8 @@ def run(request: dict) -> list:
     legacy.RUNTIME_SETTINGS = request['settings']
     lock = threading.Lock()
     # Usage of this request belongs to the step it serves (2026-10-15).
-    usage_stage = 'asr_primary' if request.get('publish_primary') else 'asr_review'
+    usage_stage = ('asr_language_repair' if (request.get('endpoint') or {}).get('language_guard_repair')
+                   else 'asr_primary' if request.get('publish_primary') else 'asr_review')
 
     def event(kind, payload):
         if kind not in {'cue_delta', 'asr_progress', 'asr_reference_delta', 'api_usage', 'asr_request_retry',
@@ -133,7 +134,8 @@ def run(request: dict) -> list:
                                    adaptive_ceiling=max(budget.moss_active,budget.moss_ceiling),
                                    resplit_blocked=bool(request.get('resplit_blocked')),
                                    on_timing=lambda data: event('asr_phase_timing', data))
-        return transcribe_chunks(audio, endpoint, cache, progress=progress, check=check, on_rows=on_rows)
+        return transcribe_chunks(audio, endpoint, cache, progress=progress, check=check, on_rows=on_rows,
+                                 workers=request['workers'])
 
 
 def filetrans_storage(request: dict, endpoint: dict):

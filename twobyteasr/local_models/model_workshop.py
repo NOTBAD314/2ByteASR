@@ -15,7 +15,7 @@ import subprocess
 import sys
 import threading
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import qtawesome as qta
@@ -26,6 +26,7 @@ from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPalette, Q
 from PySide6.QtWidgets import QFrame  # for dim backdrop on technical dialog
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QLayout,
     QComboBox,
     QDialog,
@@ -427,6 +428,16 @@ class WorkshopModel:
 
 
 MODELS = (
+    WorkshopModel(
+        'haas_ja', 'primary', 'Haas-ja-v1.0', 'HA',
+        '日语专用本机语音识别', 'Windows · CPU / NVIDIA CUDA', '368 MiB–1.15 GiB',
+        '固定 GGUF 权重与 CrispASR 0.8.55',
+        '适合日语影片、游戏直播及文字复核。使用时请指定日语。说话人请另选分离模型，精确打轴可配 Qwen3 对齐。', (),
+        extra_roles=('review', 'timeline'), install_keys=('haas_ja_q8_0',), download_key='haas_ja_q8_0',
+        runtime_roles=('primary', 'review', 'timeline'), languages=('日语',), platforms=('win32-x86_64',),
+        asr_capabilities=('ASR_TEXT', 'TIMESTAMP'),
+        adapter_bindings=(('primary', 'haas_ja'), ('review', 'haas_ja'), ('timeline', 'haas_native')),
+    ),
     WorkshopModel('spark_asr_v2','api','Spark-ASR-2.0','S2',
         '讯飞原生 WSS · 中英听写 V2','在线 · AppID + APIKey + APISecret','不占本地空间',
         '协议接入；真实服务验证待完成',
@@ -1124,6 +1135,7 @@ CANONICAL_MODEL_ORDER = (
     "canary_qwen",
     "omni_asr_llm_7b",
     "sensevoice",
+    "haas_ja",
     "paraformer",
     "whisper",
     "funasr_nano",
@@ -4016,6 +4028,8 @@ class ModelDownloadDialog(QDialog):
         for key, value in managed_environment(runtime=paths.managed_runtime_root).items():
             environment.insert(key, value)
         environment.insert('TWOBYTEASR_DEPLOY_JOB_ID', self._journal.job_id)
+        if self.model.key == 'haas_ja':
+            environment.insert('TWOBYTEASR_HAAS_DEVICE', getattr(self, 'haas_device', 'cpu'))
         environment.insert("PYTHONUTF8", "1")
         environment.insert("PYTHONIOENCODING", "utf-8")
         try:
@@ -6791,6 +6805,27 @@ class ModelWorkshopPage(QWidget):
         self.detail_install.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         facts_box.addWidget(self.detail_install)
         layout.addWidget(facts)
+        self.detail_haas_options = QFrame()
+        options = QGridLayout(self.detail_haas_options)
+        options.setContentsMargins(0, 0, 0, 0)
+        self.detail_haas_precision = QComboBox()
+        self.detail_haas_precision.setObjectName('haasPrecision')
+        for label, value in (('Q8_0（推荐）', 'q8_0'), ('F16（高精度）', 'f16'), ('Q4_K（低资源）', 'q4_k')):
+            self.detail_haas_precision.addItem(tr(label), value)
+        self.detail_haas_device = QComboBox()
+        self.detail_haas_device.setObjectName('haasDevice')
+        self.detail_haas_device.addItem('CPU', 'cpu')
+        self.detail_haas_device.addItem('NVIDIA CUDA', 'cuda')
+        for row, label, selector in ((0, '模型精度', self.detail_haas_precision),
+                                     (1, '执行设备', self.detail_haas_device)):
+            options.addWidget(QLabel(tr(label)), row, 0)
+            options.addWidget(selector, row, 1)
+            selector.activated.connect(self._change_haas_configuration)
+        self.detail_haas_speakers = QCheckBox(tr('本机独立区分说话人'))
+        self.detail_haas_speakers.clicked.connect(self._change_haas_configuration)
+        options.addWidget(self.detail_haas_speakers, 2, 0, 1, 2)
+        self.detail_haas_options.hide()
+        layout.addWidget(self.detail_haas_options)
         # 文案保持紧凑，主要操作稳定落在详情栏底部。
         layout.addStretch(1)
         layout.addSpacing(16)
@@ -7216,6 +7251,7 @@ class ModelWorkshopPage(QWidget):
         )
 
     def _has_managed_local_files(self, model: WorkshopModel) -> bool:
+        model = self._active_haas_variant(model)
         if not model.download_key:return False
         record=self._registry.record(model.download_key) if self._registry else None
         return bool(model.download_key in self._installed or
@@ -7233,9 +7269,12 @@ class ModelWorkshopPage(QWidget):
         return _spoken_timeline_state(self.runtime_settings, model, role, self._compute_model_state(model, role))
 
     def _compute_model_state(self, model: WorkshopModel, role: str) -> str:
+        model = self._active_haas_variant(model)
         if role == "timeline" and not _local_timeline_supported(model):
             return "unsupported_role"
         models = self.runtime_settings.get("models", {})
+        if model.key == 'haas_ja' and role == 'timeline' and models.get('primary_asr_backend') != 'haas_ja':
+            return 'unsupported_role'
         if model.key in {'qwen_aligner','mfa_aligner'}:
             if role != 'timeline':return 'unsupported_role'
             if not model_platform_available(model):return 'platform_unavailable'
@@ -7323,6 +7362,10 @@ class ModelWorkshopPage(QWidget):
             from ..recognition.mfa_aligner import runtime_python as mfa_runtime_python
             if not mfa_runtime_python():
                 return 'runtime_missing'
+        elif model.key == 'haas_ja':
+            from ..recognition.haas_backend import configuration, runtime_executable
+            if not runtime_executable(configuration(self.runtime_settings).device):
+                return 'runtime_missing'
         elif model.platforms:
             # MLX models run in their own torch-free runtime (2026-10-13).
             from ..recognition.mlx_backend import runtime_python as mlx_runtime_python
@@ -7392,6 +7435,8 @@ class ModelWorkshopPage(QWidget):
                 from ..system.macos_compatibility import compatibility_problem, MINIMUM_MACOS
                 if compatibility_problem('app', system=sys.platform):
                     return f'需要 macOS {MINIMUM_MACOS} 或更新版本', False
+            if model.key == 'haas_ja':
+                return '目前仅支持 Windows x64', False
             if model.platforms or model.download_key in MAC_GPU_DOWNLOAD_KEYS:
                 return '仅限 Apple Silicon Mac', False
             from ..system.platform_macos import macos_copy
@@ -7823,7 +7868,17 @@ class ModelWorkshopPage(QWidget):
         self.detail_workflow_host.updateGeometry()
 
     def _refresh_detail(self):
-        model = self._cards[self.detail_model_key].model
+        model = self._active_haas_variant(self._cards[self.detail_model_key].model)
+        self.detail_haas_options.setVisible(model.key == 'haas_ja')
+        if model.key == 'haas_ja':
+            from ..recognition.haas_backend import configuration
+            config = configuration(self.runtime_settings)
+            busy = any(self._active_download_dialog(key) for key in model.install_keys)
+            self.detail_haas_speakers.setChecked(bool(self.runtime_settings.get('models', {}).get('haas_diarization')))
+            self.detail_haas_speakers.setEnabled(not busy and model_platform_available(model))
+            for selector, value in ((self.detail_haas_precision, config.quantization), (self.detail_haas_device, config.device)):
+                selector.setCurrentIndex(selector.findData(value))
+                selector.setEnabled(not busy and model_platform_available(model))
         language = current_language()
         if hasattr(self, "detail_configure"):
             self.detail_configure.setVisible(bool(model.api_preset))
@@ -8064,6 +8119,7 @@ class ModelWorkshopPage(QWidget):
         model = next((m for m in MODELS if m.key == key), None)
         if model is None:
             return
+        model = self._active_haas_variant(model)
         self._view_model(key)
         effective_role = role or self.browser_role
         if effective_role == "api":
@@ -8183,12 +8239,36 @@ class ModelWorkshopPage(QWidget):
         self.refresh()
 
     def _download(self, model: WorkshopModel):
+        model = self._active_haas_variant(model)
         # 2026-10-15: graphics-card reminder before every local model download
         # (it used to cover Omnilingual 7B only). The first-run chooser asks
         # before it calls download_combination, so that path is not asked twice.
         if not self._confirm_vram([model.download_key]):
             return
         self.download_combination([model.download_key], model.name)
+
+    def _active_haas_variant(self, model):
+        if model.key != 'haas_ja':
+            return model
+        from ..recognition.haas_backend import configuration
+        config = configuration(self.runtime_settings)
+        return replace(model, download_key=config.model_key, install_keys=(config.model_key,))
+
+    def _change_haas_configuration(self):
+        from ..storage.settings import save_runtime_settings
+        models = self.runtime_settings.setdefault('models', {})
+        previous = models.copy()
+        models.update(haas_quantization=self.detail_haas_precision.currentData(),
+                      haas_device=self.detail_haas_device.currentData(),
+                      haas_diarization=self.detail_haas_speakers.isChecked())
+        try:
+            save_runtime_settings(self.runtime_settings)
+        except (OSError, ValueError) as exc:
+            models.clear()
+            models.update(previous)
+            QMessageBox.warning(self, tr('无法保存设置'), str(exc))
+        self.refresh(registry=self._registry, check_status=False)
+        self.auto_stage_changed.emit()
 
     def _confirm_vram(self, keys) -> bool:
         """Remind before a local download when this card is too small. True: go on.
@@ -8267,6 +8347,11 @@ class ModelWorkshopPage(QWidget):
             (model for model in MODELS if model.download_key in keys),
             next(model for model in MODELS if model.download_key),
         )
+        from ..recognition.haas_backend import VARIANTS, configuration
+        haas_key = next((key for key in keys if key in VARIANTS.values()), None)
+        if haas_key:
+            card = next(model for model in MODELS if model.key == 'haas_ja')
+            representative = replace(card, download_key=haas_key, install_keys=(haas_key,))
         dialog = ModelDownloadDialog(
             self.root,
             representative,
@@ -8275,6 +8360,8 @@ class ModelWorkshopPage(QWidget):
             display_name=display_name,
             operation=operation,
         )
+        if haas_key:
+            dialog.haas_device = configuration(self.runtime_settings).device
         dialog.source_combo.setCurrentIndex(max(0, dialog.source_combo.findData(source_mode)))
         dialog._launch_origin = 'first_use_preset' if auto_start else 'user_model_workshop'
         self._download_dialogs.append(dialog)
@@ -8293,7 +8380,7 @@ class ModelWorkshopPage(QWidget):
         return dialog
 
     def _repair_selected(self):
-        model = self._cards[self.detail_model_key].model
+        model = self._active_haas_variant(self._cards[self.detail_model_key].model)
         if model.download_key:
             # Repairing a model the user already chose: no graphics-card reminder.
             self.download_combination([model.download_key], model.name)
@@ -8306,7 +8393,7 @@ class ModelWorkshopPage(QWidget):
         if key not in self._cards:
             return
         self._view_model(key)
-        model = self._cards[key].model
+        model = self._active_haas_variant(self._cards[key].model)
         if not model.download_key:
             return
         main = self._find_main_window()
@@ -8367,7 +8454,7 @@ class ModelWorkshopPage(QWidget):
         companions = rest[0] if rest else None
         self._removing.discard(key)
         self.refresh()
-        model = self._cards[key].model
+        model = self._active_haas_variant(self._cards[key].model)
         from .model_removal import plan_model_removal, execute_removal
         from .model_storage import format_bytes
         if error:

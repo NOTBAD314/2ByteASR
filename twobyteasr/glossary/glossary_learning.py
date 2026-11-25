@@ -23,6 +23,8 @@ SCHEMA_VERSION = 4
 DEFAULT_THRESHOLD = 1
 MAX_TERM_LENGTH = 12
 ENGLISH_FUNCTION_WORDS = frozenset("i me my we us our you your he him his she her it its they them their this that these those a an the and or but is are was were am be been do does did yes no ok okay".split())
+KATAKANA_NAME = r"[ァ-ヺー-ヿｦ-ﾟ]+(?:[・･][ァ-ヺー-ヿｦ-ﾟ]+)*"
+NAME_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_+#-]*|" + KATAKANA_NAME)
 LEARNABLE_ORIGINS = {"user_manual", "user_edit", "search_replace"}
 ORIGIN_LABELS = {
     "user_manual": "手动修改",
@@ -107,16 +109,17 @@ def extract_term_replacements(before: str, after: str, *, canonical_terms=()) ->
     changed = [row for row in opcodes if row[0] != "equal"]
     if len(changed) == 1:
         _tag, a, b, c, d = changed[0]
-        token_pattern = r"[A-Za-z][A-Za-z0-9_+#-]*"
-        old_token = next((match for match in re.finditer(token_pattern, before)
+        old_token = next((match for match in NAME_TOKEN.finditer(before)
                           if match.start() <= a and b <= match.end()), None)
-        new_token = next((match for match in re.finditer(token_pattern, after)
+        new_token = next((match for match in NAME_TOKEN.finditer(after)
                           if match.start() <= c and d <= match.end()), None)
         if old_token is not None and new_token is not None:
             source, target = old_token.group(), new_token.group()
             if source.casefold() in ENGLISH_FUNCTION_WORDS or target.casefold() in ENGLISH_FUNCTION_WORDS:
                 return []
-            identifier = any(char.isupper() or char.isdigit() or char in "+#_" for char in source + target)
+            katakana_name = (min(len(source), len(target)) >= 2 and re.fullmatch(KATAKANA_NAME, source)
+                             and re.fullmatch(KATAKANA_NAME, target))
+            identifier = katakana_name or any(char.isupper() or char.isdigit() or char in "+#_" for char in source + target)
             if (identifier and _looks_like_term(source, target)
                     and before[:old_token.start()] == after[:new_token.start()]
                     and before[old_token.end():] == after[new_token.end():]):

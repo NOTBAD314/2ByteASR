@@ -83,7 +83,9 @@ LEXICONS = {
     "de": Lexicon(
         "de", "German",
         conjunctions=_set("und oder aber denn weil dass wenn als ob obwohl während bevor nachdem damit sondern "
-                          "sowie also dann doch der die das welche welcher welches"),
+                          "sowie also dann doch der die das welche welcher welches "
+                          # Question words opening a clause (erklären warum | ich…, 2026-11-25 live run).
+                          "warum wieso weshalb wie was wer wo wohin woher wann womit wobei wodurch"),
         prepositions=_set("in an auf aus bei mit nach von vor zu zum zur über unter durch für gegen ohne um bis "
                           "seit zwischen hinter neben im am beim vom ins ans"),
         determiners=_set("der die das den dem des ein eine einen einem einer eines mein meine meinen dein deine "

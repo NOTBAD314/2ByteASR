@@ -97,6 +97,42 @@ def test_save_keeps_previous_valid_project_as_backup(tmp_path):
     assert load_project(path).cues[0].text == "人工修改"
 
 
+@pytest.mark.parametrize("failures", [1, 4])
+def test_formal_revision_retries_windows_share_lock_without_losing_previous_file(tmp_path, monkeypatch, failures):
+    from twobyteasr.projects.studio_project import save_project_revision
+    from twobyteasr.projects.studio_revisions import StudioRevisionStore
+
+    project = _project()
+    path = save_project(project, tmp_path / "game.2byteproj")
+    original = path.read_bytes()
+    project.cues[0].text = "人工修改"
+    revision = StudioRevisionStore(project).refresh_persistence(1, deep=True)
+    replace = os.replace
+    attempts = []
+
+    def write_with_share_lock(source, target):
+        if Path(target) == path:
+            attempts.append(source)
+            if len(attempts) <= failures:
+                locked = PermissionError("Temporary Windows sharing lock")
+                locked.winerror = 5
+                raise locked
+        return replace(source, target)
+
+    monkeypatch.setattr(os, "replace", write_with_share_lock)
+    if failures == 1:
+        save_project_revision(revision, path, compact=True)
+        assert len(attempts) == 2 and attempts[0] == attempts[1]
+        assert load_project(path).cues[0].text == "人工修改"
+        assert project_backup_path(path).read_bytes() == original
+    else:
+        with pytest.raises(PermissionError, match="sharing lock"):
+            save_project_revision(revision, path, compact=True)
+        assert len(attempts) == 4
+        assert path.read_bytes() == original
+    assert not list(tmp_path.glob(".2byte-*.tmp"))
+
+
 def test_autosave_and_waveform_paths_are_isolated_from_stable_settings(tmp_path):
     project = _project()
     project_path = save_project(project, tmp_path / "project" / "game.2byteproj")

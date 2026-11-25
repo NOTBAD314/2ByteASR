@@ -1,5 +1,13 @@
 # 第三方组件、许可与来源声明
 
+## CrispASR 與 Haas-ja-v1.0
+
+- Windows 安裝包使用固定的 CrispASR v0.8.55 CPU 執行檔及 OpenBLAS，與原發行包的 MIT `LICENSE` 和 `THIRD_PARTY_NOTICES.txt` 同置於執行目錄。 [上游發行](https://github.com/CrispStrobe/CrispASR/releases/tag/v0.8.55)
+- CrispASR 所用的四個 Microsoft Visual C++／OpenMP 執行 DLL 取自固定 Shiboken6 6.9.2 Windows x64 wheel，保持原檔位元組，以應用目錄方式分發。 [Microsoft 授權與可分發清單](https://learn.microsoft.com/visualstudio/releases/2022/redistribution)
+- NVIDIA CUDA 13 變體由工坊按需從同一上游發行下載，取得後驗證原始封存檔雜湊並保留授權聲明。
+- Haas 原模型和固定的 GGUF 權重採 Apache-2.0，工坊按選定精度下載。 [原始模型](https://huggingface.co/third-intelligence/Haas-ja-v1.0) · [固定 GGUF](https://huggingface.co/cstr/Haas-ja-v1.0-GGUF/tree/607fa1450398d589643fbb0e8bb1d0424af68d11)
+- 日語診斷錄音取自 Google FLEURS，採 CC BY 4.0。 `assets/diagnostics/README.txt` 記錄原音編號及處理方式。 [資料集](https://huggingface.co/datasets/google/fleurs)
+
 ## 2026-10-26 链接下载开发功能
 
 - 参考并移植 [imsyy/yt-dlp-gui](https://github.com/imsyy/yt-dlp-gui/tree/e3cd1df342c1dd0f543b309cf305210a588a461c) 的字幕来源分组、排除 live_chat、独立工具管理与阶段通知模式。固定 commit：e3cd1df342c1dd0f543b309cf305210a588a461c。实际改写位置：twobyteasr/media/link_catalog.py、link_download.py、link_tools.py 与 app/link_download_dialog.py；未引入 Vue/Tauri 运行时。版权与 [MIT 全文](licenses/yt-dlp-gui-MIT.txt) 保留。
@@ -133,3 +141,10 @@ Remotion4.0.513已回复：**所请求覆盖GPL下游的特殊豁免已拒绝**�
 - Optional Python companion qwen-fa-ultra 0.1.1 comes from the same revision. Its wheel and head/config/normalizer hashes are independently pinned in dependencies.lock.json. Its wheel contains no separate LICENSE file or License metadata; the upstream repository's Apache-2.0 declaration is the available licensing evidence. This distinction must remain visible in future distribution review.
 - 2ByteASR adapter code remains under this project's GPL-3.0-only license. The companion is loaded from its verified wheel in the external model worker; it is not vendored into the GUI. No CrispASR native/GGUF code is bundled by this integration.
 - qwen-asr remains pinned at 0.0.6. Local Head is experimental and does not inherit an accuracy guarantee from its source repository.
+
+
+## 2026-11-24 兔白浏览器助手
+
+助手的 Manifest V3、Windows Native Messaging 宿主及扩展界面为项目新增的 GPL-3.0-only 源码，图标沿用 2ByteASR 应用资源。调查了 imsyy/yt-dlp-gui 的 MIT 扩展、HTTP 桥接与协议入口。本次未引入其扩展源码、桌面运行时或新的第三方运行依赖。既有 yt-dlp、EJS、Node 及之前引入的 MIT 材料继续使用本清单与随包许可。
+
+[上游浏览器助手](https://github.com/imsyy/yt-dlp-gui/tree/master/browser-extension) · [MIT 许可](https://github.com/imsyy/yt-dlp-gui/blob/master/LICENSE)

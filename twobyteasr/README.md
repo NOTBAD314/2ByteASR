@@ -27,6 +27,7 @@
 | `local_models/` | 本機模型：模型清單與健康狀態、下載與儲存、模型工坊頁面、各模型支援哪些語言 | `model_registry.py`、`model_workshop.py`、`model_languages.py` |
 | `system/` | 這台電腦的執行環境：Python 執行環境登記與檢查、子程序、硬體、作業系統差異 | `processes.py`、`runtime_registry.py`、`environment.py` |
 | `storage/` | 使用者資料：設定檔、快取清點與清理、舊資料辨識、原子寫檔 | `settings.py`、`storage_service.py` |
+| `container/` | 容器入口、模型路徑和容器內秘密轉接 | `launch.py` |
 | `diagnostics/` | 不改變行為的觀測：啟動與延遲追蹤、卡頓監看、程序紀錄、建置身分、診斷報告 | `startup_trace.py`、`build_identity.py` |
 | `local_mcp/` | 本機 MCP：讓外部 AI 用戶端在使用者核准下讀寫工程 | `mcp_bridge.py`、`mcp_stdio.py` |
 | `acceptance/` | 驗收與自我檢查腳本，只在明確開啟的驗收／QA 模式下執行，不是產品功能 | [acceptance/README.md](acceptance/README.md) |

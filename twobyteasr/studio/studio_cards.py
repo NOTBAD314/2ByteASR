@@ -225,10 +225,10 @@ class ReviewCandidateCard(QFrame):
 
     def _flip_key_text(self):
         if self._key_text is not None:
-            return self._key_text("review_flip_pronoun")
+            return self._key_text("review_cycle_pronoun")
         from ..i18n import tr
         from . import shortcut_registry as keys
-        key = keys.key_for("review_flip_pronoun")  # a card on its own reads the store
+        key = keys.key_for("review_cycle_pronoun")  # a card on its own reads the store
         return keys.display(key) if key else tr("未绑定")
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:

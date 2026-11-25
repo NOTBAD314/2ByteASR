@@ -91,3 +91,31 @@ def test_isolated_worker_reports_utf8_encoding_with_flag():
         python_utf8_command([sys.executable, "-I", "-c", code])
     ).strip()
     assert output.lower().replace("-", "") in {"utf8", "utf8-sig"}
+
+
+def test_asr_worker_does_not_write_bytecode_next_to_installed_sources(tmp_path):
+    from twobyteasr.recognition.asr import _run_isolated_asr_worker
+
+    install = tmp_path / "installed"
+    install.mkdir()
+    (install / "worker_dependency.py").write_text("VALUE = 7\n", encoding="utf-8")
+    worker = install / "worker.py"
+    worker.write_text(
+        "from pathlib import Path\n"
+        "import json, sys\n"
+        "sys.path.insert(0, str(Path(__file__).parent))\n"
+        "from worker_dependency import VALUE\n"
+        "Path(sys.argv[1]).write_text(json.dumps({'results': [VALUE]}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "results.json"
+    result = _run_isolated_asr_worker(
+        python_utf8_command([sys.executable, "-I", worker, output]),
+        output,
+        model_id="QWEN3-ASR",
+        audio_input="test",
+        model_path="",
+        entrypoint=worker.name,
+    )
+    assert result["results"] == [7]
+    assert list(install.glob("__pycache__")) == []

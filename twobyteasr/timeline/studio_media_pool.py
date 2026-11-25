@@ -14,6 +14,7 @@ from ..projects.studio_project import (
     SubtitleProject,
     VideoClip,
     VideoTrack,
+    asset_has_video,
     sync_linked_av_contract,
 )
 
@@ -329,10 +330,6 @@ def add_video_clip(
 def asset_has_audio(asset: MediaAsset) -> bool:
     from ..projects.studio_project import _asset_has_audio
     return _asset_has_audio(asset)
-
-
-def asset_has_video(asset: MediaAsset) -> bool:
-    return (asset.video_metadata or {}).get("has_video") is not False
 
 
 def audio_lane_is_free(project: SubtitleProject, track_id: str, start_ms: int, end_ms: int) -> bool:

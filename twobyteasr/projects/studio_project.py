@@ -19,7 +19,9 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from PySide6.QtGui import QColor
+from ..storage.atomic_files import replace_atomic
 from .field_flags import flag
+from .project_snapshot import copy_json_value
 
 
 PROJECT_SCHEMA_VERSION = 1
@@ -95,11 +97,12 @@ def _mapping(value: Any, *, owned: bool = False) -> dict[str, Any]:
     The copy is plain JSON data made in one C call (``copy_json_value``), not
     a per-node ``copy.deepcopy`` that runs object hooks and yields the GIL.
     """
+    if type(value) is dict:
+        return value.copy() if owned else copy_json_value(value, field="project field")
     if not isinstance(value, Mapping):
         return {}
     if owned:
         return dict(value)
-    from .project_snapshot import copy_json_value
     return copy_json_value(dict(value), field="project field")
 
 
@@ -413,10 +416,19 @@ class StudioCue:
 
     def __deepcopy__(self, memo):
         # Undo snapshots and edit working copies deep-copy every cue several
-        # times per edit; the generic walk dominated delete/ripple/group moves
-        # on large projects. Cue values are JSON-like: exact built-in
-        # containers round-trip through marshal (~4x faster, same values and
-        # types); anything else keeps the generic deep copy.
+        # times per edit. The canonical cue is data-only and can be cloned
+        # with a single marshal round trip. Extension attributes that are
+        # not serializable still use the ordinary deepcopy path.
+        if type(self) is StudioCue:
+            try:
+                fields = marshal.loads(marshal.dumps(vars(self)))
+            except (TypeError, ValueError):
+                pass
+            else:
+                clone = object.__new__(StudioCue)
+                vars(clone).update(fields)
+                memo[id(self)] = clone
+                return clone
         clone = copy.copy(self)
         memo[id(self)] = clone
         for name, value in vars(self).items():
@@ -619,6 +631,19 @@ def _asset_has_audio(asset: MediaAsset) -> bool:
     # Recognition graphs often persist an empty audio_metadata object. Assume
     # audio until a later probe records has_audio=False so A1 is not dropped.
     return True
+
+
+_UNPROBED_AUDIO_SUFFIXES = {".wav", ".wave", ".mp3", ".flac", ".aac", ".m4a", ".opus", ".aif", ".aiff"}
+
+
+def asset_has_video(asset) -> bool:
+    metadata = asset.video_metadata or {}
+    if "has_video" in metadata:
+        return metadata["has_video"] is not False
+    # A saved older project can have a linked V1 placeholder for unprobed
+    # audio. Only explicit picture metadata or an ambiguous container may
+    # make that placeholder a video decoder target.
+    return Path(asset.canonical_source).suffix.lower() not in _UNPROBED_AUDIO_SUFFIXES
 
 
 def _primary_media_asset(project: SubtitleProject) -> MediaAsset | None:
@@ -846,10 +871,9 @@ def _ensure_linked_av_contract(project: SubtitleProject, *, materialize_unrefere
     audio_asset_ids = {clip.asset_id for track in project.audio_tracks for clip in track.clips}
     for asset in project.media_pool:
         if materialize_unreferenced_audio is not True and asset.asset_id not in materialize_unreferenced_audio:continue
-        video_metadata = _mapping(asset.video_metadata)
         # Missing dimensions are unknown, not evidence of pure audio. A
         # metadata-less video import must not gain a duplicate standalone A.
-        has_video = video_metadata.get("has_video") is not False
+        has_video = asset_has_video(asset)
         if not _asset_has_audio(asset) or asset.asset_id in video_asset_ids or asset.asset_id in audio_asset_ids:
             continue
         if has_video:
@@ -1587,7 +1611,7 @@ def _atomic_json_write(path: Path, payload: Mapping[str, Any], *, compact: bool 
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        replace_atomic(temporary, path)
     except BaseException:
         try:
             temporary.unlink()
@@ -1627,7 +1651,7 @@ def _atomic_json_blob_write(path: Path, content: str | Iterable[str]) -> dict[st
                 os.fsync(stream.fileno())
             fsync_ms = (time.perf_counter() - fsync_started) * 1000.0
         with phase('file.atomic_replace'):
-            os.replace(temporary, path)
+            replace_atomic(temporary, path)
     except BaseException:
         try:
             temporary.unlink()
@@ -1683,7 +1707,7 @@ def save_project(project: SubtitleProject, path: str | os.PathLike[str], *, comp
         temporary = Path(temporary_name)
         try:
             shutil.copy2(target, temporary)
-            os.replace(temporary, backup)
+            replace_atomic(temporary, backup)
         finally:
             try:
                 temporary.unlink()
@@ -1887,7 +1911,7 @@ def save_project_revision(
             shutil.copy2(target, temporary)
             with temporary.open("r+b") as stream:
                 os.fsync(stream.fileno())
-            os.replace(temporary, backup)
+            replace_atomic(temporary, backup)
         finally:
             try:
                 temporary.unlink()

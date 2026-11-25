@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from bisect import bisect_right
 import json
 import re
 import uuid
@@ -89,6 +90,34 @@ class ParsedSubtitles:
 
 _TIME = r"\d{1,}:[0-5]\d:[0-5]\d[,.]\d{1,3}"
 _HEADER = re.compile(rf"(?m)^(?:[ \t]*(\d+)[ \t]*\n)?[ \t]*({_TIME})[ \t]*-->[ \t]*({_TIME})[^\n]*\n")
+_LRC_TIME = re.compile(r"\[(\d{1,6}):([0-5]?\d)(?:[.](\d{1,3}))?\]")
+
+
+def _lrc_rows(text, title):
+    """Read source line onsets; end times remain short display estimates."""
+    offsets = re.findall(r"(?mi)^\s*\[offset:\s*([+-]?\d{1,9})\s*\]", text)
+    offset = int(offsets[-1]) if offsets else 0
+    timed = []
+    for number, line in enumerate(text.splitlines(), 1):
+        position = 0
+        onsets = []
+        while match := _LRC_TIME.match(line, position):
+            minute, second, fraction = match.groups()
+            start = (60 * int(minute) + int(second)) * 1000 + int((fraction or "0").ljust(3, "0"))
+            onsets.append(max(0, start - offset))
+            position = match.end()
+        lyric = line[position:].strip()
+        timed.extend((start, number, lyric) for start in onsets)
+    starts = sorted({start for start, _, _ in timed})
+    rows = []
+    for index, (start, number, lyric) in enumerate(sorted(timed), 1):
+        if lyric:
+            following = bisect_right(starts, start)
+            end = min(start + 4000, starts[following]) if following < len(starts) else start + 4000
+            rows.append(ImportRow(number, start, end, lyric, speaker=f"{tr('歌词')} · {title}",
+                                  source_track="lrc", source_cue=str(index), role="lyrics",
+                                  association={"start_basis": "lrc_line_onset", "end_basis": "estimated"}))
+    return rows
 
 
 def _srt_rows(text: str) -> list[ImportRow]:
@@ -183,16 +212,21 @@ def read_subtitles(path: Path) -> ParsedSubtitles:
                 raise ValueError(f"第 {number} 行 ASS 对话无效")
             start, end, _style, actor, body = parsed
             rows.append(ImportRow(number, start, end, body, normalize_speaker(actor)))
+    elif path.suffix.lower() == ".lrc":
+        rows = _lrc_rows(text, path.stem)
     else:
-        raise ValueError("只支持 SRT / ASS 字幕文件")
+        raise ValueError("只支持 SRT / ASS 字幕或 LRC 歌词文件")
     if not rows:
         raise ValueError("没有读取到有效字幕")
     result = ParsedSubtitles(path, rows, hashlib.sha256(raw).hexdigest())
     for row in rows:
-        if row.speaker and speaker and row.speaker != speaker:
+        if path.suffix.lower() == ".ass" and row.speaker and speaker and row.speaker != speaker:
             result.warnings.append(f"{path.name}：ASS Actor {row.speaker} 优先于文件名 {speaker}")
         row.speaker = row.speaker or speaker
         row.language = language
+    if path.suffix.lower() == ".lrc":
+        result.warnings.append(tr("歌词起点来自 LRC。行尾为显示估计，请试听核对。"))
+        return result
     companion = sidecar_path(path)
     if companion.is_file():
         try:

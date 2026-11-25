@@ -159,6 +159,11 @@ LANGUAGE_SUPPORT: dict[str, dict] = {
         "summary": "5 种语言",
         "source": "https://github.com/FunAudioLLM/SenseVoice",
     },
+    "haas_ja": {
+        "tiers": _tiers("zh:no yue:no dialects:no en:no ja:strong ko:no" + _EU_NO),
+        "summary": "仅日语",
+        "source": "https://huggingface.co/third-intelligence/Haas-ja-v1.0",
+    },
     # The checkpoint card says Mandarin training only; FunASR's list adds en.
     "paraformer": {
         "tiers": _tiers("zh:strong en:usable ja:no ko:no" + _EU_NO),
@@ -214,6 +219,14 @@ def language_support(key: str, codes: tuple[str, ...] = BADGE_LANGUAGES) -> dict
     ``codes`` defaults to the six badges; the workshop list passes
     ``WORKSHOP_LANGUAGES``.
     """
+    from ..recognition.asr_capabilities import LOCAL, CLOUD
+    capability = LOCAL.get({'whisper': 'whisper_turbo', 'mlx_qwen3_asr_0_6b': 'mlx_qwen3_asr'}.get(key, key))
+    if capability is None:
+        capability = CLOUD.get({'qwen31_filetrans': 'qwen-audio-3.1-asr-flash-filetrans',
+                                'qwen_cloud_filetrans': 'qwen-audio-3.1-asr-flash-filetrans',
+                                'groq_api': 'whisper-large-v3-turbo', 'openai_api': 'gpt-transcribe',
+                                'mai_latest': 'microsoft/mai-transcribe-2',
+                                'mosi_moss_pro': 'moss-transcribe-diarize-pro'}.get(key, key))
     record = LANGUAGE_SUPPORT.get(key)
     if record is None:
         return None
@@ -223,6 +236,7 @@ def language_support(key: str, codes: tuple[str, ...] = BADGE_LANGUAGES) -> dict
         "more": record.get("more"),
         "summary": record.get("summary", ""),
         "source": record.get("source", ""),
+        "request_capability": capability,
     }
 
 

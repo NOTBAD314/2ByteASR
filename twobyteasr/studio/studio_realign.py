@@ -28,13 +28,18 @@ PAD_MS = 300
 SAMPLE_RATE = 16000
 
 
-def _cue_pcm(project, cue_id, ffmpeg, pre_roll_ms=PAD_MS, post_roll_ms=PAD_MS):
+def _cue_pcm(project, cue_id, ffmpeg, pre_roll_ms=PAD_MS, post_roll_ms=PAD_MS,
+             *, enhance_voice=False, cancelled=None):
     import numpy as np
     from ..playback.cue_audio_preview import plan_cue_preview, preview_command
     plan = plan_cue_preview(project, cue_id, pre_roll_ms=pre_roll_ms, post_roll_ms=post_roll_ms)
-    command, _receipts = preview_command(plan, ffmpeg)
+    if enhance_voice and plan.play_range_ms[1] - plan.play_range_ms[0] > 30000:
+        raise ValueError("人声增强对齐窗口最多 30 秒，请先缩小范围")
+    command, _receipts = preview_command(plan, ffmpeg, cancelled=cancelled)
     # Same mix, delivered as the aligner's 16 kHz mono float input.
     command = list(command)
+    if enhance_voice:
+        return plan, _enhanced_alignment_pcm(command, ffmpeg, project.project_id, cancelled)
     command[command.index("-ac") + 1] = "1"
     command[command.index("-ar") + 1] = str(SAMPLE_RATE)
     command[command.index("s16le")] = "f32le"
@@ -44,19 +49,63 @@ def _cue_pcm(project, cue_id, ffmpeg, pre_roll_ms=PAD_MS, post_roll_ms=PAD_MS):
     return plan, np.frombuffer(completed.stdout, dtype="<f4").copy()
 
 
+def _enhanced_alignment_pcm(command, ffmpeg, project_id, cancelled):
+    from pathlib import Path
+    import wave
+
+    import numpy as np
+
+    from ..media.vocal_enhancement import SAMPLE_RATE as VOCAL_SAMPLE_RATE, enhance_studio_clip
+    from ..recognition.alignment_audio import alignment_scratch
+    from ..recognition.service import CancelledError
+    from ..storage.project_stage_history import record_stage
+    from ..system.processes import run_hidden_subprocess
+
+    with alignment_scratch() as directory:
+        source = Path(directory) / "original.wav"
+        target = Path(directory) / "enhanced.wav"
+        command[command.index("-ar") + 1] = str(VOCAL_SAMPLE_RATE)
+        command[-2:] = ["wav", str(source)]
+        run_hidden_subprocess(command, purpose="local stereo alignment audio", timeout=60, check=True)
+        try:
+            enhanced = enhance_studio_clip(source, target, ffmpeg, cancel_check=cancelled)
+        except CancelledError:
+            record_stage(project_id, "enhancement", "cancelled", clips=1)
+            raise
+        except Exception:
+            record_stage(project_id, "enhancement", "failed", clips=1)
+            raise
+        record_stage(project_id, "enhancement", "completed", source=f"htdemucs_{enhanced.backend}", clips=1,
+                     cuda_clips=int(enhanced.backend == "cuda"))
+        with wave.open(str(target), "rb") as audio:
+            return np.frombuffer(audio.readframes(audio.getnframes()), dtype="<i2").astype(np.float32) / 32768
+
+
 CONTEXT_MS = 2000
 
 
 def _runs(project, cue_ids):
     """Alignment runs holding the requested captions; unchanged neighbours are context only."""
+    from bisect import bisect_right
+
     from ..playback.cue_audio_preview import caption_timeline_range
     from ..recognition.cue_forced_alignment import plan_runs
     wanted = {str(cue_id) for cue_id in cue_ids}
     targets = [cue for cue in project.cues if cue.id in wanted]
     if not targets:
         return [], wanted
-    near = [cue for cue in project.cues
-            if any(cue.end_ms >= t.start_ms - CONTEXT_MS and cue.start_ms <= t.end_ms + CONTEXT_MS for t in targets)]
+    context = []
+    for start, end in sorted((cue.start_ms - CONTEXT_MS, cue.end_ms + CONTEXT_MS) for cue in targets):
+        if context and start <= context[-1][1]:
+            context[-1] = (context[-1][0], max(context[-1][1], end))
+        else:
+            context.append((start, end))
+    starts = [start for start, _ in context]
+    near = []
+    for cue in project.cues:
+        earlier = bisect_right(starts, cue.end_ms) - 1
+        if earlier >= 0 and cue.start_ms <= context[earlier][1]:
+            near.append(cue)
     from ..recognition.alignment_items import annotate_row
     source_parts=project.generation_metadata.get('segmentation_source_spans',{}).get('cues',{})
     rows = []
@@ -96,7 +145,7 @@ def _shifted(rows, shift):
     return out
 
 
-def measure(project, cue_ids, *, language=None, cancelled=None):
+def measure(project, cue_ids, *, language=None, cancelled=None, enhance_voice=False):
     """Selected runs share a disk-backed PCM; memory stays bounded by one run."""
     import numpy as np
     from pathlib import Path
@@ -119,7 +168,8 @@ def measure(project, cue_ids, *, language=None, cancelled=None):
                 first = run["members"][0]
                 plan, pcm = _cue_pcm(project, first["key"], ffmpeg,
                     pre_roll_ms=max(0, first["start_ms"] - run["window_start_ms"]),
-                    post_roll_ms=max(0, run["window_end_ms"] - first["end_ms"]))
+                    post_roll_ms=max(0, run["window_end_ms"] - first["end_ms"]),
+                    **({"enhance_voice": True, "cancelled": cancelled} if enhance_voice else {}))
                 if pcm.size < SAMPLE_RATE // 10:
                     continue
                 start_sample=cursor
@@ -193,7 +243,8 @@ def measure(project, cue_ids, *, language=None, cancelled=None):
                         alignment_identity=effective.get("alignment_identity"),execution_identity=effective.get("execution_identity"),
                         configured_alignment_identity=payload.get("alignment_identity"),measurement=copy.deepcopy(part.get("measurement")),compatibility_fallback=copy.deepcopy(row.get("compatibility_fallback")),
                         evidence=dict(part,timebase='concatenated-pcm-ms',project_offset_ms=shift,alignment_item=copy.deepcopy(row.get('alignment_item')),measurement=copy.deepcopy(part.get('measurement')),pure_configured_attempt=copy.deepcopy(row.get('pure_configured_attempt'))),
-                        cue_range_ms=[member["start_ms"],member["end_ms"]],boundaries=graded,second=engine)
+                        cue_range_ms=[member["start_ms"],member["end_ms"]],boundaries=graded,second=engine,
+                        audio_source="htdemucs" if enhance_voice else "original")
             return out
         finally:
             audio._mmap.close()
@@ -208,9 +259,13 @@ class RealignWordsCommand(QUndoCommand):
         instances = project.studio_state.setdefault(KEY, {"version": 1, "instances": {}}).setdefault("instances", {})
         self.before = {cue_id: copy.deepcopy(instances.get(cue_id)) for cue_id in results}
         self.after = {}
+        self.pending_overrides = {}
+        overrides = project.studio_state.get("term_word_overrides") or {}
         for cue_id, result in results.items():
             receipt = copy.deepcopy(instances.get(cue_id) or {})
-            if (result.get('measurement',{}).get('state') in {'partial','unmeasured'} and receipt.get('text')==result['text'] and receipt.get('words')):
+            measurement_state = (result.get("measurement") or {}).get("state")
+            if (measurement_state in {"partial", "unmeasured"} and receipt.get("text") == result["text"]
+                    and receipt.get("words")):
                 receipt['last_alignment_attempt']=copy.deepcopy(result)
                 receipt['alignment_display_origin']='previous_reliable'
                 self.after[cue_id]=receipt
@@ -228,6 +283,7 @@ class RealignWordsCommand(QUndoCommand):
                                              "compatibility_fallback":result.get("compatibility_fallback"),
                                              "alignment_identity": result.get("alignment_identity"),
                                              "execution_identity": result.get("execution_identity"),
+                                             "audio_source": result.get("audio_source", "original"),
                                              "evidence": copy.deepcopy(result.get("evidence")),
                                              "pieces": copy.deepcopy(result["words"])})
             if result.get("boundaries"):
@@ -239,6 +295,10 @@ class RealignWordsCommand(QUndoCommand):
                 for key in ("boundaries", "boundary_policy", "boundary_second"):
                     receipt.pop(key, None)
             self.after[cue_id] = receipt
+            pending = overrides.get(cue_id) or {}
+            if (pending.get("requires_acoustic_alignment") and pending.get("text") == result["text"]
+                    and measurement_state not in {"partial", "unmeasured"}):
+                self.pending_overrides[cue_id] = copy.deepcopy(pending)
         self.changed = changed
 
     def _apply(self, receipts):
@@ -254,10 +314,20 @@ class RealignWordsCommand(QUndoCommand):
                     instances.pop(cue_id, None)
                 else:
                     instances[cue_id] = copy.deepcopy(receipt)
+            if self.pending_overrides:
+                overrides = self.project.studio_state.setdefault("term_word_overrides", {})
+                if receipts is self.after:
+                    for cue_id in self.pending_overrides:
+                        overrides.pop(cue_id, None)
+                else:
+                    overrides.update(copy.deepcopy(self.pending_overrides))
+                if not overrides:
+                    self.project.studio_state.pop("term_word_overrides", None)
 
         _commit_mutation(self.project, action_id=self.text(),
                          dirty=DirtyDomain.TIMELINE_PIXELS | DirtyDomain.AUTOSAVE, cue_ids=tuple(receipts),
-                         mutate=mutate, changed=self.changed, sync_caption_words=False)
+                         mutate=mutate, changed=self.changed, sync_caption_words=False,
+                         studio_state_keys=(KEY, "term_word_overrides") if self.pending_overrides else None)
 
     def redo(self):
         self._apply(self.after)
@@ -295,7 +365,7 @@ def alignment_audio_basis(project, cue_id):
     return fingerprint(dict(plan=diagnostic, files=files))
 
 
-def start_realign(page, cue_ids, on_done=None, on_fail=None, *, undo_label='') -> bool:
+def start_realign(page, cue_ids, on_done=None, on_fail=None, *, undo_label='', enhance_voice=False, retry=False) -> bool:
     """Context-menu action: measure in the background, apply as one undo step.
 
     ``on_done(results)`` runs after the receipts are applied (split at the cursor re-plans then);
@@ -311,16 +381,30 @@ def start_realign(page, cue_ids, on_done=None, on_fail=None, *, undo_label='') -
         if label is not None:
             bind_text(label, text)
 
+    from .studio_batch_timing import protected_cue_ids
+    wanted = {str(key) for key in cue_ids}
+    targets = [cue for cue in project.cues if cue.id in wanted]
+    protected = protected_cue_ids(project, targets, page.timeline.locked_speakers)
+    targets = [cue for cue in targets if cue.id not in protected]
+    cue_ids = [cue.id for cue in targets]
+    if not cue_ids:
+        message(tr('选中的字幕已确认、锁定或没有可用字幕'))
+        return False
+
     from ..timeline.studio_caption_timeline import independent_captions
     if not independent_captions(project):
         message(tr("这个工程还没有转换成时间轴字幕，无法重新对齐"))
         return False
-    snapshot = copy.deepcopy(project)
-    try:
-        audio_revisions = {str(key):alignment_audio_basis(snapshot,key) for key in cue_ids}
-    except Exception as exc:
-        message(tr("无法重新对齐：{error}",error=str(exc)[:160]))
-        return False
+    if enhance_voice:
+        from ..media.vocal_enhancement import assets_present
+
+        if not assets_present():
+            message(tr("未安装受验证的本机 HTDemucs 人声增强模型"))
+            return False
+    from ..projects.project_snapshot import document_snapshot
+
+    snapshot = document_snapshot(project)
+    audio_revisions = {}
     from ..recognition.service import CancellationToken
     from ..recognition.run_context import RuntimeContext, activate_runtime_context
     previous_token = getattr(page, '_realign_cancel', None)
@@ -332,8 +416,9 @@ def start_realign(page, cue_ids, on_done=None, on_fail=None, *, undo_label='') -
     settings = copy.deepcopy(getattr(page, 'runtime_settings', {}) or {})
     signals = _Signals(page)
     page._realign_signals = signals
-    targets = [cue for cue in project.cues if cue.id in {str(key) for key in cue_ids}]
     task = page._new_subtitle_task('字词对齐',targets)
+    task.is_retry = retry
+    task.enhance_voice = enhance_voice
     task.cancel_action = token.cancel
     task.time_label = '工程时间'
     task_ranges = {cue.id:(int(cue.start_ms),int(cue.end_ms)) for cue in targets}
@@ -349,7 +434,8 @@ def start_realign(page, cue_ids, on_done=None, on_fail=None, *, undo_label='') -
             state=payload.get('worker_state','')
             progress_state['phase']={'loading':'加载模型','verifying':'校验模型','loaded':'模型已就绪',
                 'pass_started':'词级对齐' if payload.get('pass_id')=='word' else '字级对齐',
-                'progress':'处理音频窗口','audio_prepared':'准备局部音频','runtime_check':'检查运行库'}.get(state,progress_state['phase'])
+                'progress':'处理音频窗口','audio_prepared':'准备局部音频','runtime_check':'检查运行库',
+                'voice_enhancement':'分离所选范围的人声'}.get(state,progress_state['phase'])
             if state=='audio_prepared':
                 progress_state['total']=int(payload.get('total',0))
                 progress_state['local']=progress_state['total']
@@ -393,11 +479,12 @@ def start_realign(page, cue_ids, on_done=None, on_fail=None, *, undo_label='') -
         if token.is_cancelled or getattr(page, '_realign_cancel', None) is not token:
             return
         current = {cue.id: cue.text for cue in page.project.cues} if page.project is project else {}
+        protected_now = protected_cue_ids(project, project.cues, page.timeline.locked_speakers)
         fresh = {}
         for cue_id,value in result.items():
             if value.get('status') != 'aligned' or not value.get('words'):
                 continue
-            if current.get(cue_id) != value['text']:
+            if cue_id in protected_now or current.get(cue_id) != value['text']:
                 continue
             try:
                 if alignment_audio_basis(project,cue_id) != audio_revisions.get(cue_id):
@@ -433,7 +520,8 @@ def start_realign(page, cue_ids, on_done=None, on_fail=None, *, undo_label='') -
         from ..recognition.alignment_backend import fingerprint
         from ..recognition.cache import run_event_observer
         from ..storage.storage_service import cache_lease
-        checkpoint_root=user_data_root()/'cache/studio-alignment'/fingerprint(str(project.project_id))[:24]
+        checkpoint_key = str(project.project_id) + (':htdemucs' if enhance_voice else '')
+        checkpoint_root=user_data_root()/'cache/studio-alignment'/fingerprint(checkpoint_key)[:24]
         context=RuntimeContext(asr_settings_snapshot=settings,cancellation_token=token,
                                alignment_checkpoint_dir=str(checkpoint_root))
         last=[0.]
@@ -449,7 +537,13 @@ def start_realign(page, cue_ids, on_done=None, on_fail=None, *, undo_label='') -
             signals.progress.emit((kind,payload))
         try:
             with activate_runtime_context(context),run_event_observer(observe),cache_lease(checkpoint_root):
-                result=measure(snapshot,list(cue_ids),cancelled=lambda:token.is_cancelled)
+                for cue_id in cue_ids:
+                    token.raise_if_cancelled()
+                    audio_revisions[cue_id] = alignment_audio_basis(snapshot, cue_id)
+                if enhance_voice:
+                    signals.progress.emit(('alignment_progress', {'worker_state': 'voice_enhancement'}))
+                result=measure(snapshot,list(cue_ids),cancelled=lambda:token.is_cancelled,
+                               **({"enhance_voice": True} if enhance_voice else {}))
         except Exception as exc:
             result=exc
         finally:
@@ -464,3 +558,35 @@ def start_realign(page, cue_ids, on_done=None, on_fail=None, *, undo_label='') -
 
     threading.Thread(target=work, name="caption-realign", daemon=True).start()
     return True
+
+
+def schedule_proofread_alignment(page, project, cue_ids):
+    """Measure only the adopted original-text edits that lost word evidence."""
+    from PySide6.QtCore import QTimer
+    from ..i18n import tr
+    from ..recognition.alignment_backend import model_directory, selected_backend
+    from ..timeline.studio_caption_timeline import independent_captions
+
+    wanted = set(cue_ids)
+    pending = project.studio_state.get("term_word_overrides") or {}
+    if (not any((pending.get(cue_id) or {}).get("requires_acoustic_alignment") for cue_id in wanted)
+            or not independent_captions(project) or aligner_language(project) is None):
+        return
+    settings = getattr(page, "runtime_settings", {}) or {}
+    if settings.get("models", {}).get("firered_asr_backend") == "off":
+        return
+    if not model_directory(selected_backend(settings)):
+        return
+    values = {cue.id: cue.text for cue in project.cues if cue.id in wanted}
+
+    def launch():
+        if (page.project is not project or getattr(page, "_close_requested", False)
+                or getattr(page, "_realign_signals", None) is not None):
+            return
+        overrides = project.studio_state.get("term_word_overrides") or {}
+        current = [cue.id for cue in project.cues if cue.id in values and cue.text == values[cue.id]
+                   and (overrides.get(cue.id) or {}).get("requires_acoustic_alignment")]
+        if current:
+            start_realign(page, current, undo_label=tr("更新校对后字词时间"))
+
+    QTimer.singleShot(0, page, launch)

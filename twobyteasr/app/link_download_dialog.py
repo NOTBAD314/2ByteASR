@@ -17,7 +17,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QUrl, QSize
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QFileDialog, QFrame, QGridLayout, QGroupBox,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
+    QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ..i18n import tr, bind_text
@@ -65,6 +65,14 @@ class LinkDownloadDialog(QDialog):
         self._filter = "all"
         self._chips: dict[str, QPushButton] = {}
         self.preferences = link_preferences()
+        self._authorization = None
+        self._authorization_url = ""
+        self._profile_request = ""
+        self.setAcceptDrops(True)
+        self._auto_parse = QTimer(self)
+        self._auto_parse.setSingleShot(True)
+        self._auto_parse.setInterval(550)
+        self._auto_parse.timeout.connect(self.parse)
         self.setWindowTitle(tr("链接下载 · 视频与字幕"))
         self.setModal(False)
         available = parent.screen().availableGeometry()
@@ -205,7 +213,7 @@ class LinkDownloadDialog(QDialog):
             need = min(need, 620)   # a long queue scrolls
         chrome = self.height() - self.pages.height()
         screen = self.screen().availableGeometry()
-        target = max(self.minimumHeight(), min(need + chrome, screen.height() - 70))
+        target = max(self.minimumHeight(), min(need + chrome, screen.height() - 28))
         self._resize_height(target, screen)
         if isinstance(page, QScrollArea) and PAGES[self.pages.currentIndex()] != "queue":
             QTimer.singleShot(0, self, self._fit_overflow)
@@ -219,7 +227,7 @@ class LinkDownloadDialog(QDialog):
         extra = page.verticalScrollBar().maximum()
         if extra > 0:
             screen = self.screen().availableGeometry()
-            self._resize_height(min(self.height() + extra, screen.height() - 70), screen)
+            self._resize_height(min(self.height() + extra, screen.height() - 28), screen)
 
     def _resize_height(self, target, screen):
         if abs(target - self.height()) <= 1:
@@ -317,6 +325,18 @@ class LinkDownloadDialog(QDialog):
         self.parse_button.setEnabled(False)
         controls.addWidget(self.parse_button)
         column.addLayout(controls)
+        authorization = QHBoxLayout()
+        self.cookie = QLineEdit()
+        self.cookie.setReadOnly(True)
+        self.cookie.setPlaceholderText(tr("无需登录"))
+        authorization.addWidget(self.cookie, 1)
+        authorize = button(tr("网站授权…"), "linkGhost")
+        authorize.clicked.connect(self._authorization_menu)
+        authorization.addWidget(authorize)
+        browser = button(tr("兔白助手"), "linkGhost")
+        browser.clicked.connect(self._show_helper)
+        authorization.addWidget(browser)
+        column.addLayout(authorization)
         self.hero_tools = QWidget()
         tools = QHBoxLayout(self.hero_tools)
         tools.setContentsMargins(0, 2, 0, 0)
@@ -335,7 +355,7 @@ class LinkDownloadDialog(QDialog):
         hints.setContentsMargins(0, 6, 0, 0)
         hints.setSpacing(2)
         for text in ("在字幕工作台按 Ctrl+V，可以直接用小卡片下载，不用打开这个窗口。",
-                     "遇到下载问题？在「设置」选择 Cookie 文件，或到「工具」页修复下载工具。"):
+                     "先尝试公开下载。网站要求登录时，可从兔白助手发送授权，或选择本次的 Cookie 文件。"):
             label = named_label(tr(text), "linkHint", wrap=True)
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             hints.addWidget(label)
@@ -454,6 +474,20 @@ class LinkDownloadDialog(QDialog):
         self.subtitle_hint.hide()
         grid.addWidget(self.subtitle_hint, 4, 1, 1, 3)
         column.addLayout(grid)
+        processing = QHBoxLayout()
+        processing.addWidget(self._field("字幕处理"))
+        self.subtitle_mode = StudioComboBox()
+        for key, label in (("smart", "智能整句重建"), ("original", "原始字幕"), ("ai", "AI 精细断句")):
+            self.subtitle_mode.addItem(tr(label), key)
+        processing.addWidget(self.subtitle_mode, 1)
+        self.keep_sound = QCheckBox(tr("保留音乐、笑声等标记"))
+        self.keep_sound.setChecked(True)
+        processing.addWidget(self.keep_sound)
+        self.recognize = QCheckBox(tr("下载后进行 AI 识别"))
+        processing.addWidget(self.recognize)
+        self.subtitle_mode.currentIndexChanged.connect(lambda: self.keep_sound.setEnabled(
+            self.subtitle_mode.currentData() != "original"))
+        column.addLayout(processing)
         column.addWidget(divider())
         self.details_toggle = button(tr("导入细节：素材片段与已有字幕"), "linkLink", "fa5s.chevron-down", "accent")
         self.details_toggle.setCheckable(True)
@@ -508,7 +542,23 @@ class LinkDownloadDialog(QDialog):
         bind_text(self.add_button, "下载并导入" if self.auto_import.isChecked() else "开始下载")
 
     def _url_changed(self, text):
+        self._auto_parse.stop()
+        link = choices.find_video_link(text)
+        self._profile_request = ""
+        if self._authorization and link != self._authorization_url:
+            self._authorization = None
+            self._authorization_url = ""
+            self.cookie.clear()
+        if self.cancel_parse.isEnabled():
+            self.controller.cancel_analysis()
+            self.parsing_finished()
+        if self.catalog and link != self.catalog.get("url"):
+            self.catalog = None
+            self.add_button.setEnabled(False)
+            self._set_hero(True)
         self.parse_button.setEnabled(bool(text.strip()) and not self.cancel_parse.isEnabled())
+        if link and self.isVisible():
+            self._auto_parse.start()
 
     def paste_from_clipboard(self):
         text = QApplication.clipboard().text().strip()
@@ -532,9 +582,10 @@ class LinkDownloadDialog(QDialog):
     # ----------------------------------------------------------------- parsing
     def _network(self):
         return dict(proxy=self.proxy.text().strip() if self.advanced.isChecked() else "",
-                    cookie_file=self.cookie.text() if self.advanced.isChecked() else "")
+                    cookie_file=self._authorization or "")
 
     def parse(self):
+        self._auto_parse.stop()
         if not self.parse_button.isEnabled() or self.cancel_parse.isEnabled():
             return
         self.catalog = None
@@ -544,6 +595,8 @@ class LinkDownloadDialog(QDialog):
         self.cancel_parse.show()
         self.show_page("home")
         self.message.setText(tr("正在解析；带播放列表参数的链接只处理当前视频。"))
+        if self._authorization:
+            self.cookie.setText(tr("正在验证"))
         self.controller.analyze(self.url.text(), owner="dialog", **self._network())
 
     def _cancel_parse(self):
@@ -562,7 +615,10 @@ class LinkDownloadDialog(QDialog):
         self.cover.set_image(self.thumbnail)
 
     def set_catalog(self, catalog, thumbnail=b""):
+        self._auto_parse.stop()
         self.catalog = catalog
+        if self._authorization:
+            self.cookie.setText(tr("授权有效") if catalog.get("used_authorization") else tr("此视频无需登录，未使用授权"))
         self.thumbnail = bytes(thumbnail or b"")
         self.parsing_finished()
         self._populating = True
@@ -828,6 +884,8 @@ class LinkDownloadDialog(QDialog):
             return
         try:
             mode = self.mode.currentData()
+            if self.recognize.isChecked() and mode in ("both", "video"):
+                mode = "video"
             chosen = self.checked_tracks() if mode in ("both", "subtitles") else []
             if mode == "both" and self.catalog["tracks"] and not chosen:
                 raise ValueError(tr("请选择要下载的字幕，或切换为仅视频。"))
@@ -842,14 +900,17 @@ class LinkDownloadDialog(QDialog):
                 audio_format=self.audio_format.currentData() or "", track_ids=chosen,
                 primary_track_id=primary or "", translation_track_id=secondary or "",
                 destination=target["kind"], clip_id=target["clip_id"], confirmed_media=target["confirmed_media"],
-                replace_source=target["replace_source"], auto_import=self.auto_import.isChecked())
+                replace_source=target["replace_source"], auto_import=self.auto_import.isChecked(),
+                subtitle_mode=self.subtitle_mode.currentData(), keep_sound=self.keep_sound.isChecked(),
+                recognize=self.recognize.isChecked() and mode == "video")
             task = self.controller.enqueue(self.catalog, self.directory.text(), options,
                                            thumbnail=self.thumbnail, **self._network())
             self.preferences.update(directory=self.directory.text(),
                 languages=[t["language"] for t in self.catalog["tracks"] if t["track_id"] in chosen]
                           or self.preferences.get("languages", []))
             save_link_preferences(self.preferences)
-            self.message.setText(tr("已加入队列；不会自动调用付费 AI。") + " " + task["video_id"])
+            self.message.setText(tr("已加入队列") + " · " + task["video_id"])
+            self.controller.browser_choice_submitted(self.catalog["url"])
             self.update_tasks(self.controller.queue.snapshots(), {})
         except (ValueError, OSError) as exc:
             self.message.setText(str(exc))
@@ -991,7 +1052,8 @@ class LinkDownloadDialog(QDialog):
         grid.setVerticalSpacing(10)
         self.tool_rows = {}
         for row, (key, name, note) in enumerate((("yt_dlp", "yt-dlp", "下载视频与字幕"), ("ejs", "EJS", "解析 YouTube 播放器脚本"),
-                                                ("node", "Node", "程序自带"), ("ffmpeg", "FFmpeg", "无损合并，程序自带"))):
+                                                ("node", "Node", "JavaScript 运行库"), ("ffmpeg", "FFmpeg", "无损合并"),
+                                                ("ffprobe", "FFprobe", "媒体检查"))):
             grid.addWidget(named_label(name, "linkFieldLabel"), row, 0)
             value = user_text(named_label("", "linkMeta"))
             grid.addWidget(value, row, 1)
@@ -1003,10 +1065,15 @@ class LinkDownloadDialog(QDialog):
         self.tools_button = button(tr("检查 / 修复下载工具"), "linkPrimary", "fa5s.tools", "on_accent")
         self.tools_button.clicked.connect(self.controller.install_tools)
         actions.addWidget(self.tools_button)
+        if os.name == "nt":
+            for name, label in (("check", "检查工具更新"), ("update", "独立更新工具"), ("rollback", "回退工具")):
+                action = button(tr(label))
+                action.clicked.connect(lambda _checked=False, name=name: self.controller.change_tools(name))
+                actions.addWidget(action)
         actions.addStretch(1)
         column.addLayout(actions)
-        column.addWidget(named_label(tr("下载工具版本随应用锁定；缺失时从官方地址下载，核对大小与 SHA-256 后才使用。"
-                                        "不会修改系统里的 Python、Node 或 yt-dlp。"), "linkHint", wrap=True))
+        column.addWidget(named_label(tr("独立更新只下载签名的工具元件。新工具校验并试运行通过后才会启用，可随时回退。"),
+                                      "linkHint", wrap=True))
         column.addStretch(1)
         return page
 
@@ -1016,7 +1083,7 @@ class LinkDownloadDialog(QDialog):
             full = versions.get(key) or ""
             # FFmpeg reports "ffmpeg version X Copyright (c) …": the version is
             # enough here, the whole line stays in the tooltip (2026-10-26).
-            short = full.removeprefix("ffmpeg version ").split(" Copyright")[0].strip() if key == "ffmpeg" else full
+            short = full.removeprefix(f"{key} version ").split(" Copyright")[0].strip() if key in {"ffmpeg", "ffprobe"} else full
             label.setText(short or tr("未检查"))
             label.setToolTip(full)
         self._refresh_status()
@@ -1052,7 +1119,7 @@ class LinkDownloadDialog(QDialog):
         network_rows = QVBoxLayout(network)
         network_rows.setContentsMargins(18, 14, 18, 14)
         network_rows.setSpacing(10)
-        advanced = QCheckBox(tr("本次使用代理或 Cookie（可选）"))
+        advanced = QCheckBox(tr("本次使用代理（可选）"))
         advanced.setObjectName("linkSectionCheck")
         advanced.setChecked(False)
         network_rows.addWidget(advanced)
@@ -1069,18 +1136,6 @@ class LinkDownloadDialog(QDialog):
         self.proxy.setPlaceholderText(tr("留空沿用现有网络；例如 http://127.0.0.1:7890"))
         form.addWidget(named_label(tr("本次代理"), "linkHint"), 0, 0)
         form.addWidget(self.proxy, 0, 1, 1, 3)
-        self.cookie = QLineEdit()
-        self.cookie.setReadOnly(True)
-        self.cookie.setPlaceholderText(tr("不使用 Cookie"))
-        cookie_button = button(tr("选择 Cookie 文件…"), "linkGhost")
-        cookie_button.clicked.connect(self._choose_cookie)
-        clear_cookie = button(tr("清除"), "linkGhost")
-        clear_cookie.clicked.connect(self.cookie.clear)
-        form.addWidget(named_label(tr("登录验证"), "linkHint"), 1, 0)
-        form.addWidget(self.cookie, 1, 1)
-        form.addWidget(cookie_button, 1, 2)
-        form.addWidget(clear_cookie, 1, 3)
-        form.addWidget(named_label(tr("Cookie 仅在你主动选择时使用，不写入工程或清单。不会修改系统代理或 TUN。"), "linkHint", wrap=True), 2, 1, 1, 3)
         form.setColumnStretch(1, 1)
         self.advanced = advanced
         column.addWidget(network)
@@ -1098,7 +1153,106 @@ class LinkDownloadDialog(QDialog):
     def _choose_cookie(self):
         value, _ = QFileDialog.getOpenFileName(self, tr("选择 Netscape Cookie 文件"), "", "Cookie (*.txt);;All files (*)")
         if value:
-            self.cookie.setText(value)
+            self._load_cookie(Path(value))
+
+    def _show_helper(self):
+        from .browser_helper_dialog import show_wizard
+        show_wizard(self)
+
+    def _authorization_menu(self):
+        from ..design.studio_theme import create_studio_menu
+        menu = create_studio_menu(self)
+        menu.addAction(tr("使用兔白助手…"), self._show_helper)
+        menu.addAction(tr("选择本机浏览器 Profile…"), self._choose_browser_profile)
+        menu.addAction(tr("选择 Cookie 文件…"), self._choose_cookie)
+        test = menu.addAction(tr("测试当前视频连接"), self.parse)
+        test.setEnabled(bool(self.url.text().strip()))
+        clear = menu.addAction(tr("清除授权"), self._clear_authorization)
+        clear.setEnabled(self._authorization is not None)
+        menu.exec(self.cookie.mapToGlobal(self.cookie.rect().bottomLeft()))
+
+    def _clear_authorization(self):
+        if self._authorization:
+            self.controller.queue.revoke(self._authorization)
+        self._authorization = None
+        self._authorization_url = ""
+        self._profile_request = ""
+        self.cookie.clear()
+
+    def _set_authorization(self, url, raw, origin):
+        from ..media.link_authorization import from_netscape
+        try:
+            auth = from_netscape(url, raw, origin)
+        except (ValueError, UnicodeError):
+            self.cookie.setText(tr("未取得此网站的有效授权"))
+            return
+        self.install_authorization(url, auth)
+
+    def install_authorization(self, url, auth):
+        if choices.find_video_link(self.url.text()) != url:
+            return
+        self._clear_authorization()
+        self._authorization = auth
+        self._authorization_url = url
+        self.cookie.setText(tr("已接收此视频的授权"))
+        self.parse()
+
+    def _choose_browser_profile(self):
+        from .browser_profiles import discover_profiles
+        url = choices.find_video_link(self.url.text())
+        if not url:
+            self.message.setText(tr("请先输入要授权的视频链接。"))
+            return
+        profiles = discover_profiles()
+        if not profiles:
+            self.cookie.setText(tr("未检测到可用的浏览器 Profile"))
+            return
+        labels = [f"{i + 1}. {browser} · {label}" for i, (browser, label, *_rest) in enumerate(profiles)]
+        choice, confirmed = QInputDialog.getItem(self, tr("选择本机浏览器 Profile"),
+            tr("只读取所选 Profile 中这个网站的授权。受浏览器加密保护时，可在该 Profile 中打开兔白助手。"),
+            labels, 0, False)
+        if not confirmed:
+            return
+        browser, _, location, executable = profiles[labels.index(choice)]
+        self.cookie.setText(tr("正在验证"))
+        if browser == "Firefox":
+            self._profile_request = self.controller.read_firefox_authorization(url, location)
+            return
+        import subprocess
+        try:
+            subprocess.Popen([str(executable), f"--profile-directory={location}", url],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            self.cookie.setText(tr("无法打开当前浏览器 Profile"))
+            return
+        self.cookie.setText(tr("等待浏览器授权"))
+        self.message.setText(tr("已打开所选 Profile。请用该窗口中的兔白助手授权，浏览器保护的登录资料不会从数据库读取。"))
+
+    def _load_cookie(self, path):
+        url = choices.find_video_link(self.url.text())
+        if not url:
+            self.message.setText(tr("请先输入要授权的视频链接。"))
+            return
+        try:
+            with path.open("rb") as source:
+                raw = source.read(512 * 1024 + 1)
+        except OSError:
+            self.cookie.setText(tr("无法读取所选 Cookie 文件"))
+            return
+        self._set_authorization(url, raw, "file")
+
+    def dragEnterEvent(self, event):
+        urls = event.mimeData().urls()
+        if len(urls) == 1 and urls[0].isLocalFile() and Path(urls[0].toLocalFile()).suffix.lower() in {".txt", ".cookies"}:
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if len(urls) == 1 and urls[0].isLocalFile():
+            path = Path(urls[0].toLocalFile())
+            if path.suffix.lower() in {".txt", ".cookies"}:
+                self._load_cookie(path)
+                event.acceptProposedAction()
 
     def _open_folder(self, task_id=""):
         if task_id:

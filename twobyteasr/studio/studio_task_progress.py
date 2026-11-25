@@ -25,6 +25,7 @@ class SubtitleTask:
     rows: dict[str, dict] = field(default_factory=dict)
     cancelled: bool = False
     revision: int = 0
+    is_retry: bool = False
     _cue_id_set: set[str] = field(init=False, repr=False)
     _project_ref: object = field(default=None, init=False, repr=False)
 
@@ -52,7 +53,7 @@ class SubtitleTask:
         self.phase = str(event.get("phase") or self.phase)
         self.revision += 1
 
-    def finish(self, *, cancelled=False):
+    def finish(self, *, cancelled=False, record_history=True):
         if self.ended is not None:
             return
         self.cancelled = cancelled
@@ -68,6 +69,22 @@ class SubtitleTask:
         self.cancel_action = None
         self.phase = "已取消" if cancelled else "任务已结束"
         self.revision += 1
+        stage = {"字词对齐": "alignment", "AI 断句": "grouping", "译文断句": "grouping",
+                 "批量重新识别": "re_asr", "单条重新识别": "re_asr", "工程重新识别": "recognition"}.get(self.kind)
+        project = self.project
+        if stage and project is not None and record_history:
+            from ..storage.project_stage_history import record_stage
+
+            counts = self.counts()
+            has_result = bool(counts["applied"] or counts["unchanged"] or counts["suggestion"])
+            incomplete = bool(counts["failed"] or counts["review"] or counts["cancelled"])
+            outcome = ("partial" if has_result and incomplete else "cancelled" if cancelled else
+                       "failed" if incomplete else "suggestion" if counts["suggestion"] else
+                       "completed" if counts["applied"] else "unchanged")
+            record_stage(getattr(project, "project_id", ""), stage, outcome, **counts)
+            if self.is_retry:
+                record_stage(getattr(project, "project_id", ""), "retry", outcome,
+                             source=f"{stage}_retry", **counts)
 
     @property
     def elapsed(self):

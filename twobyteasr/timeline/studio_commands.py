@@ -11,7 +11,7 @@ from typing import Callable, Iterable, Mapping
 from PySide6.QtGui import QUndoCommand
 
 from ..projects.studio_project import StudioCue, StudioSpeaker, SubtitleProject
-from ..projects.studio_runtime_state import DirtyDomain, notify_legacy_if_unbound, state_for
+from ..projects.studio_runtime_state import DirtyDomain, state_for
 
 
 ChangedCallback = Callable[[], None]
@@ -56,14 +56,17 @@ def _commit_mutation(
     action_id: str,
     dirty: DirtyDomain,
     cue_ids: Iterable[str],
-    mutate: Callable[[], None],
+    mutate: Callable[[], None] | None = None,
     changed: ChangedCallback | None,
     selection_after: str | None = None,
     snapshot_cues: bool = True,
     sync_caption_words: bool = True,
     studio_state_keys: Iterable[str] | None = None,
     generation_metadata_keys: Iterable[str] = (),
+    prepared_geometry: dict | None = None,
 ) -> None:
+    if (mutate is None) == (prepared_geometry is None):
+        raise ValueError("supply one mutation or one prepared geometry patch")
     if project.render_settings.get('_cue_domain') == 'timeline' and dirty & DirtyDomain.CUE_TIMING:
         dirty |= DirtyDomain.PROJECT_METADATA
     state = state_for(project)
@@ -74,11 +77,13 @@ def _commit_mutation(
     legacy_inputs=legacy_review_inputs(project)
     target_ids = tuple(str(item) for item in cue_ids if str(item))
     target_id_set = set(target_ids)
+    capture_ranges = sync_caption_words or bool(dirty & (
+        DirtyDomain.CUE_TIMING | DirtyDomain.CUE_MODEL | DirtyDomain.TIMELINE_INDEX))
     before_ranges = {
         cue.id: (int(cue.start_ms), int(cue.end_ms))
         for cue in project.cues
         if cue.id in target_id_set
-    }
+    } if capture_ranges else {}
     with state.transaction(
         project,
         action_id=action_id,
@@ -93,12 +98,15 @@ def _commit_mutation(
             # Preserve what old confirmations actually reviewed, before any
             # edit updates the legacy manual-text map. History is not deleted.
             project.studio_state[LEGACY_INPUTS]={key:list(value) for key,value in legacy_inputs.items()}
-        mutate()
+        if prepared_geometry is not None:
+            transaction.apply_prepared_geometry(prepared_geometry)
+        elif mutate is not None:
+            mutate()
         after_ranges = {
             cue.id: (int(cue.start_ms), int(cue.end_ms))
             for cue in project.cues
             if cue.id in target_id_set
-        }
+        } if capture_ranges else {}
         from .studio_caption_timeline import independent_captions, sync_caption_interval_words
         if sync_caption_words and independent_captions(project):
             for cue in project.cues:
@@ -108,7 +116,8 @@ def _commit_mutation(
             DirtyDomain.NONE,
             ranges=(*before_ranges.values(), *after_ranges.values()),
         )
-    notify_legacy_if_unbound(project, changed)
+    if changed is not None and not state.has_subscribers:
+        changed()
 
 
 class MutationOrigin(str, Enum):
@@ -191,11 +200,16 @@ class SetCueFieldsCommand(QUndoCommand):
             from ..subtitle_rules.machine_text_policy import machine_text_allowed
             if not machine_text_allowed(cue.text, changes['text']):
                 raise ValueError('机器建议不得删除原文代称与口语表达')
-        self._coalesce_text = set(changes) == {'text'} or ('text' in changes and text == '编辑字幕与局部格式')
+        self._coalesce_text = MutationOrigin(origin) != MutationOrigin.MODEL_ADOPTION and (
+            set(changes) == {'text'} or ('text' in changes and text == '编辑字幕与局部格式'))
+        self._alignment_marker_only = False
         if 'text' in changes and str(changes['text']) != cue.text:
-            from ..caption_style.text_marks import remap_marks, layer_marks, remapped_override
+            from ..caption_style.text_marks import remapped_override
+            plain_text = set(changes) == {'text'}
             changes = dict(changes)
             override = copy.deepcopy(changes['appearance_override']) if 'appearance_override' in changes else remapped_override(cue, str(changes['text']))
+            if plain_text:
+                self._alignment_marker_only = override == cue.appearance_override
             override['text_alignment'] = {'text': str(changes['text']), 'status': 'needs_alignment'}
             changes['appearance_override'] = override
         self.before = {key: copy.deepcopy(getattr(cue, key)) for key in changes}
@@ -236,10 +250,15 @@ class SetCueFieldsCommand(QUndoCommand):
             if appearance_changed:
                 cue.appearance_generation = int(cue.appearance_generation) + 1
 
+        dirty = _field_domains(values)
+        if self._alignment_marker_only:
+            # The text still invalidates the render, timing evidence and QC.
+            # Its alignment marker is independent of authored layer styling.
+            dirty &= ~(DirtyDomain.CUE_STYLE | DirtyDomain.TRANSFORM)
         _commit_mutation(
             self.project,
             action_id=self.text(),
-            dirty=_field_domains(values),
+            dirty=dirty,
             cue_ids=(self.cue_id if self.project.render_settings.get('_cue_domain') == 'timeline' else self.source_cue_id,),
             mutate=mutate,
             changed=self.changed,
@@ -273,6 +292,7 @@ class SetCueFieldsCommand(QUndoCommand):
         if not self._coalesce_text or not other._coalesce_text:
             return False
         self.after = copy.deepcopy(other.after)
+        self._alignment_marker_only = self._alignment_marker_only and other._alignment_marker_only
         return True
 
     def id(self) -> int:

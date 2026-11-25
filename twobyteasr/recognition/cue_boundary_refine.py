@@ -138,6 +138,9 @@ def refine_cuts(cues, pcm, sample_rate: int, *, measured_start=None, measured_en
 
 
 def _runtime_measured(cue, side):
+    receipt = (getattr(cue, "grouping_boundary_receipt", None) or {}).get("measured_english_break") or {}
+    if f"{side}_ms" in receipt:
+        return int(receipt[f"{side}_ms"])
     pieces = (getattr(cue, "forced_alignment", None) or {}).get("segments") or ()
     if not pieces:
         return None

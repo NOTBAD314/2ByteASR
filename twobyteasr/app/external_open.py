@@ -11,7 +11,7 @@ from pathlib import Path
 from ..media.media_intake import SUPPORTED_MEDIA_SUFFIXES
 
 PROJECT_SUFFIXES = frozenset({".2byteproj", ".2byteasrproj"})
-SUBTITLE_SUFFIXES = frozenset({".srt", ".ass"})
+SUBTITLE_SUFFIXES = frozenset({".srt", ".ass", ".lrc"})
 SUPPORTED_OPEN_SUFFIXES = PROJECT_SUFFIXES | SUBTITLE_SUFFIXES | SUPPORTED_MEDIA_SUFFIXES
 
 

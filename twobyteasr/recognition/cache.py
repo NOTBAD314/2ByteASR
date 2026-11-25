@@ -530,6 +530,22 @@ def cache_stage_signature(stage, extra=None, provider_snapshot=None):
         "stage": stage,
         "version": version,
     }
+    from .language_guard import settings_policy
+    guard = settings_policy(runtime_context.asr_settings_snapshot, runtime_context.requested_language)
+    models = (runtime_context.asr_settings_snapshot or {}).get('models', {})
+    if stage == 'primary_haas_ja' or (stage == 'qwen' and models.get('qwen_asr_backend') == 'haas_ja'):
+        from .haas_backend import RUNTIME_VERSION, configuration
+        config = configuration(runtime_context.asr_settings_snapshot)
+        base['haas'] = dict(engine=RUNTIME_VERSION, quantization=config.quantization, device=config.device)
+    if guard['language'] != 'auto':
+        language_identity = {'language': guard['language'], 'strict': guard['strict'],
+                             'requested_locale': runtime_context.requested_language,
+                             'speaker_source': runtime_context.speaker_source}
+        if str(stage).startswith('primary_') or stage in {'moss', 'qwen'}:
+            from ..providers.asr_language_control import VERSION as request_policy_version
+            base['source_language_request'] = {**language_identity, 'contract': request_policy_version}
+        elif stage in {'firered_primary', 'firered_llm', 'polished', 'grouped', 'grouped_local', 'final_timing'}:
+            base['derived_language_policy'] = {**language_identity, 'contract': guard['version']}
     if stage in {'firered', 'grouped', 'grouped_local', 'final_timing'}:
         from .alignment_backend import cache_identity
         base['forced_alignment_identity'] = cache_identity(runtime_context.asr_settings_snapshot)

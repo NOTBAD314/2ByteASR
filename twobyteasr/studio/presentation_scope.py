@@ -2,7 +2,6 @@
 from dataclasses import dataclass
 from ..caption_style.caption_layer_transform import target_ids
 from ..caption_style.bilingual_layout import translation_for_cue,translations_of
-from .studio_text_tools import cue_locked
 
 
 @dataclass(frozen=True)
@@ -60,10 +59,12 @@ def capture_scope(page, *, scope=None, layer=None, ids=None):
         bounded=len(found)==len(single)
     if bounded:
         cues=found;wanted={c.id for c in cues}
-    owners=_speaker_owners(project,cues)
+    locked_speakers=set(project.studio_state.get('locked_speakers',()))|set(getattr(getattr(page,'timeline',None),'locked_speakers',()))
+    locked={str(item) for item in project.studio_state.get('locked_cue_ids',())}
+    owners=_speaker_owners(project,cues) if locked_speakers or (kind=='speaker' and ids is None) else {}
     if bounded:pass
     elif ids is not None:wanted=target_ids(project,ids)
-    elif kind=='all':wanted={c.id for c in cues}
+    elif kind=='all':wanted=None
     elif kind=='current':wanted=target_ids(project,[current]) if current else set()
     elif kind=='speaker':
         current_ids=target_ids(project,[current])
@@ -75,14 +76,14 @@ def capture_scope(page, *, scope=None, layer=None, ids=None):
         else:
             order=[c.id for c in getattr(getattr(page,'timeline',None),'_cues_by_start',())] or [c.id for c in cues]
             wanted=target_ids(project,selection.materialize(order))
-    locked_speakers=set(project.studio_state.get('locked_speakers',()))|set(getattr(getattr(page,'timeline',None),'locked_speakers',()))
-    locked=set(project.studio_state.get('locked_cue_ids',()))
-    translations=translations_of(project.generation_metadata)
+    translations=translations_of(project.generation_metadata) if language=='translation' else {}
+    translation_locked=language=='translation' and 'translation' in locked_speakers
     eligible=[];skipped=[];missing=[]
     for cue in cues:
-        if cue.id not in wanted:continue
-        if (cue_locked(cue,locked) or cue.speaker_id in locked_speakers or owners[cue.speaker_id] in locked_speakers
-                or language == 'translation' and 'translation' in locked_speakers):skipped.append(cue.id)
+        if wanted is not None and cue.id not in wanted:continue
+        if (getattr(cue,'locked',False) or str(cue.id) in locked or translation_locked
+                or (locked_speakers and (cue.speaker_id in locked_speakers or owners[cue.speaker_id] in locked_speakers))):
+            skipped.append(cue.id)
         elif language=='translation' and not translation_for_cue(translations,cue.id):missing.append(cue.id)
         else:eligible.append(cue.id)
     return PresentationScope(str(project.project_id),kind,language,tuple(eligible),tuple(skipped),tuple(missing))

@@ -404,7 +404,11 @@ def transcribe_recovery_window(backend, media_path, pcm, start, end, cache_conte
                     start_sample=left, end_sample=right, language=owner.requested_language,
                     media=owner.media_identity.get('fingerprint'))
     settings = owner.asr_settings_snapshot or getattr(legacy, 'RUNTIME_SETTINGS', {})
-    context = legacy.build_qwen_asr_context(media_path) if backend == 'api' else ''
+    language_repair = bool(getattr(owner, 'language_guard_repair', False))
+    if language_repair:
+        from .language_guard import VERSION
+        identity['context_policy'] = VERSION
+    context = legacy.build_qwen_asr_context(media_path) if backend == 'api' and not language_repair else ''
     key = hashlib.sha256(json.dumps([identity, settings, owner.asr_endpoint_snapshot, context],
         ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
     path = Path(cache_context['cache_dir'])/'speech-recovery'/f'{key}.json'
@@ -777,6 +781,7 @@ def audit_primary(payload, speech, context, *, duration, legacy, runner=None, so
     refused = [(g['start'], g['end']) for g in payload.get('cloud_gaps', [])]
     state = make_state(speech, payload.get('segments', []), duration=duration, excluded=refused,
         windows=execution.get('windows', []), identity=context.media_identity.get('fingerprint', context.job_id), source=source)
+    state['provider_empty_windows'] = copy.deepcopy(payload.get('provider_empty_windows') or [])
     # Service refusals have already had their permitted local fallback. Keep
     # their category and outcome, never send them back through remote retries.
     state['gaps'].extend(copy.deepcopy(payload.get('speech_gap_results', [])))
@@ -826,6 +831,9 @@ def audit_primary(payload, speech, context, *, duration, legacy, runner=None, so
     for gap in state['gaps']:
         if gap.get('service_gaps'):
             continue
+        empty = [row for row in state['provider_empty_windows'] if _overlaps((gap['start'], gap['end']), (row['start'], row['end']))]
+        if empty:
+            gap.update(provider_empty_windows=empty, reason='provider_no_words_with_speech_evidence')
         if any(_overlaps((gap['start'], gap['end']), span) for span in text_ranges(raw_rows)):
             gap.update(first_missing_stage='window_merge', reason='parsed_text_lost_in_merge',
                        recovery_source='retained_upstream', status='needs_confirmation')
@@ -873,6 +881,23 @@ def finalize(context, cues, legacy):
         return
     checkpoint(state, 'final_cues', cues, excluded=state.get('excluded_ranges', []))
     rows = pending(classify_state(state))
+    speech = subtract(state.get('speech_ranges', []), state.get('excluded_ranges', []))
+    uncovered = subtract(speech, text_ranges(cues))
+    speech_seconds = sum(end-start for start, end in speech)
+    uncovered_seconds = sum(end-start for start, end in uncovered)
+    state['coverage_metrics'] = dict(
+        evidence_type='voice_activity_intersected_with_subtitle_times',
+        speech_seconds=round(speech_seconds, 3),
+        covered_speech_seconds=round(speech_seconds - uncovered_seconds, 3),
+        timing_coverage_rate=round(1. - uncovered_seconds / speech_seconds, 6) if speech_seconds else None,
+        longest_uncovered_seconds=round(max((end-start for start, end in uncovered), default=0.), 3),
+        uncovered_ranges=[list(span) for span in uncovered],
+        supported_pending=sum(row['classification'] == 'supported_speech_gap' for row in rows),
+        failed_pending=sum(row['classification'] == 'processing_failure' for row in rows),
+        uncertain_pending=sum(row['classification'] == 'uncertain_speech' for row in rows),
+        recovered_gaps=sum(gap.get('status') == 'recovered' for gap in state.get('gaps', [])),
+        annotated_word_omission_rate=None, annotated_utterance_omission_rate=None,
+    )
     tail = tail_gaps(rows, state.get('duration'))
     if tail:
         # 2026-11-19: speech running to the end of the media with no line

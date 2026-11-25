@@ -3559,7 +3559,7 @@ class StudioStyleController:
         layer_control = getattr(page, 'style_layer', None)
         layer = layer_control.currentData() if layer_control is not None else 'original'
         # Appearance mixed markers do not need each cue's position/scale.
-        from .caption_layer_transform import layer_values
+        from .caption_layer_transform import LAYER_KEY, layer_values
         names = {'font_family':'字体', 'font_size':'字号', 'primary_color':'颜色', 'bold':'粗体',
                  'italic':'斜体', 'underline':'下划线', 'outline_width':'描边', 'outline_color':'描边色',
                  'shadow':'阴影', 'border_style':'背景', 'back_color':'背景色', 'alignment':'对齐', 'spacing':'字距'}
@@ -3568,17 +3568,19 @@ class StudioStyleController:
         cached=getattr(self,'_mixed_value_cache',{})
         values_by_field=cached.get(key)
         if values_by_field is None:
-            faces={};styles=[];recipes=[]
+            faces = {}
             for cue in cues:
                 for language in (('original','translation') if layer=='group' else (layer,)):
                     if language=='translation' and not self.session.project.generation_metadata.get('translations',{}).get(cue.id):continue
                     face_key=(cue.style_id,cue.base_preset_id,cue.speaker_id,
-                        json.dumps(cue.appearance_override,sort_keys=True,ensure_ascii=False),
-                        cue.transform.get('font_size'),json.dumps(layer_values(cue,language),sort_keys=True),language)
+                        json.dumps(cue.appearance_override,sort_keys=True,ensure_ascii=False) if cue.appearance_override else '',
+                        cue.transform.get('font_size'),json.dumps(layer_values(cue,language),sort_keys=True)
+                        if cue.transform.get(LAYER_KEY) else '',language)
                     if face_key not in faces:
                         face=effective_layer_style(self.session.project,cue,language)
                         faces[face_key]=(face,effective_layer_recipe(self.session.project,cue,language,style=face))
-                    styles.append(faces[face_key][0]);recipes.append(faces[face_key][1])
+            styles = tuple(face for face, _ in faces.values())
+            recipes = tuple(recipe for _, recipe in faces.values())
             values_by_field={field:{str(getattr(item,field)) for item in styles} for field in names}
             for field,title,values in (
                 ('fill_spec','填充',[r.colors.get('fill')for r in recipes]),
@@ -3594,7 +3596,7 @@ class StudioStyleController:
         if summary is not None and mixed:
             from ..i18n import join_text
             from ..studio.presentation_scope import describe_scope
-            summary.setText(describe_scope(page, capture_scope(page)) + ' · ' +
+            summary.setText(describe_scope(page, scope) + ' · ' +
                 tr('混合值：{fields}', fields=join_text([tr(title) for title in mixed])))
         for attribute, control in (("font_size", page.style_font_size), ("spacing", page.style_spacing)):
             values = values_by_field[attribute]

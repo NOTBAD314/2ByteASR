@@ -138,9 +138,9 @@ def test_japanese_answer_cuts_at_the_copied_bars(task, monkeypatch):
     grouping, records = answer_with(monkeypatch, body)
     with task("ja"):
         result = call(grouping, [japanese_segment(text)])
-    # This complete20-character sentence now fits26/7. Bars are parsed,
-    # then the shared local phrase rules can retain the whole sentence.
-    assert result.validated and [cue.text for cue in result] == [text]
+    # 2026-11-25: the model's legal phrase-edge cuts stand (lines are accepted one
+    # by one); local rules no longer join them back into one line.
+    assert result.validated and [cue.text for cue in result] == ['本当だよ', '本当に坂本が', '入れろって言ったから']
     trace=next(kw for event,kw in records if event=='grouping_trace')
     assert trace['model_boundaries']==[4,10,20]
 
@@ -159,7 +159,7 @@ def test_bars_win_only_for_the_japanese_prompt(task, monkeypatch):
     records.clear()
     with task("ja"):
         result = call(grouping, [japanese_segment("本当だよ本当に坂本が入れろって言ったから")])
-    assert result.validated and [cue.text for cue in result] == ['本当だよ本当に坂本が入れろって言ったから']
+    assert result.validated and [cue.text for cue in result] == ['本当だよ', '本当に坂本が入れろって言ったから']
 
 
 def test_japanese_copy_that_changes_content_is_rejected(task, monkeypatch):
@@ -209,4 +209,4 @@ def test_editor_saves_only_changed_guidance(monkeypatch):
     assert saved and saved[-1]['grouping_prompts']['zh']=='' and saved[-1]['grouping_prompts']['ja']=='句末和长停顿处换句。'
     assert settings["grouping_prompts"]["ja"] == "句末和长停顿处换句。"
     head, reminder, tail = gr.fixed_grouping_prompt_parts("ja")
-    assert 'cue maximum 26' in reminder and 'duration maximum 7s' in reminder and head.startswith('你负责日语')
+    assert 'cue maximum 26' in reminder and 'duration maximum 7s' in reminder and head.startswith('你是一名专业的日语影视字幕编辑')

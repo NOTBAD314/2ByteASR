@@ -5,12 +5,34 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
 
+import psutil
+
 ROOT=Path(__file__).resolve().parents[1]
+
+
+def stop_test_process(child):
+    """Bound cleanup even when Windows taskkill cannot open a test process."""
+    descendants = []
+    try:
+        descendants = psutil.Process(child.pid).children(recursive=True)
+    except psutil.Error:
+        pass
+    for process in reversed(descendants):
+        try:
+            process.kill()
+        except psutil.Error:
+            continue
+    try:
+        child.kill()
+        return child.wait(timeout=8)
+    except (OSError, subprocess.TimeoutExpired):
+        return child.poll()
 
 
 def main():
@@ -43,13 +65,20 @@ def main():
         discovered=files if args.files else sorted(p.relative_to(ROOT).as_posix() for p in (ROOT/'tests').glob('test_*.py'))
         inputs=sorted({file.split('::',1)[0] for file in discovered}
             |{path.relative_to(ROOT).as_posix() for path in (ROOT/'tests').rglob('*.py')}
+            |{path.relative_to(ROOT).as_posix() for path in (ROOT/'tests'/'fixtures').rglob('*') if path.is_file()}
             |{'scripts/run_test_suite.py','scripts/isolated_pytest.py'})
         for name in inputs:
             digest.update(name.encode('utf8'));digest.update(b'\0')
             path=ROOT/name
             digest.update(hashlib.sha256(path.read_bytes()).digest() if path.is_file() else b'MISSING')
-        head=subprocess.run(['git','rev-parse','HEAD'],cwd=ROOT,capture_output=True,text=True,creationflags=flags)
-        return dict(head=head.stdout.strip(),source_sha256=source_sha,source_inputs=source_count,
+        if (ROOT/'.git').exists():
+            head=subprocess.run(['git','rev-parse','HEAD'],cwd=ROOT,capture_output=True,text=True,creationflags=flags).stdout.strip()
+        else:
+            marker=ROOT/'frozen-commit.txt'
+            head=marker.read_text('ascii').strip() if marker.is_file() else ''
+        if not re.fullmatch(r'[0-9a-f]{40}', head):
+            head=''
+        return dict(head=head,source_sha256=source_sha,source_inputs=source_count,
                     test_inputs_sha256=digest.hexdigest(),test_files=len(files),python=sys.executable)
     result['identity_start']=identity()
     def save():
@@ -74,16 +103,26 @@ def main():
             try:code=child.wait(file_timeout);timeout=False
             except subprocess.TimeoutExpired:
                 timeout=True
-                if os.name=='nt':subprocess.run(['taskkill','/pid',str(child.pid),'/t','/f'],capture_output=True,creationflags=flags)
-                else:child.kill()
-                code=child.wait()
+                stop_test_process(child)
+                code=124
         counts=dict(passed=0,failed=0,errors=0,skipped=0)
+        receipt_error = ''
         if xml.exists():
-            tree=ET.parse(xml)
-            for case in tree.findall('.//testcase'):
-                key='failed' if case.find('failure') is not None else 'errors' if case.find('error') is not None else 'skipped' if case.find('skipped') is not None else 'passed'
-                counts[key]+=1
+            try:
+                tree=ET.parse(xml)
+            except (OSError, ET.ParseError) as exc:
+                receipt_error = type(exc).__name__
+            else:
+                for case in tree.findall('.//testcase'):
+                    key='failed' if case.find('failure') is not None else 'errors' if case.find('error') is not None else 'skipped' if case.find('skipped') is not None else 'passed'
+                    counts[key]+=1
+        elif not code:
+            receipt_error = 'MissingJUnit'
+        if receipt_error and not code:
+            code = 125
         row=dict(file=file,artifact_dir=str(folder),exit_code=code,timed_out=timeout,seconds=round(time.monotonic()-began,3),counts=counts)
+        if receipt_error:
+            row['receipt_error'] = receipt_error
         result['files'].append(row)
         for key,value in counts.items():result['counts'][key]+=value
         save();print(json.dumps(dict(progress=f'{index+1}/{len(files)}',**row)),flush=True)
