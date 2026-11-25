@@ -1,0 +1,4 @@
+{
+  "zh": "· 日语本地识别：可选 Haas，识别时同时生成词级时间。\n· 在线字幕重建：比较网站原字幕与按整句整理的字幕，并可另存。\n· 多语断句：日语减少碎句，英语和韩语对过长或不合适的段落局部重试。\n· 时间轴精修：可循环试听、重识别选区，再确认要采用的文字。\n· 长工程播放与保存：改善 FLV 寻址，短暂文件占用时自动重试保存。",
+  "en": "Use Haas for local Japanese recognition with word timings. Compare original and reconstructed online captions. Japanese, English and Korean line breaks are more reliable. Loop a selection, rerun recognition and review text before applying it. Long FLV projects handle seeks and brief file locks better."
+}

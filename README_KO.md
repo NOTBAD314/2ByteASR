@@ -8,7 +8,7 @@
 
 Windows와 Mac에서 쓸 수 있습니다. NVIDIA GPU가 있으면 전부 오프라인으로 처리할 수 있습니다.
 
-[1.1.4 다운로드](#다운로드) · [기능](#기능) · [자주 묻는 질문](#자주-묻는-질문) · [사용 가이드](docs/product-guide.ko.md)
+[1.1.5 다운로드](#다운로드) · [기능](#기능) · [자주 묻는 질문](#자주-묻는-질문) · [사용 가이드](docs/product-guide.ko.md)
 
 [English](README.md) · [中文](README_ZH.md) · [日本語](README_JA.md) · **한국어**
 
@@ -102,14 +102,14 @@ YouTube, Bilibili 영상을 자막과 함께 가져옵니다.
 
 ## 다운로드
 
-현재 버전은 **Windows 1.1.4** (2026-11-23) 및 **Apple Silicon Mac 1.1.2**입니다.
+현재 버전은 **Windows 1.1.5** (2026-11-25) 및 **Apple Silicon Mac 1.1.2**입니다.
 
 | 환경 | 다운로드 |
 | --- | --- |
-| Windows 10 1809 이상, 64비트 | [2ByteASR-Setup-1.1.4.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.4/2ByteASR-Setup-1.1.4.exe), 약 1168MB |
+| Windows 10 1809 이상, 64비트 | [2ByteASR-Setup-1.1.5.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.5/2ByteASR-Setup-1.1.5.exe), 약 1172MB |
 | Apple Silicon Mac, macOS14 이상 | [2ByteASR-1.1.2-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.2/2ByteASR-1.1.2-macos-arm64-Setup.dmg), 약 592MB, **실험판**. Intel Mac 미지원 |
 
-작업을 저장하고 종료한 뒤 기존 설치 위에 설치하세요. Windows 0.6.5 이상은 앱 내 업데이트도 지원하며, Mac은 Applications의 앱을 교체하세요. [릴리스 노트](https://github.com/NOTBAD314/2ByteASR/releases/tag/v1.1.4) · [GitCode 미러](https://gitcode.com/Notbad314/2ByteASR/releases/tag/v1.1.4) · [설치 안내](docs/product-guide.ko.md). Windows Authenticode 서명과 Apple 공증은 없습니다. Source, 라이선스, 구성요소 및 서명 첨부는 소스 제공과 검증, 앱 내 업데이트용입니다.
+작업을 저장하고 종료한 뒤 기존 설치 위에 설치하세요. Windows 0.6.5 이상은 앱 내 업데이트도 지원하며, Mac은 Applications의 앱을 교체하세요. [릴리스 노트](https://github.com/NOTBAD314/2ByteASR/releases/tag/v1.1.5) · [GitCode 미러](https://gitcode.com/Notbad314/2ByteASR/releases/tag/v1.1.5) · [설치 안내](docs/product-guide.ko.md). Windows Authenticode 서명과 Apple 공증은 없습니다. Source, 라이선스, 구성요소 및 서명 첨부는 소스 제공과 검증, 앱 내 업데이트용입니다.
 
 Linux용 [Docker 0.8.1](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1)도 사용할 수 있습니다.
 
