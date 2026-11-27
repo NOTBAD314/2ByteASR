@@ -112,20 +112,21 @@ def start(window, output):
                     title=ai.findChild(QLabel,'aiDialogTitle');face=QFontInfo(title.font())
                     check('AI title resolves the bundled Heavy face','heavy' in (face.family()+' '+face.styleName()).casefold(),
                           dict(family=face.family(),style=face.styleName(),weight=int(face.weight())))
-                    import ctypes
-                    from ctypes import wintypes
-                    hwnd=wintypes.HWND(int(ai.winId()))
-                    status=getattr(ai,'_native_transitions_status',None)
-                    check('native AI dialog accepts disabled Windows transitions',status==0,dict(set_status=status,hwnd=hwnd.value))
-                    from ..design.popup_corners import _windows_supports_rounding
-                    supported=_windows_supports_rounding();applied=getattr(ai,'_native_rounding_applied',False)
-                    has_region=getattr(ai,'_rounded_region',None) is not None
-                    region_choice=os.environ.get('TWOBYTEASR_ROUND_REGION','')
-                    expects_region=region_choice=='1' or (region_choice!='0' and not supported)
-                    check('native corner request follows Windows capability',
-                          applied==(supported or expects_region) and has_region==expects_region,
-                          dict(supported=supported,applied=applied,has_region=has_region,
-                               windows_build=sys.getwindowsversion().build))
+                    if os.name == 'nt':
+                        import ctypes
+                        from ctypes import wintypes
+                        hwnd=wintypes.HWND(int(ai.winId()))
+                        status=getattr(ai,'_native_transitions_status',None)
+                        check('native AI dialog accepts disabled Windows transitions',status==0,dict(set_status=status,hwnd=hwnd.value))
+                        from ..design.popup_corners import _windows_supports_rounding
+                        supported=_windows_supports_rounding();applied=getattr(ai,'_native_rounding_applied',False)
+                        has_region=getattr(ai,'_rounded_region',None) is not None
+                        region_choice=os.environ.get('TWOBYTEASR_ROUND_REGION','')
+                        expects_region=region_choice=='1' or (region_choice!='0' and not supported)
+                        check('native corner request follows Windows capability',
+                              applied==(supported or expects_region) and has_region==expects_region,
+                              dict(supported=supported,applied=applied,has_region=has_region,
+                                   windows_build=sys.getwindowsversion().build))
                     shot(ai,theme+'-ai-settings-'+str(enable));ai.reject();settle(.15)
                     check('AI settings cancel restores the prior off choice',not window.ai_grouping.isChecked())
                 window.ai_grouping.setChecked(saved_grouping)

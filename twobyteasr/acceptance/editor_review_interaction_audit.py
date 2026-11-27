@@ -123,7 +123,10 @@ def start(window, output):
                 if page._review_mode:page._set_review_mode(False)
             # The real modal opens from the normal E editor shortcut.
             from ..studio.studio_find_replace import FindReplaceDialog
-            for key in (Qt.Key_F, Qt.Key_H):
+            from PySide6.QtGui import QKeySequence
+            from ..studio.shortcut_registry import platform_defaults
+            for shortcut in ('find', 'find_replace'):
+                keys = QKeySequence(platform_defaults()[shortcut])[0]
                 editor = open_editor(page)
                 select(editor, len(editor.toPlainText()))
                 editor.insertPlainText('新')
@@ -140,7 +143,7 @@ def start(window, output):
                         focus=dialog.focusWidget() is dialog.replace_edit,
                         committed=page.project.cues[0].text,
                         draft_closed=page._caption_draft is None,
-                        screenshot=dialog.grab().save(str(output/f'editor-find-{int(key)}.png')),
+                        screenshot=dialog.grab().save(str(output/f'editor-{shortcut}.png')),
                     )
                     dialog.reject()
 
@@ -149,14 +152,14 @@ def start(window, output):
                 poll.timeout.connect(read_modal)
                 poll.start()
                 try:
-                    QTest.keyClick(editor, key, Qt.ControlModifier)
+                    QTest.keyClick(editor, keys.key(), keys.keyboardModifiers())
                     wait(lambda: bool(modal_result), seconds=8)
-                    check(f'{key} opens find with selection', modal_result['find'] == before[:2])
-                    check(f'{key} focuses empty replacement', modal_result['focus'] and not modal_result['replacement'])
-                    check(f'{key} commits and closes draft', modal_result['committed'] == before+'新' and modal_result['draft_closed'])
-                    check(f'{key} captured real modal', modal_result['screenshot'])
+                    check(f'{shortcut} opens find with selection', modal_result['find'] == before[:2])
+                    check(f'{shortcut} focuses empty replacement', modal_result['focus'] and not modal_result['replacement'])
+                    check(f'{shortcut} commits and closes draft', modal_result['committed'] == before+'新' and modal_result['draft_closed'])
+                    check(f'{shortcut} captured real modal', modal_result['screenshot'])
                     page.undo_stack.undo()
-                    check(f'{key} committed draft undoes once', page.project.cues[0].text == before)
+                    check(f'{shortcut} committed draft undoes once', page.project.cues[0].text == before)
                 finally:
                     poll.stop()
             for trigger in ('enter','shift_e','button'):

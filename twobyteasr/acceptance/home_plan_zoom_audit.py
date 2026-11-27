@@ -168,7 +168,9 @@ def start(window, output: Path):
             aligned = 0
             for theme_name in ('warm', 'midnight'):
                 apply_theme(theme_name, app)
-                for zoom in (100, 150):
+                # Keep 100/150% cases. At the native CI desktop's maximum
+                # 1920x1080, 80% also provides a genuinely fully visible roomy case.
+                for zoom in ((80, 100, 150) if __import__('sys').platform=='darwin' else (100,150)):
                     ui_zoom.set_zoom_percent(zoom)
                     ui_zoom.apply_to(window)
                     for width, height in ((1320, 850), (2560, 1440), (1100, 740)):

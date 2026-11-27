@@ -6,7 +6,37 @@ from pathlib import Path
 import pytest
 from scripts.macos_media_contract import (digest,keg_version,formula_name,verify_required_filters,verify_media_formula,
     verify_keg_receipt,verify_binary_evidence,load_verified_tools)
-from scripts.macos_install_media import install_action,isolated_core_checkout
+from scripts.macos_install_media import install_action,isolated_core_checkout,pour_checked_bottle
+
+
+def test_fixed_media_closure_rejects_an_intersection_that_omits_private_dependencies():
+    from scripts.macos_install_media import verify_dependency_closure
+    roots = [dict(name='ffmpeg-full', dependencies=['shared', 'ffmpeg-only']),
+             dict(name='mpv', dependencies=['shared', 'mpv-only'])]
+    with pytest.raises(RuntimeError, match='ffmpeg-only'):
+        verify_dependency_closure(roots + [dict(name='shared')])
+    verify_dependency_closure(roots + [dict(name=n) for n in ['shared', 'ffmpeg-only', 'mpv-only']])
+    with pytest.raises(RuntimeError, match='mpv-only -> transitive'):
+        verify_dependency_closure(roots + [dict(name=n, dependencies=['transitive'] if n=='mpv-only' else [])
+                                          for n in ['shared', 'ffmpeg-only', 'mpv-only']])
+
+
+def test_dependency_archive_checks_the_locked_bytes_before_pour(tmp_path):
+    from scripts.macos_install_media import acquire_dependency_bottle
+    archive = tmp_path/'library--1.arm64_sonoma.bottle.tar.gz'
+    archive.write_bytes(b'locked Sonoma bottle')
+    expected = dict(sha256=digest(archive), url='https://example.invalid/locked-bottle')
+    formula = dict(name='library', bottle=dict(stable=dict(files={'arm64_sonoma': expected})))
+    calls = []
+    def command(args):
+        calls.append(args)
+        return str(archive) if '--cache' in args else ''
+    record = acquire_dependency_bottle('/owned/brew', formula, 'arm64_sonoma', command)
+    assert record['path'] == str(archive) and record['sha256'] == expected['sha256']
+    assert all('--bottle-tag=arm64_sonoma' in args for args in calls)
+    archive.write_bytes(b'a different host bottle')
+    with pytest.raises(RuntimeError, match='dependency bottle digest differs'):
+        acquire_dependency_bottle('/owned/brew', formula, 'arm64_sonoma', command)
 
 LOCK=json.loads((Path(__file__).resolve().parents[1]/'packaging/macos/native-dependencies.lock.json').read_text('utf8'))
 
@@ -200,3 +230,24 @@ def test_runner_dirty_core_and_unrelated_kegs_are_preserved_after_installation(t
     assert not (runner/'ffmpeg.rb').exists()
     assert not (boundary/'runner-core-original').exists()
     assert unrelated.read_bytes()==b'preinstalled unrelated tool'
+
+
+@pytest.mark.parametrize("action,disposable_runner,removed,install_command", [
+    ("install", True, False, "install"),
+    ("reinstall", True, True, "install"),
+    ("reinstall", False, False, "reinstall"),
+])
+def test_local_bottle_uses_verified_path_and_only_replaces_selected_host_formula(
+        tmp_path, action, disposable_runner, removed, install_command):
+    archive = tmp_path / "hash--libpng--1.6.58.arm64_sonoma.bottle.tar.gz"
+    commands = []
+    def command(args, *, cwd=None):
+        commands.append((args, cwd))
+    pour_checked_bottle("brew", "libpng", action, archive, command,
+                        disposable_runner=disposable_runner)
+    expected = []
+    if removed:
+        expected.append((["brew", "uninstall", "--formula", "--ignore-dependencies",
+                          "--force", "libpng"], None))
+    expected.append((["brew", install_command, "--force-bottle", archive.name], archive.parent))
+    assert commands == expected

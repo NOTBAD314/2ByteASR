@@ -15,6 +15,7 @@ import pytest
 
 from scripts import macos_package_dmg as dmg
 from scripts import verify_blank_project_macos as blank
+from scripts import macos_edit_save_smoke as edit_save
 
 
 def built_app(root):
@@ -29,7 +30,7 @@ def built_app(root):
     return app
 
 
-@pytest.mark.parametrize('tool', [dmg, blank])
+@pytest.mark.parametrize('tool', [dmg, blank, edit_save])
 def test_non_native_host_rejects_without_creating_deliverable(tmp_path, monkeypatch, tool):
     monkeypatch.setattr(sys, 'platform', 'win32')
     output = tmp_path/'tmp/not-created'

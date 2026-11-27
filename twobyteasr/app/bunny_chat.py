@@ -2121,6 +2121,9 @@ class BunnyChat(QWidget):
             label = item.label if item.kind == 'text' else item.name
             chip = QPushButton()
             chip.setObjectName('bunnyAttach')
+            # Two equal grid columns own the width. The language pass must not
+            # pin Cocoa's wider text hint and push this chip over its neighbour.
+            chip.setProperty('flexibleWidth', True)
             chip.setCursor(Qt.CursorShape.PointingHandCursor)
             chip.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             chip.setStyleSheet(self.sheet)

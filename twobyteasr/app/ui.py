@@ -13855,7 +13855,8 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 if prepared is not None:
                     self._pending_update = prepared
                 self.close()
-            return guard is None or guard.confirm('退出应用', on_saved=resume_close)
+            on_saved = self.close if sys.platform == 'darwin' else resume_close
+            return guard is None or guard.confirm('退出应用', on_saved=on_saved)
 
     def _finish_repair_close(self):
         self._repair_close_pending = False

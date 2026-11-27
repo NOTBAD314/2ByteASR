@@ -90,7 +90,8 @@ def run(window,output):
         check('fader down lowers preview',fader.value()<before and page._gain_preview_values.get('A2')==fader.value()
               and page.undo_stack.count()==count,(before,fader.value(),page._gain_preview_values))
         dialog.grab().save(str(output/'02-track-volume.png'))
-        dialog.reject();settle(.2);check('cancel restores track',track_gain_db(project,'A2')==0 and not page._gain_preview_values)
+        dialog.reject();wait(lambda:getattr(page,'_track_gain_dialog',None) is None)
+        check('cancel restores track',track_gain_db(project,'A2')==0 and not page._gain_preview_values)
         # Multiple real strips share one preview bus and one history command.
         show_track_gain(page,'A2');settle(.2);dialog=page._track_gain_dialog
         def fader_drag(key,offset):
@@ -104,7 +105,8 @@ def run(window,output):
         QTest.keyClick(f,Qt.Key_Escape);QTest.mouseRelease(f,Qt.LeftButton,Qt.NoModifier,a+QPoint(0,-20));settle(.1)
         check('fader Esc restores pending value',f.value()==start and page._gain_preview_values==values)
         dialog.grab().save(str(output/'02b-multi-track-volume.png'))
-        QTest.mouseClick(dialog.buttons.button(QDialogButtonBox.Ok),Qt.LeftButton);settle(.2)
+        QTest.mouseClick(dialog.buttons.button(QDialogButtonBox.Ok),Qt.LeftButton)
+        wait(lambda:getattr(page,'_track_gain_dialog',None) is None)
         check('multi-track apply is one undo',page.undo_stack.count()==count+1 and all(track_gain_db(project,k)==v for k,v in values.items()))
         page.undo_stack.undo();check('multi-track undo restores both',track_gain_db(project,'A1')==0 and track_gain_db(project,'A2')==0)
         page.undo_stack.redo();check('multi-track redo restores both',all(track_gain_db(project,k)==v for k,v in values.items()))
@@ -115,7 +117,8 @@ def run(window,output):
         spin=dialog.findChild(__import__('PySide6.QtWidgets',fromlist=['QDoubleSpinBox']).QDoubleSpinBox,'trackGainDb')
         editor=spin.lineEdit();editor.setFocus();spin.selectAll()
         QTest.keyClicks(editor,'3.5');QTest.keyClick(editor,Qt.Key_Tab);settle(.1)
-        QTest.mouseClick(dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.Ok),Qt.LeftButton);settle(.3)
+        QTest.mouseClick(dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.Ok),Qt.LeftButton)
+        wait(lambda:getattr(page,'_track_gain_dialog',None) is None)
         check('apply once',track_gain_db(project,'A2')==3.5 and page.undo_stack.count()==count+1)
         check('other lane untouched',track_gain_db(project,'A1')==0)
         # Whole-track vertical line; other clip positions and playhead stay fixed.
