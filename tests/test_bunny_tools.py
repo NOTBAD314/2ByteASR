@@ -644,20 +644,24 @@ def test_ai_fixes_spend_the_users_key_only_with_a_click_unless_allowed(app, stud
     class Running:
         def isRunning(self):
             return True
+    def dispatch(**kwargs):
+        started.append(kwargs)
+        page._refine_worker = Running()
+        return 'qa-refine-task'
+
     monkeypatch.setattr(llm_config, 'text_ai_key_missing', lambda settings, stage: False)
-    monkeypatch.setattr(page, 'run_sentence_refine',
-                        lambda **kw: started.append(kw) or setattr(page, '_refine_worker', Running()))
+    monkeypatch.setattr(page, 'run_sentence_refine', dispatch)
     ask = dict(level='ask', read_subtitles=True, read_diagnostics=True, remember=True, allow_paid=True)
     waiting = run_turn(window, [('ai_refine', {'scope': 'failed'})], ask)
     assert waiting.pending and not started                              # 修改先问我: a click first, even if allowed
     auto_no = run_turn(window, [('ai_refine', {'scope': 'failed'})], dict(ask, level='auto', allow_paid=False))
     assert auto_no.pending and not started                              # paid work not allowed to run directly
     confirmed = run_turn(window, waiting.pending, ask, confirmed=True)
-    assert '成功' in confirmed.receipts[0] and '2 条' in confirmed.receipts[0]
+    assert '已派发' in confirmed.receipts[0] and 'qa-refine-task' in confirmed.receipts[0]
     assert started == [{'whole_project': False, 'retry_failed': True}]
     page._refine_worker = None
     direct = run_turn(window, [('ai_refine', {'scope': 'all'})], dict(ask, level='auto'))
-    assert '成功' in direct.receipts[0] and started[-1] == {'whole_project': True, 'retry_failed': False}
+    assert '已派发' in direct.receipts[0] and started[-1] == {'whole_project': True, 'retry_failed': False}
     page._refine_worker = None
     page.project.studio_state['ai_sentence_refine'] = {}
     nothing = run_turn(window, [('ai_refine', {'scope': 'failed'})])

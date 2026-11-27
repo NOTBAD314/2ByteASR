@@ -322,9 +322,8 @@ def test_workbench_refine_retries_bad_format_with_same_mode(monkeypatch):
     outcome = refine_cues_with_llm([StudioCue('a', 0, 1000, '当前句')], runtime_settings={'models': {'x': 1}})
     assert len(calls) >= 2 and all(thinking is False for thinking in calls)
     assert [a.cue_id for a in outcome.actions] == ['a']
-    assert outcome.results['a']['escalation']['outcome'] == 'succeeded'
-    assert outcome.escalation == {'thinking': 'configured_mode', 'ranges': 1, 'succeeded': 1, 'failed': 0}
-    assert outcome.requests[-1]['thinking_escalation'] == 'configured_mode'
+    assert outcome.results['a']['status'] == 'validated'
+    assert 'escalation' not in outcome.results['a']
 
 
 def test_workbench_refine_unknown_relay_is_unchanged(monkeypatch):

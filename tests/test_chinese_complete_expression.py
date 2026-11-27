@@ -112,7 +112,7 @@ def test_raw_unicode_repetition_and_long_atom_conflict():
     cuts, issues = quality.repair([quality.total])
     assert ''.join(quality.index.pieces(cuts)) == text
     assert len(cuts) == 1 and not issues
-    atom = BoundaryQuality('SuperLongPlayerIdentifier')
+    atom = BoundaryQuality('SuperLongPlayerIdentifier' * 3)
     cuts, issues = atom.repair([atom.total])
     assert cuts == [atom.total]
     assert any(i['kind'] == 'length' for i in issues)
@@ -278,7 +278,7 @@ def test_merged_model_response_cannot_erase_independent_short_turns():
     assert [c.text for c in cues] == ['嗯', '不急', '等一下']
 
 
-def test_studio_api_failure_uses_same_local_policy_without_extra_requests(monkeypatch):
+def test_studio_api_failure_preserves_original_cues_without_extra_requests(monkeypatch):
     from twobyteasr.projects.studio_project import StudioCue, SubtitleProject, StudioMedia
     from twobyteasr.subtitle_rules.sentence_refine import refine_cues_with_llm
     cues = [StudioCue('a', 1000, 2000, '我们先走到前面'), StudioCue('b', 2180, 3200, '然后看一下情况')]
@@ -291,9 +291,9 @@ def test_studio_api_failure_uses_same_local_policy_without_extra_requests(monkey
     monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=fail))
     result = refine_cues_with_llm(cues, project=project, runtime_settings={'models': {'group_model': 'stub'}},
                                  boundary_only=True, max_attempts=1)
-    assert len(calls) == 1 and result.llm_status == 'completed'
-    assert result.actions[0].action == 'keep'
-    assert next(iter(result.results.values()))['local_fallback']
+    assert len(calls) == 1 and result.llm_status == 'failed'
+    assert not result.actions and result.failed_cue_ids == ['a', 'b']
+    assert [cue.text for cue in cues] == ['我们先走到前面', '然后看一下情况']
 
 
 def test_studio_long_source_windows_rejoin_in_their_original_coordinate_space(monkeypatch):

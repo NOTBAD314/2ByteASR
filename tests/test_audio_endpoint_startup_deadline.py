@@ -30,7 +30,8 @@ def test_slow_first_device_enumeration_keeps_the_same_endpoint(bridge, monkeypat
 
 
 def test_first_sync_still_has_a_finite_deadline(bridge, monkeypatch):
-    monkeypatch.setattr(audio_process.time, 'monotonic', lambda: 110.1)
+    deadline = bridge._sent_at + audio_process.COLD_OUTPUT_TIMEOUT_S
+    monkeypatch.setattr(audio_process.time, 'monotonic', lambda: deadline + .1)
     observations = []
     bridge.telemetry.connect(observations.append)
     bridge._check_health()

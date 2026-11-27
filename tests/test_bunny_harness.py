@@ -73,8 +73,9 @@ def test_list_read_and_write_new_files_only(folder):
     assert f'第 {limit + 1}–{limit + 1000} 字' in bunny_files.read_file('long.txt', start=limit)
     receipt = bunny_files.write_file('out.csv', '术语,分类\n派蒙,角色\n')
     assert '写好了' in receipt and (folder / 'out.csv').read_text(encoding='utf-8-sig').startswith('术语')
-    again = bunny_files.write_file('out.csv', 'x')
-    assert '新名字' in again and (folder / 'out (2).csv').exists()
+    with pytest.raises(ToolError, match='同名文件已有不同内容'):
+        bunny_files.write_file('out.csv', 'x')
+    assert not (folder / 'out (2).csv').exists()
     assert (folder / 'out.csv').read_text(encoding='utf-8-sig').startswith('术语')       # never overwritten
     for bad in (('run.exe', 'x'), ('../up.txt', 'x')):
         with pytest.raises(ToolError):
@@ -118,12 +119,14 @@ def test_term_tools_find_check_change_and_undo(library):
         TOOLS['change_terms'].run(window, {'library': '没有这个库', 'changes': [{'to': 'x'}]})
 
 
-def test_term_changes_always_wait_for_the_click(library):
+def test_direct_term_changes_wait_for_the_click_and_file_actions_follow_permission(library):
     from twobyteasr.app import bunny_permissions
     from twobyteasr.app.bunny_tools import TOOLS, pending_summary
     auto = dict(bunny_permissions.DEFAULTS, level='auto', allow_paid=True, folders=['x'])
-    for name in ('change_terms', 'import_terms_file', 'write_file'):
-        assert bunny_permissions.needs_confirmation(TOOLS[name], auto), name
+    assert bunny_permissions.needs_confirmation(TOOLS['change_terms'], auto)
+    for name in ('import_terms_file', 'write_file'):
+        assert not bunny_permissions.needs_confirmation(TOOLS[name], auto)
+        assert bunny_permissions.needs_confirmation(TOOLS[name], dict(auto, level='ask'))
     assert not bunny_permissions.needs_confirmation(TOOLS['web_search'], auto)
     assert '测试游戏' in pending_summary([('change_terms', {'library': '测试游戏', 'changes': [{}, {}]})])
 

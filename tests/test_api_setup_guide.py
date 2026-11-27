@@ -71,7 +71,8 @@ def test_guide_links_are_official_and_dated():
     for guide in catalog.ALL_GUIDES:
         for link in guide.links:
             assert official.match(link.url), link.url
-            assert link.checked == (guide.links[0].checked if guide.key == 'claude' else catalog.CHECKED)
+            assert link.checked == guide.links[0].checked
+            assert re.fullmatch(r'\d{4}-\d{2}-\d{2}', link.checked)
 
 
 class Host:

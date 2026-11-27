@@ -44,7 +44,7 @@ def native_host_problem() -> str:
 
 def input_paths(root: Path) -> list[Path]:
     selected=[]
-    trees=("twobyteasr","scripts","packaging","renderer","assets","licenses","lexicons","third_party","docs/design","installer")
+    trees=("twobyteasr","scripts","packaging","renderer","assets","licenses","lexicons","third_party","docs/design","docs/api-setup","installer")
     for directory in trees:
         parent=root/directory
         if not parent.exists(): continue

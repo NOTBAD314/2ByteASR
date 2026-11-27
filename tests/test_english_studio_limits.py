@@ -8,6 +8,11 @@ from twobyteasr.subtitle_rules.sentence_refine import refine_cues_with_llm
 from twobyteasr.subtitle_rules.sentence_refine_ranges import build_range_replacement
 
 SAMPLE = "And uh but I just also say you what I'm going to do here does require studio."
+MEASURED_SAMPLE = "I can't see beyond the tall tower. Then we moved to the training room."
+
+
+def sentence_break(text=MEASURED_SAMPLE):
+    return dict(action='split', split_after_chars=[text.index('.')])
 
 
 def project(text=SAMPLE, *, measured=True):
@@ -58,16 +63,17 @@ def test_boundaries(monkeypatch,size):
     if size<=40:
         assert len(calls)==1 and result.actions[0].action in {'keep','wrap'}
     else:
-        assert len(calls)==2 and result.actions[0].action=='split'
+        assert len(calls)==2 and result.llm_status=='failed' and not result.actions
+        assert p.cues[0].text == text
 
 
-def test_unchanged_ai_retries_then_exact_measured_split(monkeypatch):
-    p=project();result,calls=run(monkeypatch,p,[dict(action='keep')])
+def test_bad_keep_retries_and_applies_a_measured_split_from_the_model(monkeypatch):
+    p=project(MEASURED_SAMPLE);result,calls=run(monkeypatch,p,[dict(action='keep'),sentence_break()])
     assert len(calls)==2 and calls[1]['repair']['errors'][0]['category']=='constraint_conflict'
     assert calls[0]['cues'][0]['length_and_layout']['cue_max']==40
-    assert result.llm_status=='completed' and result.results['c132']['local_fallback']
+    assert result.llm_status=='completed' and not result.results['c132']['local_fallback']
     replacement=build_range_replacement(result.ranges[0], result.actions[0], p, set())
-    assert ''.join(c.text for c in replacement).replace('\n','')==SAMPLE
+    assert ''.join(c.text for c in replacement).replace('\n','')==MEASURED_SAMPLE
     assert all(measure(c.text,'en')<=40 for c in replacement)
     assert replacement[0].start_ms==321039 and replacement[-1].end_ms==326720
     measured={w['start_ms'] for w in p.asr_evidence['fixture']['words']}
@@ -82,39 +88,39 @@ def test_valid_ai_boundaries_retained(monkeypatch):
 
 
 def test_bad_inside_word_does_not_destroy_contraction(monkeypatch):
-    p=project();result,calls=run(monkeypatch,p,[dict(action='split',split_after_chars=[SAMPLE.index("I'm")])])
+    p=project(MEASURED_SAMPLE)
+    result,calls=run(monkeypatch,p,[dict(action='split',split_after_chars=[MEASURED_SAMPLE.index("can't") + 1]),sentence_break()])
     assert len(calls)==2
     replacement=build_range_replacement(result.ranges[0], result.actions[0], p, set())
-    assert any("I'm" in c.text for c in replacement)
+    assert any("can't" in c.text for c in replacement)
 
 
-def test_missing_timing_only_wraps_and_reports_pending(monkeypatch):
-    p=project(measured=False);result,calls=run(monkeypatch,p,[dict(action='keep')])
-    assert result.actions[0].action=='wrap' and result.actions[0].alignment_pending
-    replacement=build_range_replacement(result.ranges[0],result.actions[0],p,set())
-    assert len(replacement)==1 and replacement[0].text.replace('\n','')==SAMPLE
-    assert (replacement[0].start_ms,replacement[0].end_ms)==(321039,326720)
-    assert result.results['c132']['alignment_pending']
+def test_missing_timing_preserves_the_original_text_and_timing(monkeypatch):
+    p=project(MEASURED_SAMPLE, measured=False);result,calls=run(monkeypatch,p,[sentence_break()])
+    assert len(calls)==2 and result.llm_status=='failed' and not result.actions
+    assert (p.cues[0].text,p.cues[0].start_ms,p.cues[0].end_ms)==(MEASURED_SAMPLE,321039,326720)
+    assert result.results['c132']['category']=='time_mapping_error'
 
 
 def test_indivisible_url_fails_honestly(monkeypatch):
     p=project('https://example.com/'+('unbreakable'*9),measured=False)
     result,calls=run(monkeypatch,p,[dict(action='keep')])
     assert result.llm_status=='failed' and not result.actions
-    assert result.results['c132']['category']=='indivisible_overflow'
+    assert result.results['c132']['category']=='constraint_conflict'
+    assert '超过 40' in result.results['c132']['error']
 
 
 def test_clear_english_text_not_ui_or_legacy_cjk_language(monkeypatch):
-    p=project();p.generation_metadata['language']={'code':'zh','requested':'zh'}
-    result,calls=run(monkeypatch,p,[dict(action='keep')])
+    p=project(MEASURED_SAMPLE);p.generation_metadata['language']={'code':'zh','requested':'zh'}
+    result,calls=run(monkeypatch,p,[sentence_break()])
     assert calls[0]['cues'][0]['language_policy']['language']=='en'
     assert len(result.actions[0].split_after_chars)>0
 
 
 def test_preserve_authored_size_and_maximum_lines(monkeypatch):
-    p=project();p.styles[0].font_size=120
+    p=project(MEASURED_SAMPLE);p.styles[0].font_size=120
     original=p.styles[0].font_size
-    result,calls=run(monkeypatch,p,[dict(action='keep')])
+    result,calls=run(monkeypatch,p,[sentence_break()])
     assert p.styles[0].font_size==original
     replacement=build_range_replacement(result.ranges[0],result.actions[0],p,set())
     assert all(len(c.text.splitlines())<=2 for c in replacement)

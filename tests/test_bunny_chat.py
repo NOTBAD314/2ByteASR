@@ -505,9 +505,8 @@ def test_she_can_be_thrown_bounces_off_the_edges_and_comes_home(app, chat_env, m
     bunny_chat, window, _calls = chat_env
     _ready(monkeypatch, bunny_chat)
     from twobyteasr.app import bunny_puck
+    from twobyteasr.design import bunny_physics
     monkeypatch.setattr(bunny_puck, 'REST_BEFORE_HOME_MS', 50)
-    # Exercise the complete timer-to-glide return in bounded test time.
-    monkeypatch.setattr(bunny_puck, 'MAX_FLIGHT_S', 1.8)
     chat = bunny_chat.open_bunny_chat(window)
     chat.reveal_all()
     puck = chat.puck
@@ -522,7 +521,7 @@ def test_she_can_be_thrown_bounces_off_the_edges_and_comes_home(app, chat_env, m
     puck.velocity = QPointF(-3000, -1800)
     puck.started = puck.last = _time.perf_counter()
     puck.timer.start()
-    assert _until(app, lambda: puck.docked, seconds=4)
+    assert _until(app, lambda: puck.docked, seconds=bunny_physics.MAX_FLIGHT_S + 3)
     assert hits and set(hits) <= {'left', 'right', 'top', 'bottom'}
     assert chat.mascot.parent() is chat and chat.mascot_docked
     limits = puck.limits()

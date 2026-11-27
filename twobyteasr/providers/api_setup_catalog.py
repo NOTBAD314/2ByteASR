@@ -220,6 +220,22 @@ BAILIAN_ACCOUNT = StepText('account', lines=('用手机号注册阿里云账号�
 
 ASR_GUIDES = (
     ProviderGuide(
+        'qwen_audio_flash', 'asr', '阿里云百炼 · Qwen Audio Flash',
+        '通过百炼 HTTP 接口把音频片段转成文字。',
+        'qwen-audio-flash.zh-CN.md',
+        links=(Link('开通百炼并创建 API Key', 'https://help.aliyun.com/zh/model-studio/get-api-key', '2026-11-28'),
+               Link('Qwen Audio Flash 模型与计费', 'https://help.aliyun.com/zh/model-studio/qwen-audio-3-1-asr-flash', '2026-11-28'),
+               Link('Qwen Audio ASR HTTP 接口', 'https://help.aliyun.com/en/model-studio/qwen-audio-asr-http-api', '2026-11-28')),
+        fields=(Field('api_key', 'API Key', _KEY_HELP, secret=True),
+                Field('url', '服务地址', '已预填百炼的北京地域 HTTP 接口。Key 与地址应属于同一地域。',
+                      prefilled='https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+                      advanced=True)),
+        uploads='将音频片段随 HTTPS 请求发送给百炼。',
+        cost='以模型页和百炼账单为准。',
+        short_title='百炼 Qwen Audio Flash', site='阿里云百炼',
+        minutes=5, money='按用量计费', tag='短音频',
+    ),
+    ProviderGuide(
         'qwen_cloud_filetrans', 'asr', 'Qwen Cloud（Qwen 官方国际站）· 录音文件识别',
         '云端识别：文字与字/词级时间（Qwen-Audio-3.1 另有说话人），不需要显卡。'
         '音频默认交给服务商临时空间，不用建 OSS；也可以改用自己的 OSS（阿里云国际站）。',

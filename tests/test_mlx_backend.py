@@ -256,6 +256,7 @@ def test_workshop_cards_are_apple_silicon_only(monkeypatch):
     assert dict(cards['mlx_qwen3_asr_1_7b'].adapter_bindings)['primary'] == 'mlx_qwen3_asr_1_7b'
     page = SimpleNamespace(_async_status=False, runtime_settings={'models': {}}, _installed={'mlx_qwen3_asr_0_6b'}, _registry=None,
                            _active_download_dialog=lambda key: None)
+    page._active_haas_variant = lambda item: model_workshop.ModelWorkshopPage._active_haas_variant(page, item)
     compute = model_workshop.ModelWorkshopPage._compute_model_state
     monkeypatch.setattr(model_workshop, '_host_platform_tag', lambda: 'win32-x86_64')
     assert compute(page, cards['mlx_qwen3_asr_0_6b'], 'primary') == 'platform_unavailable'
