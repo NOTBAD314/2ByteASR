@@ -29,8 +29,13 @@ def validate_job_id(value):
     return value
 
 
-def media_identity_for_task(media_path, context=None, *, selection=None):
-    """Hash each source once per queue; stat checks catch later normal writes."""
+def media_identity_for_task(media_path, context=None, *, selection=None, progress=None):
+    """Hash each source once per queue; stat checks catch later normal writes.
+
+    ``progress(text)`` gets a line about every ten seconds while a large file
+    is read (2026-11-27: an hour of recording on a slow disk took minutes with
+    nothing on screen).
+    """
     path = Path(media_path).resolve()
     canonical = os.path.normcase(str(path))
     if selection is None and context is not None:
@@ -52,6 +57,9 @@ def media_identity_for_task(media_path, context=None, *, selection=None):
             return dict(prior)
         sha = hashlib.sha256()
         token = getattr(context, "cancellation_token", None)
+        import time
+        started = last_report = time.monotonic()
+        done = 0
         with path.open("rb") as stream:
             while True:
                 if token is not None:
@@ -60,6 +68,13 @@ def media_identity_for_task(media_path, context=None, *, selection=None):
                 if not chunk:
                     break
                 sha.update(chunk)
+                done += len(chunk)
+                now = time.monotonic()
+                if progress is not None and now - last_report >= 10.0:
+                    last_report = now
+                    share = int(100 * done / stat.st_size) if stat.st_size else 100
+                    progress(f"正在核对素材「{path.name}」{share}%（{done / 2**30:.1f} / {stat.st_size / 2**30:.1f} GB，"
+                             f"已用 {int(now - started)} 秒）")
         after = path.stat()
         if (stat.st_size, stat.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             raise RuntimeError(f"计算素材身份时文件已改变：{path}")

@@ -1,10 +1,4 @@
-"""2026-11-16: failed AI proofreading / grouping retried once, same model thinking one level higher.
-
-User: when AI proofreading or grouping falls back, collect the failures and ask the same AI again
-with a higher thinking level instead of going straight to local rules. Only format/truncation
-failures qualify; semantic rejections, a disabled switch, an unknown relay or too many failures
-send nothing extra.
-"""
+"""Targeted format/truncation retries preserve the configured reasoning mode."""
 import json
 from types import SimpleNamespace
 
@@ -39,7 +33,7 @@ def test_one_level_up_per_protocol(enabled, protocol, url, endpoint_protocol, ex
 
 def test_escalated_value_is_a_real_wire_parameter():
     controls, mode, _ = thinking_control('deepseek', 'https://api.deepseek.com/v1', 'max', 'deepseek')
-    assert controls == {'thinking': {'type': 'enabled'}, 'reasoning_effort': 'max'} and mode == 'enabled_max'
+    assert controls == {'thinking': {'type': 'enabled'}, 'reasoning_effort': 'max'} and mode == 'max'
     assert thinking_control('x', 'https://relay.example/v1', 'high', 'auto')[0] == {}
 
 
@@ -75,10 +69,10 @@ def test_anthropic_named_depth_becomes_effort(monkeypatch):
                         lambda endpoint, messages, **kw: seen.update(kw) or 'ok')
     client = SimpleNamespace(endpoint={}, provider_id='anthropic', model='claude', last_timings={},
                              _DESIGN_OPERATIONS=OpenAICompatibleProvider._DESIGN_OPERATIONS)
-    for thinking, effort in (('max', 'max'), ('high', 'high'), (False, 'low'), (True, None)):
+    for thinking in ('max', 'high', False, True):
         OpenAICompatibleProvider._complete_anthropic(client, [], max_tokens=10, timeout=1, cancel_check=None,
             stage='polished', operation=None, json_wanted=True, on_stream_event=None, enable_thinking=thinking)
-        assert seen['effort'] == effort and seen['enable_thinking'] == thinking
+        assert 'effort' not in seen and seen['enable_thinking'] == thinking
 
 
 # --- proofreading --------------------------------------------------------------------------------
@@ -100,8 +94,8 @@ def install(monkeypatch, answer):
     calls = []
 
     def complete(messages, **kwargs):
-        calls.append((ids_of(messages), kwargs.get('enable_thinking')))
-        return answer(messages, kwargs.get('enable_thinking'))
+        calls.append((ids_of(messages), kwargs.get('enable_thinking'), kwargs.get('max_tokens')))
+        return answer(messages, kwargs.get('max_tokens', 0) > 10000)
     monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',
                         lambda *a, **k: SimpleNamespace(complete=complete))
     monkeypatch.setattr('twobyteasr.providers.provider_input_budget.retry_delay', lambda *a: 0)
@@ -109,7 +103,7 @@ def install(monkeypatch, answer):
 
 
 def escalated(calls):
-    return [ids for ids, thinking in calls if thinking not in (False, None)]
+    return [ids for ids, _, max_tokens in calls if max_tokens and max_tokens > 10000]
 
 
 @pytest.fixture
@@ -125,18 +119,18 @@ def fallback_reviews(ctx, category='校对回退'):
     return [item for item in ctx.review_items if item.get('category') == category]
 
 
-def test_bad_json_batch_is_rescued_with_more_thinking(context, monkeypatch, observed):
+def test_bad_json_batch_is_rescued_without_extra_thinking(context, monkeypatch, observed):
     _, ctx, _ = context
     calls = install(monkeypatch, lambda messages, thinking:
-                    checked(messages) if thinking == 'high' or ids_of(messages) != [2] else 'not json')
+                    checked(messages) if thinking or ids_of(messages) != [2] else 'not json')
     rows = [cue(i, f'第{i}段普通解说') for i in range(1, 4)]
     result = polishing.polish_subtitles(rows, '提高思考重试')
     assert escalated(calls) == [[2]]
-    assert all(thinking is False for ids, thinking in calls if ids != [2] or thinking != 'high')
+    assert all(thinking is False for _, thinking, _ in calls)
     summary = ctx.polishing_summary
     assert summary['fallback_cues'] == 0 and summary['fallback_batches'] == 0
     receipt = next(row for row in result if row.segment_id == 2).caption_arbitration['terminology_polish']
-    assert receipt['escalation'] == {'thinking': 'high', 'outcome': 'succeeded', 'category': ''}
+    assert receipt['escalation'] == {'thinking': False, 'outcome': 'succeeded', 'category': ''}
     assert receipt['response_state'] != 'fallback'
     assert not fallback_reviews(ctx)
     done = [payload for name, payload in observed if name == 'ai_escalation_round' and payload.get('state') == 'completed']
@@ -204,7 +198,7 @@ def test_unknown_relay_gets_no_guessed_parameter(context, monkeypatch, observed)
 def test_escalated_cache_entry_is_separate(context, monkeypatch):
     _, ctx, cache = context
     calls = install(monkeypatch, lambda messages, thinking:
-                    checked(messages) if thinking == 'high' or ids_of(messages) != [2] else 'not json')
+                    checked(messages) if thinking or ids_of(messages) != [2] else 'not json')
     polishing.polish_subtitles([cue(i, f'第{i}段普通解说') for i in range(1, 4)], '缓存', cache_context=cache)
     first = len(escalated(calls))
     ctx.review_items.clear()
@@ -262,7 +256,7 @@ def test_matching_id_and_cue_id_is_one_reading():
 
 # --- grouping ------------------------------------------------------------------------------------
 
-def test_grouping_batch_rescued_by_thinking_drops_its_fallback_warning(context, monkeypatch, observed):
+def test_grouping_batch_rescued_with_same_mode_drops_fallback_warning(context, monkeypatch, observed):
     from twobyteasr.providers.asr_provider_snapshot import GroupedBatchResult
     from twobyteasr.subtitle_rules import grouping
     _, ctx, _ = context
@@ -274,7 +268,7 @@ def test_grouping_batch_rescued_by_thinking_drops_its_fallback_warning(context, 
             result = [grouping.individual_cue(segment) for segment in batch]
         thinking = kw['provider_snapshot'].enable_thinking
         calls.append(([row.segment_id for row in batch], thinking))
-        if thinking == 'high':
+        if len(calls) > 1:
             return GroupedBatchResult(result, origin='ai', validated=True)
         kw['batch_diagnostics']['fallback_reason'] = 'parse_failure'
         grouping.add_review_item(batch[0].start, '断句回退', 'fixture', batch[0].text, priority=3, severity='warning')
@@ -284,8 +278,8 @@ def test_grouping_batch_rescued_by_thinking_drops_its_fallback_warning(context, 
     rows = [SpeechSegment(i, i*2., i*2.+2, f'这一波第{i}次团战我们继续看看双方怎么处理', .9, [], speaker='S01')
             for i in range(1, 5)]
     result = grouping.group_subtitles(rows, use_ai=True, provider_snapshot=ctx.provider_snapshot)
-    assert [thinking for _, thinking in calls] == [False, 'high', 'high']
-    assert sorted(i for ids, thinking in calls if thinking == 'high' for i in ids) == [1, 2, 3, 4]
+    assert [thinking for _, thinking in calls] == [False, False, False]
+    assert sorted(i for ids, _ in calls[1:] for i in ids) == [1, 2, 3, 4]
     assert not fallback_reviews(ctx, '断句回退')
     assert ''.join(cue.text for cue in result) == ''.join(row.text for row in rows)
     done = [payload for name, payload in observed if name == 'ai_escalation_round' and payload.get('state') == 'completed']
@@ -312,25 +306,25 @@ def test_grouping_text_rewrite_is_not_resent(context, monkeypatch):
 
 # --- workbench AI segmentation -------------------------------------------------------------------
 
-def test_workbench_refine_retries_bad_format_with_more_thinking(monkeypatch):
+def test_workbench_refine_retries_bad_format_with_same_mode(monkeypatch):
     from twobyteasr.projects.studio_project import StudioCue
     from twobyteasr.subtitle_rules.sentence_refine import refine_cues_with_llm
     calls = []
 
     def complete(messages, **kw):
         calls.append(kw.get('enable_thinking'))
-        if kw.get('enable_thinking') == 'high':
+        if len(calls) > 1:
             return json.dumps({'results': [{'cue_id': 'a', 'action': 'keep'}]})
         return 'not json at all'
     provider = SimpleNamespace(complete=complete, provider_id='deepseek', model='deepseek-v4-pro',
                                endpoint={'base_url': 'https://api.deepseek.com/v1', 'protocol': 'openai_compatible_chat'})
     monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: provider)
     outcome = refine_cues_with_llm([StudioCue('a', 0, 1000, '当前句')], runtime_settings={'models': {'x': 1}})
-    assert calls.count('high') == 1 and calls[-1] == 'high'
+    assert len(calls) >= 2 and all(thinking is False for thinking in calls)
     assert [a.cue_id for a in outcome.actions] == ['a']
     assert outcome.results['a']['escalation']['outcome'] == 'succeeded'
-    assert outcome.escalation == {'thinking': 'high', 'ranges': 1, 'succeeded': 1, 'failed': 0}
-    assert outcome.requests[-1]['thinking_escalation'] == 'high'
+    assert outcome.escalation == {'thinking': 'configured_mode', 'ranges': 1, 'succeeded': 1, 'failed': 0}
+    assert outcome.requests[-1]['thinking_escalation'] == 'configured_mode'
 
 
 def test_workbench_refine_unknown_relay_is_unchanged(monkeypatch):

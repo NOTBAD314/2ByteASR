@@ -72,6 +72,8 @@ class StudioVideoFlowMixin:
 
     def _split_video_at_playhead(self) -> None:
         self._commit_playhead_edit('split')
+        from ..app.newbie_tasks import mark
+        mark('cut_video')
 
     def _commit_playhead_edit(self, action):
         if self.project is None:
@@ -229,6 +231,396 @@ class StudioVideoFlowMixin:
         self._autocut_player.setSource(QUrl.fromLocalFile(str(path)))
         self._autocut_player.play()
         bind_text(self.highlight_panel.autocut_status, '正在试听：原剪口两侧 → 短间隔 → 压缩后剪口。时间轴未应用。再次检测或切换工程会停止试听。')
+
+    # -------------------------------------------- AI 文稿粗剪（任务包 4）
+
+    def _rough_cut_bar(self):
+        panel = getattr(self, "highlight_panel", None)
+        return getattr(panel, "rough_cut_bar", None) if panel is not None else None
+
+    def _refresh_rough_cut_ui(self, cue_ids=None) -> None:
+        self._rough_cut_ranges_cache = None
+        bar = self._rough_cut_bar()
+        if bar is not None:
+            bar.refresh_from_project(self.project)
+        cue_model = getattr(self, "cue_model", None)
+        if cue_model is not None:
+            if cue_ids:
+                cue_model.refresh_cues(list(cue_ids))
+            elif cue_model.rowCount():
+                cue_model.dataChanged.emit(
+                    cue_model.index(0, 0),
+                    cue_model.index(cue_model.rowCount() - 1, cue_model.columnCount() - 1),
+                )
+        cue_table = getattr(self, "cue_table", None)
+        if cue_table is not None:
+            cue_table.viewport().update()
+
+    def _on_rough_cut_linked_toggled(self, enabled: bool) -> None:
+        project = self.project
+        if project is None:
+            return
+        from .ai_rough_cut import set_linked_video_cut_enabled
+
+        set_linked_video_cut_enabled(project, bool(enabled))
+        bar = self._rough_cut_bar()
+        if bar is not None:
+            bar.set_note("")
+            bar.refresh_from_project(project)
+
+    def _toggle_rough_cut_cue(self, cue_id: str, reason: str = "手动划除") -> None:
+        project = self.project
+        if project is None or not cue_id:
+            return
+        from .ai_rough_cut import toggle_cue_cut_mark
+
+        toggle_cue_cut_mark(project, str(cue_id), reason=reason)
+        self._refresh_rough_cut_ui([str(cue_id)])
+
+    def _run_ai_rough_cut(self, tightness: str = "tight") -> None:
+        project = self.project
+        bar = self._rough_cut_bar()
+        if project is None or bar is None:
+            return
+        from .ai_rough_cut import analyze_cues_with_ai, has_text_ai_key, merge_suggested_marks
+
+        settings = dict(getattr(self, "runtime_settings", {}) or {})
+        if not has_text_ai_key(settings):
+            bar.set_note(
+                tr("未配置文字 AI 密钥，请先在设置中填写；本地静音、只留高光和手动划除可直接用。"),
+                warn=True,
+            )
+            return
+
+        import copy
+
+        snapshot = copy.deepcopy(project)
+        request = begin_request(self, "rough_cut")
+        bar.set_busy(True, tr("正在用文字 AI 筛查重录废稿与水话…"))
+
+        class _RoughCutWorker(QThread):
+            finished_ok = Signal(object)
+            failed = Signal(str)
+            progress = Signal(str, int)
+
+            def run(self):
+                try:
+                    result = analyze_cues_with_ai(
+                        snapshot,
+                        runtime_settings=settings,
+                        tightness=tightness,
+                        cancel_check=lambda: request.is_cancelled,
+                        progress=self.progress.emit,
+                    )
+                    if not request.is_cancelled:
+                        self.finished_ok.emit(result)
+                except Exception as exc:  # noqa: BLE001
+                    self.failed.emit(" ".join(str(exc).split())[:180])
+
+        worker = _RoughCutWorker()
+
+        def _done(result) -> None:
+            if not current_request(self, "rough_cut", request):
+                return
+            self._rough_cut_request = None
+            bar.set_busy(False)
+            if result.missing_key:
+                bar.set_note(result.message, warn=True)
+                return
+            if result.suggestions:
+                added = merge_suggested_marks(self.project, result.suggestions)
+                self._refresh_rough_cut_ui(list(result.suggestions.keys()))
+                bar.set_note(
+                    tr("AI 标出 {count} 句待剪（已划删除线，未切画面）", count=len(result.suggestions))
+                    if added else tr("AI 分析完成，待剪标记无新增")
+                )
+            else:
+                bar.set_note(result.message or tr("未发现明显废稿或水话"), warn=bool(result.warnings))
+
+        def _fail(message: str) -> None:
+            if not current_request(self, "rough_cut", request):
+                return
+            self._rough_cut_request = None
+            bar.set_busy(False)
+            bar.set_note(tr("AI 分析失败：{msg}", msg=message), warn=True)
+
+        worker.finished_ok.connect(_done)
+        worker.failed.connect(_fail)
+        worker.progress.connect(
+            lambda stage, pct: bar.set_note(f"{stage} ({pct}%)")
+            if current_request(self, "rough_cut", request) else None
+        )
+        self._rough_cut_worker = worker
+        retain_worker(self, worker)
+        worker.start()
+
+    def _rough_cut_keep_highlights(self) -> None:
+        project = self.project
+        bar = self._rough_cut_bar()
+        if project is None:
+            return
+        from .ai_rough_cut import compute_keep_highlights_marks, merge_suggested_marks
+
+        cuts, keep_ranges = compute_keep_highlights_marks(project)
+        if not keep_ranges:
+            if bar is not None:
+                bar.set_note(tr("尚未检出高光段，可先在下方点「分析录播」或手动 I/O 选段"), warn=True)
+            return
+        merge_suggested_marks(project, cuts)
+        self._refresh_rough_cut_ui()
+        if bar is not None:
+            bar.set_note(
+                tr("保留 {k} 段高光（前后各留 2 秒），标灰 {n} 句待剪", k=len(keep_ranges), n=len(cuts))
+            )
+
+    def _rough_cut_background_speaker(self, speaker_id: str = "") -> None:
+        project = self.project
+        bar = self._rough_cut_bar()
+        if project is None:
+            return
+        from .ai_rough_cut import compute_speaker_cut_marks, merge_suggested_marks
+
+        targets = [speaker_id] if str(speaker_id or "").strip() else None
+        cuts = compute_speaker_cut_marks(project, targets)
+        if not cuts:
+            if bar is not None:
+                bar.set_note(tr("当前工程没有可标记的背景声字幕"), warn=False)
+            return
+        merge_suggested_marks(project, cuts)
+        self._refresh_rough_cut_ui(list(cuts.keys()))
+        if bar is not None:
+            bar.set_note(tr("已标灰 {n} 句背景/指定说话人待剪", n=len(cuts)))
+
+    def _stop_rough_cut_seam_preview(self) -> None:
+        session = getattr(self, "_rough_cut_seam_session", None)
+        self._rough_cut_seam_session = None
+        bar = self._rough_cut_bar()
+        if bar is not None:
+            bar.set_seam_preview_active(False)
+        if session is not None and hasattr(self, "video"):
+            try:
+                self.video.set_paused(True)
+            except Exception:
+                pass
+
+    def _toggle_rough_cut_seam_preview(self, active: bool) -> None:
+        project = self.project
+        bar = self._rough_cut_bar()
+        if not active or project is None:
+            self._stop_rough_cut_seam_preview()
+            return
+        from ..timeline.studio_edit_sequence import projected_cues
+        from .ai_rough_cut import build_seam_preview_steps, get_rough_cut_marks, plan_project_rough_cut
+
+        plan = plan_project_rough_cut(project)
+        steps = build_seam_preview_steps(
+            plan.cut_ranges,
+            cues=projected_cues(project, domain="timeline"),
+            marks=get_rough_cut_marks(project),
+            timeline_duration_ms=timeline_duration_ms(project),
+        )
+        if not steps:
+            self._stop_rough_cut_seam_preview()
+            if bar is not None:
+                bar.set_note(tr("没有可连播的剪口"), warn=True)
+            return
+        self._rough_cut_seam_session = {
+            "steps": steps,
+            "index": 0,
+            "phase": "pre",
+            "last_seek_ms": -1,
+        }
+        first = steps[0]
+        if first.cue_id and hasattr(self, "select_cue"):
+            self.select_cue(first.cue_id, refresh_advanced=False)
+        if bar is not None:
+            bar.set_seam_preview_active(True)
+            bar.set_note(tr("连播剪口 1/{total}（±1.5 秒）", total=len(steps)))
+        if hasattr(self, "_seek"):
+            self._seek(first.pre_start_ms / 1000.0)
+        if hasattr(self, "video"):
+            self.video.set_paused(False)
+
+    def _pending_rough_cut_ranges_cached(self) -> tuple[tuple[int, int], ...]:
+        project = self.project
+        if project is None:
+            return ()
+        marks = project.studio_state.get("rough_cut_marks")
+        if not isinstance(marks, Mapping) or not marks:
+            self._rough_cut_ranges_cache = None
+            return ()
+        sig = (
+            id(project),
+            tuple(sorted((str(k), bool(v.get("keep", False))) for k, v in marks.items() if isinstance(v, Mapping))),
+        )
+        cached = getattr(self, "_rough_cut_ranges_cache", None)
+        if cached is not None and cached[0] == sig:
+            return cached[1]
+        from .ai_rough_cut import plan_project_rough_cut
+
+        ranges = tuple(plan_project_rough_cut(project).cut_ranges)
+        self._rough_cut_ranges_cache = (sig, ranges)
+        return ranges
+
+    def _rough_cut_playback_tick(self, milliseconds: int) -> bool:
+        """Auto-skip marked cut ranges during playback, or advance seam audition."""
+        if self.project is None:
+            return False
+        if bool(getattr(getattr(self, "video", None), "_paused", True)):
+            return False
+        pos = int(milliseconds)
+        session = getattr(self, "_rough_cut_seam_session", None)
+        if session is not None:
+            steps = session["steps"]
+            idx = int(session["index"])
+            if not 0 <= idx < len(steps):
+                self._stop_rough_cut_seam_preview()
+                return False
+            step = steps[idx]
+            if session["phase"] == "pre" and pos >= step.cut_start_ms - 25:
+                session["phase"] = "post"
+                session["last_seek_ms"] = step.cut_end_ms
+                self._seek(step.cut_end_ms / 1000.0)
+                return True
+            if session["phase"] == "post" and pos >= step.post_end_ms - 25:
+                next_idx = idx + 1
+                if next_idx >= len(steps):
+                    bar = self._rough_cut_bar()
+                    self._stop_rough_cut_seam_preview()
+                    if bar is not None:
+                        bar.set_note(tr("已连播完 {total} 处剪口", total=len(steps)))
+                    return True
+                session["index"] = next_idx
+                session["phase"] = "pre"
+                nxt = steps[next_idx]
+                session["last_seek_ms"] = nxt.pre_start_ms
+                if nxt.cue_id and hasattr(self, "select_cue"):
+                    self.select_cue(nxt.cue_id, refresh_advanced=False)
+                bar = self._rough_cut_bar()
+                if bar is not None:
+                    bar.set_note(tr("连播剪口 {cur}/{total}（±1.5 秒）", cur=next_idx + 1, total=len(steps)))
+                self._seek(nxt.pre_start_ms / 1000.0)
+                return True
+            return False
+
+        cut_ranges = self._pending_rough_cut_ranges_cached()
+        if not cut_ranges:
+            return False
+        from .ai_rough_cut import next_skip_target_ms
+
+        target = next_skip_target_ms(pos, cut_ranges)
+        if target is None:
+            self._rough_cut_last_skip = None
+            return False
+        last = getattr(self, "_rough_cut_last_skip", None)
+        now = _time.monotonic()
+        if last is not None and last[0] == target and now - last[1] < 0.25:
+            return False
+        self._rough_cut_last_skip = (target, now)
+        self._seek(target / 1000.0)
+        return True
+
+    def _apply_rough_cut(self) -> None:
+        project = self.project
+        bar = self._rough_cut_bar()
+        if project is None:
+            return
+        self._stop_rough_cut_seam_preview()
+        from .ai_rough_cut import plan_project_rough_cut
+        from .studio_autocut import rough_cut_apply_command
+
+        plan = plan_project_rough_cut(project)
+        if not plan.cut_ranges:
+            if bar is not None:
+                bar.set_note(tr("当前没有可裁剪的有效区间（可能已受呼吸余量保护）"), warn=True)
+            return
+        cmd = rough_cut_apply_command(
+            project,
+            plan.cut_ranges,
+            cue_ids=plan.marked_cue_ids,
+            changed=getattr(self, "_sequence_changed", None),
+        )
+        self.undo_stack.push(cmd)
+        self._refresh_rough_cut_ui()
+        if hasattr(self, "timeline"):
+            self.timeline.update()
+        if bar is not None:
+            bar.set_note(
+                tr("已剪 {n} 处 · -{s:.1f}s · Ctrl+Z 撤销", n=len(plan.cut_ranges), s=plan.total_cut_ms / 1000.0)
+            )
+
+    def _clear_rough_cut_marks(self) -> None:
+        project = self.project
+        if project is None:
+            return
+        self._stop_rough_cut_seam_preview()
+        from .ai_rough_cut import clear_rough_cut_marks
+
+        clear_rough_cut_marks(project)
+        self._refresh_rough_cut_ui()
+        bar = self._rough_cut_bar()
+        if bar is not None:
+            bar.set_note("")
+
+    def _toggle_rough_cut_reason(self, reason: str, enabled: bool) -> None:
+        """2026-11-26 (draft A): a reason chip holds that kind of cut back for now, or brings it back."""
+        project = self.project
+        if project is None:
+            return
+        self._stop_rough_cut_seam_preview()
+        from .ai_rough_cut import set_reason_enabled
+
+        set_reason_enabled(project, reason, bool(enabled))
+        self._refresh_rough_cut_ui()
+    def _append_rough_cut_context_actions(self, menu, cue_id: str) -> None:
+        project = self.project
+        if project is None or not cue_id:
+            return
+        cue = next((item for item in project.cues if item.id == cue_id), None)
+        if cue is None:
+            from ..timeline.studio_edit_sequence import projected_cues
+            cue = next((item for item in projected_cues(project, domain="timeline") if item.id == cue_id), None)
+        if cue is None:
+            return
+        from .ai_rough_cut import (
+            REASON_MANUAL,
+            active_cut_cue_ids,
+            is_cue_marked_for_cut,
+            set_cues_cut_marks,
+        )
+
+        selected_ids = list(self.cue_controller.selected_cue_ids()) if hasattr(self, "cue_controller") else []
+        targets = selected_ids if cue.id in selected_ids and len(selected_ids) > 1 else [cue.id]
+        all_marked = all(is_cue_marked_for_cut(project, cid) for cid in targets)
+
+        if menu.actions():
+            menu.addSeparator()
+        if all_marked:
+            menu.addAction(
+                tr("恢复保留"),
+                lambda: (set_cues_cut_marks(project, targets, marked=False), self._refresh_rough_cut_ui(targets)),
+            )
+        else:
+            menu.addAction(
+                tr("标为待剪"),
+                lambda: (
+                    set_cues_cut_marks(project, targets, marked=True, reason=REASON_MANUAL),
+                    self._refresh_rough_cut_ui(targets),
+                ),
+            )
+        menu.addAction(
+            tr("剪此说话人"),
+            lambda spk=cue.speaker_id: self._rough_cut_background_speaker(spk),
+        )
+        if active_cut_cue_ids(project):
+            menu.addSeparator()
+            menu.addAction(tr("连播剪口"), lambda: self._toggle_rough_cut_seam_preview(True))
+            menu.addAction(tr("应用裁剪"), self._apply_rough_cut)
+            menu.addAction(tr("清空标记"), self._clear_rough_cut_marks)
+
+    def _show_cue_table_context_menu(self, pos) -> None:
+        from .studio_translation_edit import show_cue_list_context_menu
+        show_cue_list_context_menu(self, pos)
 
     def _toggle_video_lock(self) -> None:
         project = self.project

@@ -329,7 +329,7 @@ class SpeakerManagerDialog(QDialog):
         toolbar.setSpacing(8)
         self.speaker_filter = QLineEdit()
         self.speaker_filter.setObjectName("speakerSearch")
-        self.speaker_filter.setFixedWidth(230)
+        self.speaker_filter.setFixedWidth(205)
         self.speaker_filter.setClearButtonEnabled(True)
         bind_text(self.speaker_filter, "搜索名字或标签", property="placeholderText")
         self.speaker_filter.textChanged.connect(self._filter_rows)
@@ -358,6 +358,27 @@ class SpeakerManagerDialog(QDialog):
         bind_text(self.voiceprint_button, '比较多个独立语音样本，试听候选后再决定是否合并；字幕可撤销。', property='toolTip')
         self.voiceprint_button.clicked.connect(self._voiceprint_clicked)
         toolbar.addWidget(self.voiceprint_button)
+        self.remember_cast_button = self._button(
+            "记住名字",
+            "speakerPillButton",
+            self._remember_cast_clicked,
+            icon="fa5s.bookmark",
+            role="secondary",
+            tip="把当前已命名的说话人名字和颜色加入常用方案，下次同系列视频可直接套用。",
+        )
+        toolbar.addWidget(self.remember_cast_button)
+        self.apply_cast_button = QToolButton()
+        self.apply_cast_button.setObjectName("speakerPillButton")
+        self.apply_cast_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.apply_cast_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.apply_cast_button.setIcon(themed_icon("fa5s.user-check", "secondary"))
+        self.apply_cast_button.setIconSize(QSize(13, 13))
+        bind_text(self.apply_cast_button, "套用常用名")
+        bind_text(self.apply_cast_button, "从常用方案里一键套用已记住的说话人名字和颜色（可按 Ctrl+Z 撤销）。", property="toolTip")
+        self.apply_cast_menu = create_studio_menu(self.apply_cast_button)
+        self.apply_cast_menu.aboutToShow.connect(self._fill_apply_cast_menu)
+        self.apply_cast_button.setMenu(self.apply_cast_menu)
+        toolbar.addWidget(self.apply_cast_button)
         lcol.addLayout(toolbar)
 
         self.banner = QFrame()
@@ -2139,3 +2160,49 @@ class SpeakerManagerDialog(QDialog):
         if hidden:
             self._push(SetSpeakersVisibilityCommand(project, hidden, self.page._speaker_structure_changed))
         self.refresh(key)
+
+    # ---------------------------------------------- saved speaker cast memory
+    def _remember_cast_clicked(self) -> None:
+        for card in self.cards.created():
+            if card.name_edit.isEnabled() and card.name_edit.text() != card.committed_name:
+                self._finish_name_edit(card)
+        from .studio_finish_flow import remember_project_speakers
+        scheme_name, names = remember_project_speakers(self.page)
+        if not names:
+            self._set_status(tr("还没有改过名字的说话人；先给任意说话人填好名字，再点「记住名字」。"))
+            return
+        preview = "、".join(names[:4]) + ("…" if len(names) > 4 else "")
+        self._set_status(tr("已记住 {count} 位说话人（{names}）到「{scheme}」，下次做同系列视频可直接套用。",
+                            count=len(names), names=preview, scheme=scheme_name))
+
+    def _fill_apply_cast_menu(self) -> None:
+        from ..projects.series_store import SeriesStore
+        menu = self.apply_cast_menu
+        menu.clear()
+        schemes = [rec for rec in SeriesStore().list() if rec.cast]
+        if not schemes:
+            empty = menu.addAction(tr("还没有记住的常用说话人（先命名后点「记住名字」）"))
+            empty.setEnabled(False)
+            return
+        for rec in schemes:
+            preview = "、".join(m.name for m in rec.cast[:3]) + ("…" if len(rec.cast) > 3 else "")
+            action = menu.addAction(tr("套用「{scheme}」（{names}）", scheme=rec.name, names=preview))
+            action.triggered.connect(lambda _=False, sid=rec.id: self._apply_saved_cast(sid))
+
+    def _apply_saved_cast(self, series_id: str) -> None:
+        from .studio_finish_flow import apply_series_cast_to_project
+        selected = sorted(self._selected_ids()) if len(self._selected_ids()) >= 1 else []
+        # Only pass explicit selection if user selected multiple OR explicitly chose a named speaker
+        # When single anonymous speaker is auto-focused on open, let it fill all anonymous speakers cleanly
+        explicit = [sid for sid in selected if len(selected) > 1 or not self._is_default_first_focus(sid)]
+        applied, msg = apply_series_cast_to_project(self.page, series_id, selected_ids=explicit)
+        if applied:
+            self.refresh()
+        self._set_status(msg)
+
+    def _is_default_first_focus(self, speaker_id: str) -> bool:
+        from .studio_finish_flow import is_anonymous_speaker_name
+        sp = self._speaker(speaker_id)
+        if sp is None:
+            return True
+        return is_anonymous_speaker_name(str(sp.name or ""), sp.id)

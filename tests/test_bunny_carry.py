@@ -1,4 +1,4 @@
-"""「问问兔白」 carried around (2026-11-15): the chat card comes along, and she stays on top."""
+"""「问问兔白」 carried around (2026-11-15): she stays on top. 2026-11-26: picked up, the card folds away."""
 from __future__ import annotations
 
 import time
@@ -56,7 +56,9 @@ def _mouse(kind, local, global_point):
                        Qt.MouseButton.LeftButton if held else Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
 
 
-def test_carrying_her_brings_the_card_along_and_it_stays_there(app, chat):
+def test_picked_up_her_card_folds_away_and_her_bubble_brings_it_back_beside_her(app, chat):
+    """2026-11-26 (user): picked up, the dialog box folds away so she can be played with; a small
+    bubble stays over her head, and one more click on it brings the box back."""
     from PySide6.QtCore import QEvent, QPointF
     mascot, puck = chat.mascot, chat.puck
     window = chat.window_
@@ -72,32 +74,67 @@ def test_carrying_her_brings_the_card_along_and_it_stays_there(app, chat):
         app.processEvents()
         time.sleep(0.02)
     assert not puck.docked
-    # Let her catch up with the pointer and the card catch up with her.
-    deadline = time.monotonic() + 1.5
-    while time.monotonic() < deadline:
+    assert chat.collapsed and not chat.isVisible() and puck.card_at is None
+    bubble = puck.carrier.bubble
+    assert bubble is not None and bubble.isVisible()
+    # Over her head: above her centre of mass, and clicks on it reach it through the layer's mask.
+    assert bubble.geometry().bottom() < puck.phys.pose.y
+    assert puck.carrier.mask().boundingRect().contains(bubble.geometry())
+    # Still an open chat: the little corner bunny does not come back meanwhile.
+    from types import SimpleNamespace
+    from twobyteasr.app.bunny_resident import BunnyResident
+    assert getattr(window, '_bunny_chat', None) is chat and chat.open_now()
+    assert BunnyResident._chat_open(SimpleNamespace(window_=window))
+    assert chat.eventFilter(mascot, _mouse(QEvent.Type.MouseButtonRelease, grab, target))
+    # Let go, she lands and stays where she is (no card to float back to).
+    assert _until(app, lambda: puck.mode == 'rest', seconds=16)
+    for _ in range(30):
         app.processEvents()
         time.sleep(0.01)
-    moved = chat.geometry().topLeft()
-    assert moved.x() < start_card.x() - 200 and moved.y() < start_card.y() - 150, (start_card, moved)
-    # No room for the box on her left this close to the edge: she stands left of it, the tail points at her.
-    assert chat.flipped and chat.box.flipped and chat.mascot_slot.x() == 0
-    assert chat.box.geometry().left() > mascot.width() // 2
-    slot = chat.geometry().topLeft() + chat.mascot_slot
-    assert abs(slot.x() - puck.pos.x()) < 40 and abs(slot.y() - puck.pos.y()) < 40
-    assert chat.eventFilter(mascot, _mouse(QEvent.Type.MouseButtonRelease, grab, target))
+    assert not puck.docked and chat.collapsed and bubble.isVisible()
+    # A short line of hers (a touch reaction) shows in the bubble itself.
+    from twobyteasr.app import bunny_persona
+    chat._asked = False
+    chat.say(bunny_persona.BunnyReply(lines=['叮铃叮铃～']))
+    assert bubble.text == '叮铃叮铃～' and not bubble.unread
+    chat.reveal_all()
+    landed = puck.pos.toPoint()           # (thrown, she bounces and rolls: where she ends up varies)
+    bubble.clicked.emit()
+    assert not chat.collapsed and chat.isVisible() and not bubble.isVisible()
     assert _until(app, lambda: puck.docked, seconds=8)
-    assert chat.mascot.parent() is chat and puck.card_at is None
+    assert chat.mascot.parent() is chat
     kept = chat.geometry().topLeft()
-    assert kept.x() < start_card.x() - 150 and kept.y() < start_card.y() - 100, (start_card, kept)
-    assert chat.mascot.geometry().topLeft() == chat.mascot_slot     # docked on the left side
+    slot = kept + chat.mascot_slot        # the card came back beside her, where she landed
+    assert abs(slot.x() - landed.x()) < 40, (landed, slot, start_card)
+    assert chat.mascot.geometry().topLeft() == chat.mascot_slot
     chat.relayout()                         # a new line later on: the card stays where she left it
     assert abs(chat.geometry().x() - kept.x()) < 2 and abs(chat.geometry().y() - kept.y()) < 2
 
 
-def test_carried_she_moves_inside_one_still_layer_and_the_card_keeps_step(app, chat):
-    """Second round (user): still cut to one corner while carried, and the card a beat behind."""
+def test_folded_away_a_long_answer_waits_in_the_card_with_a_dot(app, chat):
+    puck = chat.puck
+    puck.undock()
+    chat.collapse()
+    bubble = puck.carrier.bubble
+    from twobyteasr.app import bunny_persona
+    chat._asked = True
+    chat.say(bunny_persona.BunnyReply(lines=['字幕比声音慢半秒的话，可以在字幕工作台整体往前挪。']))
+    # 2026-11-27: the bubble shows how it begins; the whole answer waits in the card (the dot).
+    assert bubble.unread and bubble.isVisible() and bubble.text.startswith('字幕比声音慢半秒')
+    # 「问问兔白」 again: the card comes back instead of a second chat.
+    from twobyteasr.app.bunny_chat import open_bunny_chat
+    chat.window_._bunny_chat = chat
+    assert open_bunny_chat(chat.window_) is chat
+    assert not chat.collapsed and chat.isVisible() and not bubble.unread
+
+
+def test_carried_she_moves_inside_one_still_layer(app, chat):
+    """Second round (user): still cut to one corner while carried. (2026-11-26: the card folds away.)"""
+    import math
     from PySide6.QtCore import QEvent, QPointF, QRect
     from PySide6.QtGui import QRegion
+    from twobyteasr.app import ui_zoom
+    from twobyteasr.app.bunny_puck import FOLD_AFTER_PX
     mascot, puck = chat.mascot, chat.puck
     window = chat.window_
     grab = QPointF(mascot.width() / 2, mascot.height() / 2)
@@ -115,23 +152,27 @@ def test_carried_she_moves_inside_one_still_layer_and_the_card_keeps_step(app, c
         assert puck.carrier.geometry() == window.rect()
         layer = layer or puck.carrier.geometry()
         assert puck.carrier.geometry() == layer and mascot.parent() is puck.carrier
-        assert mascot.geometry().topLeft() == puck.pos.toPoint()
-        # While she moves, the layer's clickable part is a box around her that holds her whole
-        # rectangle (2026-11-18: no per-frame mask that could clip her for a frame); the rest of
-        # the window still gets its clicks.
-        here = QRect(puck.pos.toPoint(), mascot.size())
+        # Off the card her widget is a roomy square (turns and squash never cut her off).
+        assert mascot.geometry().topLeft() == (puck.pos - mascot.room).toPoint()
+        # While she moves, the layer's clickable part is a box around her (and her bubble) that holds
+        # her whole rectangle; the rest of the window still gets its clicks.
+        here = mascot.geometry()
         assert puck.carrier.mask().boundingRect().contains(here)
         assert puck.carrier.mask().boundingRect().width() < window.width()
-        # The card is exactly where she is, in the same frame.
-        slot = chat.geometry().topLeft() + chat.mascot_slot
-        if chat._home_rect().topLeft() == chat.geometry().topLeft():      # not held back by the window's edge
-            assert slot == puck.pos.toPoint(), (slot, puck.pos)
+        # 2026-11-26 (user): a small move keeps the card beside her; carried further it folds away.
+        moved = (target - origin) * (k / 15)
+        if math.hypot(moved.x(), moved.y()) > ui_zoom.px(FOLD_AFTER_PX) + 24:
+            assert not chat.isVisible() and chat.collapsed
     assert layer is not None
     chat.eventFilter(mascot, _mouse(QEvent.Type.MouseButtonRelease, grab, target))
-    assert _until(app, lambda: not puck.timer.isActive() or puck.docked, seconds=16)
+    # (2026-11-26: a stopped timer can also mean she lies on the floor about to hop upright.)
+    assert _until(app, lambda: puck.mode == 'rest' or puck.docked, seconds=16)
     if not puck.docked:
-        # At rest only her own rectangle takes clicks again.
-        assert puck.carrier.mask() == QRegion(QRect(puck.pos.toPoint(), mascot.size()))
+        # At rest only her drawn body and her bubble take clicks again (2026-11-26: not her roomy
+        # turning box, so the controls around her stay usable now that she rests out on the page).
+        rest = puck.carrier._resting_rect()
+        assert mascot.geometry().contains(rest) and rest.width() < mascot.width()
+        assert puck.carrier.mask() == QRegion(rest.united(puck.carrier.bubble.geometry()))
 
 
 def test_a_moving_bunny_never_falls_outside_the_clickable_layer(app, chat):
@@ -144,20 +185,24 @@ def test_a_moving_bunny_never_falls_outside_the_clickable_layer(app, chat):
     changes = []
     real = puck.carrier.setMask
     puck.carrier.setMask = lambda region: (changes.append(region), real(region))
-    previous = QRect(puck.pos.toPoint(), mascot.size())
+    previous = QRect(mascot.geometry())
     puck.glide_to(QPointF(40, 40))
     frames = 0
     while puck.glide.state().name == 'Running' and frames < 400:
         app.processEvents()
         time.sleep(0.004)
-        here = QRect(puck.pos.toPoint(), mascot.size())
+        if puck.glide.state().name != 'Running':
+            break                          # arrived within this frame: she rests (checked below)
+        here = QRect(mascot.geometry())
         box = puck.carrier.mask().boundingRect()
         assert box.contains(here) and box.contains(previous), (box, here, previous)
         previous = here
         frames += 1
     assert frames > 5
     assert len(changes) < frames, (len(changes), frames)
-    assert puck.carrier.mask().boundingRect() == QRect(puck.pos.toPoint(), mascot.size())
+    # At rest the mask is her drawn body inside her roomy box (2026-11-26).
+    assert puck.carrier.mask().boundingRect() == puck.carrier._resting_rect()
+    assert mascot.geometry().contains(puck.carrier._resting_rect())
 
 
 def test_before_her_layers_are_ready_she_is_drawn_at_her_real_size(app):
@@ -222,3 +267,34 @@ def test_out_on_her_own_she_is_kept_above_the_card(app, chat, monkeypatch):
     from PySide6.QtCore import QEvent
     chat.event(QEvent(QEvent.Type.WindowActivate))
     assert raised, 'the card coming to the front does not bury her'
+
+def test_a_small_move_keeps_the_card_and_a_gentle_put_down_stays_where_she_is(app, chat):
+    """2026-11-26 (user): a click or a small move must not fold the card away, and put down gently
+    she stays there (no fall to the bottom) and the chat goes on beside her."""
+    from PySide6.QtCore import QEvent, QPointF
+    mascot, puck = chat.mascot, chat.puck
+    grab = QPointF(mascot.width() / 2, mascot.height() / 2)
+    origin = QPointF(mascot.mapToGlobal(grab.toPoint()))
+    chat.eventFilter(mascot, _mouse(QEvent.Type.MouseButtonPress, grab, origin))
+    chat.eventFilter(mascot, _mouse(QEvent.Type.MouseMove, grab, origin + QPointF(5, 0)))
+    assert puck.docked                                   # under the grab slop: still a click
+    for k in range(1, 9):
+        chat.eventFilter(mascot, _mouse(QEvent.Type.MouseMove, grab, origin + QPointF(-6 * k, -4 * k)))
+        app.processEvents()
+        time.sleep(0.03)
+    assert not puck.docked and chat.isVisible() and not chat.collapsed
+    _until(app, lambda: False, seconds=0.2)              # held still: let go without speed
+    chat.eventFilter(mascot, _mouse(QEvent.Type.MouseButtonRelease, grab, origin + QPointF(-48, -32)))
+    assert puck.mode == 'glide'                          # righted in place, not thrown
+    assert _until(app, lambda: puck.docked, seconds=6)
+    assert chat.isVisible() and not chat.collapsed
+
+
+def test_put_down_with_the_card_folded_it_comes_back_beside_her(app, chat):
+    puck = chat.puck
+    puck.undock()
+    chat.collapse()
+    puck._stay_here()
+    assert puck.settle_timer.isActive() and chat.collapsed
+    puck._settled()
+    assert not chat.collapsed and chat.isVisible()

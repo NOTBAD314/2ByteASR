@@ -26,6 +26,20 @@ from ..diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
 MP4_SAFE_VIDEO = {"h264", "hevc", "av1"}
 MP4_SAFE_AUDIO = {"aac", "mp3", "ac3", "eac3", "flac", "alac"}
 REMUX_TIMEOUT_SECONDS = 1800.0
+# Every holder of a folder's generation lock is bounded (remux 30 min, audio
+# seek copy by size, proxy build by its own checks); waiting longer than the
+# longest holder means that holder is stuck.
+GENERATION_LOCK_WAIT_SECONDS = REMUX_TIMEOUT_SECONDS + 300.0
+# A recognition run waits at most this long for Studio's background work on
+# the same source before it stops with a message (2026-11-27).
+TIMELINE_SOURCE_LOCK_WAIT_SECONDS = 900.0
+
+
+class GenerationLockTimeout(TimeoutError):
+    def __init__(self, folder, waited):
+        super().__init__(f"generation lock of {folder} still held after {waited:.0f} s")
+        self.folder = Path(folder)
+        self.waited = waited
 
 
 class IndexedMediaCache:
@@ -484,7 +498,8 @@ class IndexedMediaCache:
                 self._cancel_events.pop('audio-seek:' + source, None)
                 self._audio_seek.pop(source, None)
 
-    def prepare_timeline_source(self, source: str, *, ffmpeg=None, cancelled=None) -> dict:
+    def prepare_timeline_source(self, source: str, *, ffmpeg=None, cancelled=None, waiting=None,
+                                wait_limit: float = TIMELINE_SOURCE_LOCK_WAIT_SECONDS, note=None) -> dict:
         """Resolve one source's content clock for a worker, never the UI thread.
 
         An export/ASR job may not silently fall back to timestamp addressing
@@ -492,6 +507,12 @@ class IndexedMediaCache:
         preview cache and its generation lock, and fail if that clock cannot
         be prepared. No clip position is changed and no offset is applied to
         an already continuous file.
+
+        2026-11-27: a finished gap-free time map is read without the lock
+        (it is written atomically), so a recognition run no longer queues
+        behind Studio's unrelated audio copy of the same file. Otherwise the
+        wait is reported through ``waiting(seconds)`` and ends after
+        ``wait_limit`` with GenerationLockTimeout.
         """
         from ..playback.avsync import (load_sync_map, save_sync_map, scan_timestamp_gaps,
                              continuous_proxy_ready, validate_continuous_proxy)
@@ -517,9 +538,15 @@ class IndexedMediaCache:
                 time.sleep(seconds)
 
         cancel = Cancellation()
-        with self._generation_lock(folder, cancel):
+        finished = load_sync_map(folder)
+        if finished is not None and not finished.gaps:
+            receipt['sync_map'] = finished.to_dict()
+            return receipt
+        with self._generation_lock(folder, cancel, wait_limit=wait_limit, waiting=waiting):
             sync = load_sync_map(folder)
             if sync is None:
+                if note is not None:
+                    note(f"正在检查素材「{Path(source).name}」的时间戳（要读完整个文件）")
                 scan = scan_timestamp_gaps(source, ffprobe, cancelled=cancelled)
                 if scan.scanned_packets == 0 or scan.negative_jumps:
                     raise RuntimeError("素材时间戳无法可靠映射，已停止任务：" + source)
@@ -528,6 +555,8 @@ class IndexedMediaCache:
             receipt['sync_map'] = sync.to_dict()
             if sync.gaps:
                 if continuous_proxy_ready(folder) is None:
+                    if note is not None:
+                        note(f"素材「{Path(source).name}」中途断流过，正在生成连续时间轴（要复制整个文件）")
                     self._build_continuous_proxy_locked(source, Path(source), sync, folder, cancel)
                 if cancelled and cancelled():
                     raise InterruptedError("timeline media preparation cancelled")
@@ -820,15 +849,30 @@ class IndexedMediaCache:
         self._media_touched[key] = now
 
     @contextmanager
-    def _generation_lock(self, folder: Path, cancel_event: threading.Event):
-        """Only one process may generate this identity; stale owners are checked."""
+    def _generation_lock(self, folder: Path, cancel_event: threading.Event, *,
+                         wait_limit: float = GENERATION_LOCK_WAIT_SECONDS, waiting=None):
+        """Only one process may generate this identity; stale owners are checked.
+
+        Waiting for a live owner is bounded (2026-11-27): the owner's own work
+        is bounded too, so a wait past ``wait_limit`` means the owner is stuck.
+        ``waiting(seconds)`` is called about every second while another owner
+        holds the lock, so a caller can show that it is waiting.
+        """
         import psutil
         lock = folder / "generation.lock"
         process = psutil.Process()
         owner = {"pid": process.pid, "create_time": process.create_time()}
+        started = time.monotonic()
+        reported = 0
         while True:
             if cancel_event.is_set():
                 raise InterruptedError("optimized media cancelled")
+            waited = time.monotonic() - started
+            if waited > wait_limit:
+                raise GenerationLockTimeout(folder, waited)
+            if waiting is not None and int(waited) > reported:
+                reported = int(waited)
+                waiting(waited)
             try:
                 descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
@@ -1119,6 +1163,14 @@ AUDIO_SEEK_COPY_NAME = "audio-seek.mka"
 AUDIO_SEEK_MARKER_NAME = "audio-seek.json"
 # Bump when the copy or its time mapping changes; older copies are rebuilt.
 AUDIO_SEEK_COPY_VERSION = 1
+# The copy file must grow at least once in this window, and the whole copy
+# must finish within audio_seek_copy_time_limit (a stream copy reads the file
+# once; 4 MB/s is a slow USB hard disk).
+AUDIO_SEEK_STALL_SECONDS = 120.0
+
+
+def audio_seek_copy_time_limit(source_bytes: int) -> float:
+    return 300.0 + max(0, int(source_bytes)) / (4 * 1024 * 1024)
 
 
 def audio_seek_copy_ready(folder: Path, source: str) -> dict | None:
@@ -1174,18 +1226,43 @@ def build_audio_seek_copy(source: str, folder: Path, ffmpeg: Path, ffprobe: Path
     if "audio" not in original["streams"] or original["start_ms"] is None:
         raise ValueError("no audio stream or container start time")
     partial = folder / f".audio-seek.{os.getpid()}.partial.mka"
+    errors = folder / f".audio-seek.{os.getpid()}.stderr.log"
     command = [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
                "-i", str(source_path), "-map", "0:a:0", "-c", "copy", "-copyts",
                "-avoid_negative_ts", "disabled", "-f", "matroska", str(partial)]
-    process = popen_hidden_subprocess(command, purpose="audio seek copy",
-                                      stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    # 2026-11-27: stderr goes to a file. A damaged live recording makes ffmpeg
+    # print thousands of "Packet mismatch" lines; an unread pipe filled after
+    # ~4 KB, ffmpeg blocked forever, and this copy kept the folder's
+    # generation lock, so Studio recognition of that file waited forever.
+    limit = audio_seek_copy_time_limit(stat.st_size)
+    started = last_growth = time.monotonic()
+    last_size = -1
     try:
-        while process.poll() is None:
-            if cancelled is not None and cancelled():
-                process.kill()
-                raise InterruptedError("audio seek copy cancelled")
-            time.sleep(0.2)
-        error = (process.stderr.read() if process.stderr else b"").decode("utf-8", "replace")
+        with errors.open("wb") as error_log:
+            process = popen_hidden_subprocess(command, purpose="audio seek copy",
+                                              stdout=subprocess.DEVNULL, stderr=error_log)
+            try:
+                while process.poll() is None:
+                    if cancelled is not None and cancelled():
+                        raise InterruptedError("audio seek copy cancelled")
+                    now = time.monotonic()
+                    try:
+                        size = partial.stat().st_size
+                    except OSError:
+                        size = -1
+                    if size != last_size:
+                        last_size, last_growth = size, now
+                    if now - last_growth > AUDIO_SEEK_STALL_SECONDS or now - started > limit:
+                        raise TimeoutError(f"audio seek copy made no progress for {now - last_growth:.0f} s "
+                                           f"({now - started:.0f} s in total)")
+                    time.sleep(0.2)
+            finally:
+                from ..system.processes import stop_process_tree
+                stop_process_tree(process, deadline_monotonic=time.monotonic() + 10)
+        try:
+            error = errors.read_bytes()[-2000:].decode("utf-8", "replace")
+        except OSError:
+            error = ""
         if process.returncode != 0 or not partial.is_file():
             raise RuntimeError(f"audio seek copy failed ({process.returncode}): {error[-300:]}")
         copied = _probe_times(ffprobe, partial)
@@ -1216,12 +1293,11 @@ def build_audio_seek_copy(source: str, folder: Path, ffmpeg: Path, ffprobe: Path
         os.replace(temporary, folder / AUDIO_SEEK_MARKER_NAME)
         return marker
     finally:
-        if process.poll() is None:
-            process.kill()
-        try:
-            partial.unlink(missing_ok=True)
-        except OSError:
-            pass
+        for leftover in (partial, errors):
+            try:
+                leftover.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 GLOBAL_INDEXED_MEDIA = IndexedMediaCache()

@@ -110,7 +110,8 @@ def test_failed_structured_answer_is_recorded(context, monkeypatch, observed):
     polishing.call_correction_api([cue(1, '第一段')], [], '', '', 'fixture', '', [], [], [],
                                   batch_index=3, batch_total=4)
     failed = [payload for name, payload in observed if name == 'llm_structured_output_failed']
-    assert failed and '"rows"' in failed[-1]['raw_response_preview']
+    assert failed and failed[-1]["category"]
+    assert "raw_response_preview" not in failed[-1]
 
 
 # --- 1. thinking escalation gets an output budget the reasoning cannot use up ------------------
@@ -170,9 +171,9 @@ def test_truncated_answer_without_a_higher_level_retries_with_more_budget(monkey
     # Nothing to gain when the budget cannot grow.
     monkeypatch.setattr(model_discovery, 'model_limits', lambda *a: {'output_tokens': 10000})
     assert retry_thinking(relay, cut, base_url='https://relay.example/v1') is None
-    # The official endpoint still goes one level up.
+    # The official endpoint keeps the same mode, and may split the failed batch.
     official = SimpleNamespace(**{**vars(relay), 'endpoint': lambda: {}})
-    assert retry_thinking(official, cut, base_url='https://api.deepseek.com/v1') == 'high'
+    assert retry_thinking(official, cut, base_url='https://api.deepseek.com/v1') is False
 
 
 def test_escalated_polish_request_carries_the_larger_budget(context, monkeypatch):
@@ -187,9 +188,8 @@ def test_escalated_polish_request_carries_the_larger_budget(context, monkeypatch
                         lambda *a, **k: SimpleNamespace(complete=complete))
     monkeypatch.setattr('twobyteasr.providers.provider_input_budget.retry_delay', lambda *a: 0)
     polishing.polish_subtitles([cue(i, f'第{i}段普通解说') for i in range(1, 4)], '预算')
-    ordinary = {tokens for thinking, tokens in seen if thinking in (False, None)}
-    raised = {tokens for thinking, tokens in seen if thinking == 'high'}
-    assert raised and min(raised) > max(ordinary)
+    assert {thinking for thinking, _ in seen} == {False}
+    assert max(tokens for _, tokens in seen) > min(tokens for _, tokens in seen)
 
 
 # --- 2. mandatory breaks are local knowledge: added, never a reason to drop the batch ----------

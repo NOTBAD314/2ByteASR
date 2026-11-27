@@ -3820,6 +3820,9 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             self.subtitle_lock_changed.emit()
         elif action == 'more':
             self.set_group_expanded(not self._group_expanded)
+            if self._group_expanded:
+                from ..app.newbie_tasks import mark
+                mark('expand_group')
         self.update()
 
     def _group_header_state(self) -> tuple[bool, bool]:
@@ -6617,6 +6620,17 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         angle, pixel = event.angleDelta(), event.pixelDelta()
         delta = angle.y() or angle.x() or pixel.y() or pixel.x()
         if not delta:
+            event.accept()
+            return
+        vertical = self.vertical_scrollbar
+        modifiers = event.modifiers()
+        if (not modifiers & Qt.KeyboardModifier.ControlModifier and vertical.maximum() > vertical.minimum()
+                and (modifiers & Qt.KeyboardModifier.ShiftModifier or event.position().x() < self.TRACK_HEADER_WIDTH)):
+            # 2026-11-27 (user: people do not find how to scroll down to the lower or unfolded
+            # tracks; the plain wheel moves through time). The wheel over the track names, or
+            # Shift+wheel anywhere, scrolls the rows up and down when they do not all fit.
+            step = (round(-delta * max(24, self._speaker_track_height()) / 120) if not angle.isNull() else -delta)
+            vertical.setValue(vertical.value() + step)
             event.accept()
             return
         self.hold_manual_view()

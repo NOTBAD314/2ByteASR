@@ -214,7 +214,12 @@ def join_text(parts, separator=" · "):
 
 def render_arguments(arguments, language=None):
     language = current_language() if language is None else language
-    return {key: (translate(value.source, language).format(**render_arguments(value.arguments, language))
+    # A nested text without arguments is taken as is, like TranslatedText
+    # itself: an error message carrying JSON braces ("{\"category\": ...}")
+    # raised KeyError here and the failed step never reached the screen
+    # (2026-11-27).
+    return {key: ((translate(value.source, language).format(**render_arguments(value.arguments, language))
+                   if value.arguments else translate(value.source, language))
                   if isinstance(value, TranslatedText) else value)
             for key, value in arguments.items()}
 

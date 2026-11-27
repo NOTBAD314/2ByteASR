@@ -193,19 +193,17 @@ REFINE_ESCALATION_CATEGORIES = frozenset({
 
 def _refine_escalation_round(units, outcome, provider, policy, batch_size, deadline, emit):
     """(thinking value, request groups) for the final retry, or (False, []) when it does not apply."""
-    from ..providers.subtitle_request_policy import (escalated_thinking, escalation_cue_limit,
+    from ..providers.subtitle_request_policy import (escalation_cue_limit,
                                                      escalation_enabled)
     failed = [unit for unit in units if outcome.results[unit.cue.id]['status'] == 'failed'
               and not outcome.results[unit.cue.id].get('final')
               and outcome.results[unit.cue.id].get('category') in REFINE_ESCALATION_CATEGORIES]
     if not failed:
         return False, []
-    endpoint = getattr(provider, 'endpoint', {}) or {}
-    level = escalated_thinking(policy.get('enable_thinking'), policy.get('thinking_protocol', 'auto'),
-        base_url=endpoint.get('base_url') or endpoint.get('url', ''), endpoint_protocol=endpoint.get('protocol', ''))
+    level = 'configured_mode'
     settings = getattr(provider, '_settings', None)
     skipped = ('disabled' if not escalation_enabled(settings or {}, 'group') else
-               'no_higher_thinking_level' if level is None else
+               'no_higher_thinking_level' if not policy['reasoning']['parameters'] else
                'too_many_failures' if len(failed) > escalation_cue_limit(len(units)) else
                'task_timeout' if deadline - time.monotonic() <= 5 else '')
     if skipped:
@@ -219,7 +217,7 @@ def _refine_escalation_round(units, outcome, provider, policy, batch_size, deadl
             groups.append([])
         groups[-1].append(unit)
     for unit in failed:
-        emit(unit, status='running', final=False, phase=f'等待提高思考等级（{level}）再试一次')
+        emit(unit, status='running', final=False, phase='等待用原思考设置再试一次')
     return level, groups
 
 
@@ -636,7 +634,7 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
     for unit in ranges:
         emit(unit)
     # 2026-11-16: once ordinary attempts and repairs are done, ranges that still failed on format or
-    # truncation get one more request: same model, thinking one level higher (None = not started,
+    # truncation get one more request: same model and thinking mode (None = not started,
     # False = not applicable, otherwise the thinking value sent).
     escalation = None
     escalated_ids = []
@@ -755,7 +753,7 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
         bad = []
         content = ''
         for unit in group:
-            emit(unit, phase=f'提高思考等级（{escalation}）再试一次' if escalation else
+            emit(unit, phase='用原思考设置再试一次' if escalation else
                  '正在定向修复' if repair else '等待模型返回', status='running', attempts=attempt)
         try:
             remaining = min(180. if escalation else 60., remaining)
@@ -763,7 +761,7 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                 {'role': 'system', 'content': prompt},
                 {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}],
                 max_tokens=token_budget, temperature=0.1, timeout=(min(10., remaining), remaining),
-                enable_thinking=escalation if escalation else policy['enable_thinking'],
+                enable_thinking=policy['enable_thinking'],
                 thinking_protocol=policy['thinking_protocol'], response_format={'type': 'json_object'} if json_mode else None,
                 stage='sentence_refine', json_schema=REFINE_SCHEMA if json_mode else None,
                 cancel_check=cancelled, request_diagnostics=diagnostics,

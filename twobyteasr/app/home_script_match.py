@@ -1,19 +1,15 @@
-"""首页「匹配文稿」 (2026-10-14): new media plus the user's own script.
+"""首页「匹配文稿」 (2026-10-14; 2026-11-25 reference mode & inline glossary capture).
 
-The user already has the complete text, broken into subtitle lines. Only the
-character-timestamp model runs: the local FireRedASR2-AED worker reports the
-characters it hears with their times, ``script_match`` places the user's lines
-on those times, and the result opens in Studio. MOSS, Qwen3-ASR review, AI
-proofreading and AI line breaking never run, and nothing is uploaded. The
-heard characters are kept as the project's word evidence, so Studio's word
-timing and razor cuts work on the new captions as usual.
-
-2026-10-15 (user: match scripts in other languages, not only Chinese):
-FireRed only hears Chinese (and English inside Chinese speech). A Japanese or
-English script is timed by the local Qwen3-ASR 1.7B (it writes down what it
-hears, in that language) plus Qwen3-ForcedAligner 0.6B (word / character
-times of that text); the user's lines are then placed on those times exactly
-as for Chinese. The language is picked in the dialog or read from the script.
+Two modes selectable from the top segmented bar:
+  1. ``整稿替换`` (default, 100% compatible):
+     The user already has a complete line-broken script. Only the timestamp
+     model runs (FireRed for Chinese, Qwen3-ASR + ForcedAligner for other
+     languages), ``script_match`` aligns the lines, and Studio opens.
+  2. ``参考纠错``:
+     The user pastes an outline, character bio, or reference material, picks
+     or extracts key terms and commits them directly into an active glossary
+     library (so the recognition stage uses them immediately), then launches
+     normal recognition with the reference context preserved.
 """
 from __future__ import annotations
 
@@ -32,7 +28,6 @@ MODEL_KEY = 'firered_aed'
 QWEN_ASR_MODEL = 'Qwen3-ASR 1.7B'
 QWEN_ALIGNER_MODEL = 'Qwen3-ForcedAligner 0.6B'
 # Recognition languages other than Chinese go the Qwen route.
-QWEN_MODEL_KEYS = (('qwen_asr', QWEN_ASR_MODEL), ('qwen_aligner', QWEN_ALIGNER_MODEL))
 
 
 def uses_qwen(language: str) -> bool:
@@ -50,6 +45,29 @@ def script_language(lines, chosen: str = '') -> str:
         return 'zh'
 
 
+def qwen_aligner_installed() -> bool:
+    """Is the aligner the app actually runs installed (2026-11-26)?
+
+    The user: 匹配文稿 refused Qwen3 Ultra and asked for the old model. The
+    check looked for the physical ``qwen_aligner`` folder (official 0.6B),
+    which ``official_aligner_retirement`` deletes once Ultra is verified, so an
+    Ultra-only install always read "not installed" here although the worker
+    (``resolve_qwen_aligner_local_source``) runs Ultra. Ask the same resolver.
+    """
+    from ..recognition.asr import resolve_qwen_aligner_local_source
+    return bool(resolve_qwen_aligner_local_source())
+
+
+def qwen_aligner_label() -> str:
+    """The name of the aligner this run uses, e.g. 「Qwen3 对齐 · Ultra」."""
+    try:
+        from ..local_models.alignment_readiness import QWEN_LABELS
+        from ..recognition.asr import selected_qwen_aligner_backend
+        return QWEN_LABELS.get(selected_qwen_aligner_backend(), QWEN_ALIGNER_MODEL)
+    except Exception:
+        return QWEN_ALIGNER_MODEL
+
+
 def timestamp_model_ready(language: str = 'zh') -> tuple[bool, str]:
     """Are the timestamp models for this language installed with their runtime?"""
     try:
@@ -57,7 +75,9 @@ def timestamp_model_ready(language: str = 'zh') -> tuple[bool, str]:
         from ..runtime_paths import get_runtime_paths
         installed = installed_model_keys(get_runtime_paths().install_root)
         if uses_qwen(language):
-            missing = [name for key, name in QWEN_MODEL_KEYS if key not in installed]
+            missing = [QWEN_ASR_MODEL] if 'qwen_asr' not in installed else []
+            if not qwen_aligner_installed():
+                missing.append(qwen_aligner_label())
             if missing:
                 return False, tr('需要先在模型工坊安装 {model}（日语、英语文稿用它听写并生成字词时间）',
                                  model='、'.join(missing))
@@ -101,8 +121,9 @@ def _qwen_heard_tokens(audio, regions, language: str, progress=None):
         progress(tr('{model} 正在听写（只用来对时间，不改你的文稿）…', model=QWEN_ASR_MODEL))
     with language_scope(language):
         heard = _transcribe_qwen_worker(audio, chunks, model_path, context='', evidence_root='')
+        aligner_name = qwen_aligner_label()
         if progress:
-            progress(tr('{model} 正在生成字词时间…', model=QWEN_ALIGNER_MODEL))
+            progress(tr('{model} 正在生成字词时间…', model=aligner_name))
         aligned = transcribe_qwen_aligner_reference(
             audio, [dict(start=row['start'], end=row['end'], text=row['text'], speaker='S00') for row in heard],
             language=qwen_language_name(language), raise_errors=True)
@@ -118,7 +139,7 @@ def _qwen_heard_tokens(audio, regions, language: str, progress=None):
         ref = refs.setdefault(key, f'qwen-aligned:{len(refs) + 1}')
         measured = piece.get('start_basis') == 'model' and piece.get('end_basis') == 'model'
         tokens.append(Token(start, end, text, ref, 'S00', not measured))
-        row = rows.setdefault(ref, {'text': '', 'words': [], 'final_timing_owner': QWEN_ALIGNER_MODEL,
+        row = rows.setdefault(ref, {'text': '', 'words': [], 'final_timing_owner': aligner_name,
                                     'source': 'script_match', 'text_source': QWEN_ASR_MODEL})
         if measured:
             row['words'].append({'text': text, 'start_ms': start, 'end_ms': end})
@@ -176,7 +197,7 @@ def build_project(media_path: str, match: ScriptMatch, rows: dict[str, dict], la
     cues = [SimpleNamespace(cue_id=f'script-{line.index + 1}', start=line.start_ms / 1000, end=line.end_ms / 1000,
                             text=line.text, speaker='S00') for line in match.lines]
     review = [f'script-{line.index + 1}' for line in match.lines if line.needs_review]
-    source = f'{QWEN_ASR_MODEL} + {QWEN_ALIGNER_MODEL}' if uses_qwen(language) else TIMESTAMP_MODEL
+    source = f'{QWEN_ASR_MODEL} + {qwen_aligner_label()}' if uses_qwen(language) else TIMESTAMP_MODEL
     project = project_from_runtime_cues(media_path, cues, asr_evidence=rows, generation_metadata={
         'script_match': {'version': 1, 'timestamp_source': source, 'lines': len(match.lines),
                          'coverage': round(match.coverage, 4), 'review_cue_ids': review,
@@ -196,12 +217,7 @@ def build_project(media_path: str, match: ScriptMatch, rows: dict[str, dict], la
 
 
 def failure_text(exc: BaseException) -> tuple[str, str]:
-    """One line for the dialog and the full error for 「复制错误详情」.
-
-    2026-10-16 (user: English matching "did nothing"): a model worker's error
-    is its whole stdout/stderr tail, so the dialog shows only its last line,
-    and running out of Windows commit (page file too small) reads as advice.
-    """
+    """One line for the dialog and the full error for 「复制错误详情」."""
     import traceback
     detail = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__)).strip()
     text = str(exc).strip() or type(exc).__name__
@@ -246,30 +262,92 @@ class ScriptMatchJob(QThread):
             self.failed.emit(str(reason), str(detail))
 
 
-def open_home_script_match(window) -> None:
-    """The 匹配文稿 wizard (2026-11-12, user picked design C).
+def _activate_library_for_recognition(window, library_id: str) -> None:
+    """Ensure the library just written to is enabled on Home so recognition
+    picks up the new terms immediately."""
+    lib_id = str(library_id or '').strip()
+    if not lib_id:
+        return
+    legacy = getattr(window, 'legacy', None)
+    if legacy is not None and isinstance(getattr(legacy, 'RUNTIME_SETTINGS', None), dict):
+        glossary_cfg = legacy.RUNTIME_SETTINGS.setdefault('glossary', {})
+        enabled = [str(i).strip() for i in (glossary_cfg.get('enabled_glossary_ids') or ()) if str(i).strip()]
+        if lib_id not in enabled:
+            enabled.insert(0, lib_id)
+            glossary_cfg['enabled_glossary_ids'] = enabled
+    terms_toggle = getattr(window, 'terms', None)
+    if terms_toggle is not None and hasattr(terms_toggle, 'setChecked'):
+        try:
+            terms_toggle.setChecked(True)
+        except Exception:
+            pass
+    if callable(getattr(window, '_refresh_glossary_chips', None)):
+        try:
+            window._refresh_glossary_chips()
+        except Exception:
+            pass
 
-    A rounded window of its own (no Windows title bar): ① 选素材 (drop or
-    choose), ② 贴文稿 with the bunny's tip, ③ 开始匹配 runs the job. With
-    media already on the home page it opens on step ②.
-    """
+
+def open_home_script_match(window) -> None:
+    """The 匹配文稿 wizard with ``整稿替换`` | ``参考纠错`` mode toggle and
+    pre-recognition glossary capture."""
     from PySide6.QtCore import QSize, Qt
-    from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMenu,
-                                   QProgressBar, QPushButton, QStackedWidget, QVBoxLayout, QWidget)
+    from PySide6.QtWidgets import (
+        QApplication,
+        QButtonGroup,
+        QComboBox,
+        QFileDialog,
+        QHBoxLayout,
+        QLabel,
+        QMenu,
+        QProgressBar,
+        QPushButton,
+        QStackedWidget,
+        QVBoxLayout,
+        QWidget,
+    )
     from ..design.presentation import button_role
     from ..design.themed_icons import cached_icon_pixmap
     from ..design.theme_manager import theme_definition, theme_key
     from ..studio.studio_script_match import read_script_file
-    from .home_script_match_ui import (DropZone, ScriptEditor, WizardDialog, build_stepper, bunny_tip,
-                                       show_step_states)
-    media = [str(path) for path in getattr(window, 'media_paths', ()) if str(path).strip()]
-    # 'error': (reason, full error) of the last failed run, shown until an input changes.
-    state = {'media': media[0] if media else '', 'job': None, 'ready': {}, 'error': None}
+    from .home_script_match_ui import (
+        DropZone,
+        ModeSegmentBar,
+        ScriptEditor,
+        TermCapturePanel,
+        WizardDialog,
+        build_stepper,
+        bunny_tip,
+        show_step_states,
+    )
 
-    # ×, Esc and 取消 wait while the timestamp job runs
-    dialog = WizardDialog(window, object_name='homeScriptMatchDialog', title=tr('匹配文稿'),
-                          busy=lambda: state['job'] is not None)
+    media = [str(path) for path in getattr(window, 'media_paths', ()) if str(path).strip()]
+    legacy = getattr(window, 'legacy', None)
+    enabled_ids = []
+    if callable(getattr(window, '_enabled_glossary_ids', None)):
+        try:
+            enabled_ids = list(window._enabled_glossary_ids())
+        except Exception:
+            enabled_ids = []
+
+    state = {'mode': 'replace', 'media': media[0] if media else '', 'job': None, 'ready': {}, 'error': None}
+
+    dialog = WizardDialog(
+        window,
+        object_name='homeScriptMatchDialog',
+        title=tr('匹配文稿'),
+        busy=lambda: state['job'] is not None,
+        minimum=(620, 580),
+        size=(780, 700),
+    )
     layout = dialog.body
+
+    mode_row = QHBoxLayout()
+    mode_row.setContentsMargins(0, 0, 0, 0)
+    mode_bar = ModeSegmentBar(dialog, default_mode='replace')
+    mode_row.addWidget(mode_bar)
+    mode_row.addStretch(1)
+    layout.addLayout(mode_row)
 
     # ①──②──③
     media_detail = QLabel()
@@ -277,11 +355,8 @@ def open_home_script_match(window) -> None:
     stepper, badges, names, lines = build_stepper(('选素材', '贴文稿', '开始匹配'), {1: media_detail})
     layout.addLayout(stepper)
 
-    def tip(text):
-        return bunny_tip(text)[0]
-
     pages = QStackedWidget()
-    pages.setObjectName('scriptWizardPages')  # transparent: no grey-brown band behind the steps
+    pages.setObjectName('scriptWizardPages')
     layout.addWidget(pages, 1)
     accent = theme_definition(theme_key()).accent
 
@@ -291,7 +366,7 @@ def open_home_script_match(window) -> None:
     first = QVBoxLayout(media_page)
     first.setContentsMargins(0, 6, 0, 0)
     first.setSpacing(14)
-    first.addLayout(tip(tr('先告诉我要对哪个视频或音频，拖进来或者点按钮选都可以。')))
+    first.addLayout(bunny_tip(tr('先告诉我要对哪个视频或音频，拖进来或者点按钮选都可以。'))[0])
 
     def set_media(path):
         state['media'] = path
@@ -326,11 +401,23 @@ def open_home_script_match(window) -> None:
     script_page = QWidget()
     script_page.setObjectName('scriptWizardPage')
     second = QVBoxLayout(script_page)
-    second.setContentsMargins(0, 6, 0, 0)
-    second.setSpacing(12)
-    second.addLayout(tip(tr('每行就是一条字幕，<b>换行的地方就是断句的地方</b>。<br>文字我不会改，只负责把时间对准。')))
+    second.setContentsMargins(0, 4, 0, 0)
+    second.setSpacing(10)
+    second_tip_row, second_tip = bunny_tip(
+        tr('每行就是一条字幕，<b>换行的地方就是断句的地方</b>。<br>文字我不会改，只负责把时间对准。')
+    )
+    second.addLayout(second_tip_row)
     editor = ScriptEditor('homeScriptMatchInput')
     script, load, paste = editor.input, editor.load, editor.paste
+
+    extract_btn = QPushButton(tr('自动拆词'))
+    extract_btn.setObjectName('scriptEditorTool')
+    extract_btn.setAutoDefault(False)
+    extract_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    extract_btn.setToolTip(tr('从文稿中自动解析专名与「错词→正词」到下方清单'))
+    extract_btn.hide()
+    editor.tools.insertWidget(editor.tools.indexOf(editor.pick_term), extract_btn)
+
     second.addWidget(editor, 1)
 
     # 文稿语言: four chips and 更多 for the other recognition languages.
@@ -370,10 +457,14 @@ def open_home_script_match(window) -> None:
     language_row.addWidget(more)
     language_row.addStretch(1)
     second.addLayout(language_row)
+
     runs = QLabel()
     runs.setObjectName('homeScriptMatchRuns')
     runs.setWordWrap(True)
     second.addWidget(runs)
+
+    term_panel = TermCapturePanel(legacy=legacy, preferred_ids=enabled_ids, parent=script_page)
+    second.addWidget(term_panel)
     pages.addWidget(script_page)
 
     status = QLabel('')
@@ -386,6 +477,7 @@ def open_home_script_match(window) -> None:
     bar.setFixedHeight(6)
     bar.hide()
     layout.addWidget(bar)
+
     actions = QHBoxLayout()
     actions.setSpacing(10)
     back = button_role(QPushButton(tr('上一步')), 'ghost')
@@ -396,7 +488,9 @@ def open_home_script_match(window) -> None:
     cancel = button_role(QPushButton(tr('取消')), 'secondary')
     forward = button_role(QPushButton(tr('下一步')), 'primary')
     start = button_role(QPushButton(tr('开始匹配')), 'primary')
-    for button in (back, workshop, copy_error, cancel, forward, start, choose):
+    start_ref = button_role(QPushButton(tr('开始识别')), 'primary')
+    start_ref.setToolTip(tr('带上刚加入词库的专名开始识别，不覆盖即兴口播'))
+    for button in (back, workshop, copy_error, cancel, forward, start, start_ref, choose):
         button.setAutoDefault(False)
     actions.addWidget(back)
     actions.addWidget(workshop)
@@ -405,6 +499,7 @@ def open_home_script_match(window) -> None:
     actions.addWidget(cancel)
     actions.addWidget(forward)
     actions.addWidget(start)
+    actions.addWidget(start_ref)
     layout.addLayout(actions)
 
     def go(index):
@@ -414,14 +509,16 @@ def open_home_script_match(window) -> None:
             script.setFocus()
 
     def show_steps():
-        page = pages.currentIndex()
+        page_idx = pages.currentIndex()
         running = state['job'] is not None
-        step_states = (('done', 'current', 'todo') if page == 1 and not running else
+        is_ref = state['mode'] == 'reference'
+        step_states = (('done', 'current', 'todo') if page_idx == 1 and not running else
                        ('done', 'done', 'current') if running else ('current', 'todo', 'todo'))
         show_step_states(badges, names, lines, step_states)
-        back.setVisible(page == 1)
-        forward.setVisible(page == 0)
-        start.setVisible(page == 1)
+        back.setVisible(page_idx == 1)
+        forward.setVisible(page_idx == 0)
+        start.setVisible(page_idx == 1 and not is_ref)
+        start_ref.setVisible(page_idx == 1 and is_ref)
 
     def sync_language_chips(*_args):
         index = language_box.currentIndex()
@@ -435,7 +532,23 @@ def open_home_script_match(window) -> None:
     def current_language():
         return script_language(parse_script(script.toPlainText()), str(language_box.currentData() or ''))
 
+    def sync_mode_copy():
+        is_ref = state['mode'] == 'reference'
+        editor.set_mode(state['mode'])
+        extract_btn.setVisible(is_ref)
+        names[2].setText(tr('开始识别') if is_ref else tr('开始匹配'))
+        if is_ref:
+            second_tip.setText(
+                tr('贴入大纲、角色设定或资料，先划词或点「自动拆词」<b>加入词库</b>；<br>'
+                   '开始识别时立刻生效，绝不强行覆盖即兴口播。')
+            )
+        else:
+            second_tip.setText(
+                tr('每行就是一条字幕，<b>换行的地方就是断句的地方</b>。<br>文字我不会改，只负责把时间对准。')
+            )
+
     def refresh():
+        is_ref = state['mode'] == 'reference'
         name = Path(state['media']).name if state['media'] else ''
         media_label.setText(tr('素材：{name}', name=name) if name else tr('素材：还没选择'))
         if len(media) > 1 and state['media'] == media[0]:
@@ -445,9 +558,21 @@ def open_home_script_match(window) -> None:
         media_detail.setVisible(bool(name))
         drop_title.setText(tr('换一个视频或音频') if name else tr('把视频或音频拖到这里'))
         language = current_language()
+        if is_ref:
+            runs.setText(tr('把专名加入词库后立即启用；开始识别时保留全部即兴口播，进工作台还可继续参考纠错。'))
+            workshop.setVisible(False)
+            if state['job'] is None:
+                status.setText('')
+            status.setVisible(bool(status.text()))
+            copy_error.hide()
+            forward.setEnabled(bool(state['media']))
+            start_ref.setEnabled(bool(state['media'] and state['job'] is None))
+            show_steps()
+            return
+
         if uses_qwen(language):
             runs.setText(tr('只运行：{asr} 听写 + {aligner} 字词时间（本机）。不会运行 MOSS、AI 校对与 AI 断句，也不上传。'
-                            '适用于{language}。', asr=QWEN_ASR_MODEL, aligner=QWEN_ALIGNER_MODEL,
+                            '适用于{language}。', asr=QWEN_ASR_MODEL, aligner=qwen_aligner_label(),
                             language=tr({'ja': '日语', 'ko': '韩语', 'es': '西班牙语', 'de': '德语', 'fr': '法语',
                                          'pt': '葡萄牙语', 'it': '意大利语', 'ru': '俄语'}.get(language, '英语'))))
         else:
@@ -460,14 +585,19 @@ def open_home_script_match(window) -> None:
         workshop.setVisible(not ready)
         error = state['error']
         if state['job'] is None:
-            # A failed run keeps its reason here; it used to be cleared right away,
-            # so a failure looked like the button "did nothing" (2026-10-16).
             status.setText(tr('匹配没有完成：{error}', error=error[0]) if error else ('' if ready else reason))
         status.setVisible(bool(status.text()))
         copy_error.setVisible(bool(error) and state['job'] is None)
         forward.setEnabled(bool(state['media']))
         start.setEnabled(bool(ready and state['media'] and state['job'] is None))
         show_steps()
+
+    def set_mode(mode: str):
+        normalized = 'reference' if mode == 'reference' else 'replace'
+        state['mode'] = normalized
+        mode_bar.set_mode(normalized)
+        sync_mode_copy()
+        refresh()
 
     def inputs_changed():
         state['error'] = None
@@ -489,6 +619,25 @@ def open_home_script_match(window) -> None:
                 status.setText(str(exc))
                 status.show()
 
+    def extract_from_reference():
+        raw = script.toPlainText().strip()
+        if not raw:
+            status.setText(tr('请先贴入参考文稿或资料'))
+            status.show()
+            return
+        added = term_panel.add_specified_text(raw)
+        if not added and not term_panel.candidates():
+            status.setText(tr('未自动识别出固定词条，可直接划选文字点「指定词条」'))
+            status.show()
+        else:
+            status.setText('')
+            status.hide()
+
+    def on_terms_committed(result: dict):
+        lib_id = str(result.get('library_id') or '').strip()
+        if lib_id and int(result.get('added') or 0) > 0:
+            _activate_library_for_recognition(window, lib_id)
+
     def finished(path, match):
         bar.hide()
         state['job'] = None
@@ -498,7 +647,8 @@ def open_home_script_match(window) -> None:
         dialog.accept()
         window.open_studio_project(path, mode='edit', source='script_match')
 
-    inputs = (script, load, paste, choose, cancel, back, more, zone, *chip_for.values())
+    inputs = (script, load, paste, editor.pick_term, extract_btn, choose, cancel, back, more, zone,
+              mode_bar.replace_btn, mode_bar.reference_btn, *chip_for.values())
 
     def failed(reason, detail=''):
         bar.hide()
@@ -533,6 +683,35 @@ def open_home_script_match(window) -> None:
         show_steps()
         job.start()
 
+    def begin_reference():
+        if not state['media']:
+            status.setText(tr('请先选择音视频素材'))
+            status.show()
+            return
+        # Auto-commit any checked pending terms so recognition receives them right away.
+        if any(c.checked for c in term_panel.candidates()) and legacy is not None and term_panel.selected_library_id():
+            res = term_panel.commit()
+            if res.get('library_id'):
+                _activate_library_for_recognition(window, str(res['library_id']))
+        window._pending_script_reference = {
+            'media': state['media'],
+            'text': script.toPlainText(),
+            'language': current_language(),
+            'library_id': term_panel.selected_library_id(),
+        }
+        if hasattr(window, 'media_paths') and state['media'] not in (getattr(window, 'media_paths', ()) or ()):
+            try:
+                window.media_paths = [state['media']]
+            except Exception:
+                pass
+        dialog.accept()
+        if callable(getattr(window, '_start_run', None)):
+            window._start_run()
+
+    mode_bar.mode_changed.connect(set_mode)
+    editor.term_picked.connect(term_panel.add_selected_word)
+    extract_btn.clicked.connect(extract_from_reference)
+    term_panel.committed.connect(on_terms_committed)
     choose.clicked.connect(choose_media)
     load.clicked.connect(load_file)
     back.clicked.connect(lambda: go(0))
@@ -541,20 +720,30 @@ def open_home_script_match(window) -> None:
     copy_error.clicked.connect(copy_failure)
     cancel.clicked.connect(dialog.reject)
     start.clicked.connect(begin)
+    start_ref.clicked.connect(begin_reference)
     language_box.currentIndexChanged.connect(lambda _index: (sync_language_chips(), inputs_changed()))
     script.textChanged.connect(inputs_changed)
+
     dialog.finish()
     sync_language_chips()
+    sync_mode_copy()
     pages.setCurrentIndex(1 if state['media'] else 0)
     refresh()
+
     window._home_script_match_dialog = dialog
     dialog._begin = begin  # automated checks drive the real handlers
+    dialog._begin_reference = begin_reference
     dialog._script = script
     dialog._state = state
     dialog._language = language_box
     dialog._status = status
     dialog._start = start
+    dialog._start_ref = start_ref
     dialog._copy_error = copy_error
+    dialog._mode_bar = mode_bar
+    dialog._set_mode = set_mode
+    dialog._term_panel = term_panel
+    dialog._editor = editor
     try:
         dialog.exec()
     finally:

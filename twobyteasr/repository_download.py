@@ -251,15 +251,18 @@ def _download_direct(manifest: SourceManifest, staging: Path, relative: str) -> 
     """Download through the resumable HTTP client with at most one retry."""
     target = staging / relative
     target.parent.mkdir(parents=True, exist_ok=True)
-    downloader = Path(__file__).resolve().parents[1] / "scripts" / "download_file_fast.py"
-    interpreter = os.environ.get('TWOBYTEASR_DOWNLOAD_PYTHON') or main_python_executable(downloader.parent.parent)
-    if not interpreter:
-        raise SourceAttemptError(
-            "主运行环境尚未配置；请先运行“配置或修复 2ByteASR”"
-        )
+    from .runtime_paths import detect_install_root
+    root = detect_install_root()
+    if getattr(sys, 'frozen', False) and sys.platform == 'win32':
+        args = [sys.executable, '--download-repository-artifact']
+    else:
+        downloader = root / 'scripts' / 'download_file_fast.py'
+        interpreter = os.environ.get('TWOBYTEASR_DOWNLOAD_PYTHON') or main_python_executable(root)
+        if not interpreter:
+            raise SourceAttemptError("主运行环境尚未配置；请先运行“配置或修复 2ByteASR”")
+        args = [interpreter, str(downloader)]
     command = [
-        interpreter,
-        str(downloader),
+        *args,
         "--url",
         _artifact_url(manifest, relative),
         "--out",
@@ -276,7 +279,7 @@ def _download_direct(manifest: SourceManifest, staging: Path, relative: str) -> 
         command,
         purpose="model repository artifact download",
         runner=subprocess.Popen,
-        cwd=str(downloader.parent.parent),
+        cwd=str(root),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

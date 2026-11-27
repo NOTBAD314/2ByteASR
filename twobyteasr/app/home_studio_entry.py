@@ -1,7 +1,7 @@
 """A quiet, cached project-cover backdrop for the Home Studio entrance."""
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, QSize, Qt, Signal, QTimer
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, Signal, QTimer
 from PySide6.QtGui import (QColor, QFont, QFontMetrics, QImage, QImageReader, QLinearGradient, QPainter,
                            QPainterPath, QPen)
 from PySide6.QtWidgets import QFrame, QSizePolicy, QToolButton, QWidget
@@ -412,7 +412,7 @@ class StudioEntryPin(QObject):
         if not self._sync_timer.isActive():
             self._sync_timer.start(0)
 
-    def sync(self, *_args):
+    def sync(self, *_args, fit_now=False):
         window = self.window_owner
         home = window.pages.currentWidget() is window.settings_scroll and window.settings_scroll.isVisible()
         self.card.setVisible(home)
@@ -433,9 +433,19 @@ class StudioEntryPin(QObject):
             if top < right_bottom <= viewport.height():
                 bottom = right_bottom
         height = max(1,bottom-top)
-        card.setGeometry(origin.x(),top,slot.width(),height)
+        # 2026-11-27 (user: every start the left card's cover is squashed for a second or two):
+        # the cover was sized by a queued pass, first from the card's default 462x411 before it
+        # was placed, then again only after the busy first moments (0.4 s here, longer on the
+        # host). The launch screen's picture of Home caught the squashed one too. A new size now
+        # fits at once (StudioEntryCard.resizeEvent); the same place only queues a check, as
+        # before, since other widgets of Home ask for this sync up to every frame.
+        if card.geometry() != QRect(origin.x(), top, slot.width(), height):
+            card.setGeometry(origin.x(), top, slot.width(), height)
+        elif fit_now:
+            card.fit_recent_now()
+        else:
+            card.schedule_recent_fit()
         card.raise_()
-        card.schedule_recent_fit()
 
     def eventFilter(self, obj, event):
         if event.type() in {QEvent.Resize, QEvent.Show, QEvent.Hide, QEvent.LayoutRequest, QEvent.FontChange}:
@@ -458,6 +468,14 @@ class StudioEntryCard(QFrame):
         timer = getattr(self, '_recent_fit', None)
         if timer is not None and not timer.isActive():
             timer.start()
+
+    def fit_recent_now(self):
+        """Size the cover and rows for the card's current size at once (no queued pass)."""
+        timer = getattr(self, '_recent_fit', None)
+        if timer is None:
+            return
+        timer.stop()
+        self._fit_recent_rows()
 
     def _fit_recent_rows(self):
         header, hero, caption, recent, footer = self._recent_layout_parts
@@ -489,7 +507,7 @@ class StudioEntryCard(QFrame):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.schedule_recent_fit()
+        self.fit_recent_now()      # the cover never paints at a size from the card's last size
 
     def changeEvent(self, event):
         super().changeEvent(event)

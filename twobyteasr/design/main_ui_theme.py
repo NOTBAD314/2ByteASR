@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from twobyteasr.design.typography import TITLE_FONT_STACK, UI_FONT_STACK
+from twobyteasr.design.typography import PLAYFUL_FONT_STACK, TITLE_FONT_STACK
 from twobyteasr.design.tokens import WEIGHT_SCALE
 from twobyteasr.design.ui_theme import (
     AMBER, CHARCOAL, CORAL, GREEN, GREEN_HOVER, GREEN_PRESSED,
@@ -11,12 +11,12 @@ from twobyteasr.design.ui_theme import (
     BORDER as LINE, SURFACE, BLUE,
 )
 
+# Font families come from the app's per-class defaults or the widget's own font.
+# A QWidget-level family replaces both, including fonts chosen for editable text.
 APP_QSS = f"""
 QWidget {{
     color: {INK};
-    font-family: {UI_FONT_STACK};
     font-size: 14px;
-    font-weight: 500;
 }}
 QMainWindow, QWidget#appRoot {{ background: {IVORY}; }}
 QWidget#appRoot {{ border: 0; border-radius: 0; }}
@@ -47,7 +47,7 @@ QPushButton#windowControlClose:hover {{ background: #f1d9d1; color: #7b4035; }}
 QPushButton#windowControl:pressed {{ background: #e3ddd1; }}
 QPushButton#windowControlClose:pressed {{ background: #e2b9ae; color: #663229; }}
 QLabel#chromeBrandMark {{ color: {GREEN}; font-size: 12px; font-weight: 700; }}
-QLabel#headerSubtitle {{ color: {INK}; font-family: {TITLE_FONT_STACK}; font-size: 27px; font-weight: 800; }}
+QLabel#headerSubtitle {{ color: {INK}; font-family: {PLAYFUL_FONT_STACK}; font-size: 32px; font-weight: 800; padding: 0; letter-spacing: 1px; }}
 QLabel#brand, QLabel#recognitionModelName, QLabel#contentHeroTitle, QLabel#sectionTitle,
 QLabel#termLibraryTitle, QLabel#termGameTitle, QLabel#smartDialogTitle {{
     font-family: {TITLE_FONT_STACK};
@@ -636,7 +636,7 @@ QListWidget#eventFeed::item {{
 }}
 QTextEdit#consoleLog {{
     background: #30332f; color: #edf0e9; border: 0; border-radius: 9px;
-    padding: 9px; font-family: "Cascadia Mono", "Microsoft YaHei UI"; font-size: 13px;
+    padding: 9px; font-family: "Cascadia Mono", "Source Han Sans SC Medium"; font-size: 13px;
     selection-background-color: #6d8d67;
 }}
 QTextEdit#resultFiles {{
@@ -644,7 +644,7 @@ QTextEdit#resultFiles {{
 }}
 QTextEdit#resultConsole {{
     background: #30332f; color: #edf0e9; border: 0; border-radius: 9px;
-    padding: 9px; font-family: "Cascadia Mono", "Microsoft YaHei UI"; font-size: 13px;
+    padding: 9px; font-family: "Cascadia Mono", "Source Han Sans SC Medium"; font-size: 13px;
 }}
 QLineEdit, QPlainTextEdit, QListWidget {{
     background: {SURFACE};
@@ -843,7 +843,7 @@ QPushButton#accordionButton:hover {{ background: rgba(196, 171, 131, 0.12); }}
 QWidget#accordionHeader {{ border-radius: 10px; }}
 QWidget#accordionHeader:hover {{ background: rgba(196, 171, 131, 0.14); }}
 QLabel#accordionSummary {{ color: #8a857a; font-size: 12px; }}
-QLabel#brand {{ font-size: 22px; font-weight: {WEIGHT_SCALE['heavy']}; padding: 4px 7px; border-radius: 8px; }}
+QLabel#brand {{ font-size: 11px; font-weight: {WEIGHT_SCALE['heavy']}; padding: 0; border-radius: 0; }}
 QLabel#title {{ font-size: 16px; font-weight: 600; }}
 QLabel#sectionTitle {{
     color: {INK};

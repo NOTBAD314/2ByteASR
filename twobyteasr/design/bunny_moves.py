@@ -52,6 +52,7 @@ class Pose:
     mouth_open: bool | None = None
     glare: float | None = None      # force the glasses' glare sweep to this progress (0..1)
     base: bool = True               # keep the mood's own idle motion underneath
+    hang: float = 0.0               # degrees about the key ring (dangling from a control, 2026-11-26)
 
 
 @dataclass(frozen=True)
@@ -306,6 +307,165 @@ def _heart_hands(k, t):   # 比心 — paws together held up in front, a little 
                 blush=1 + 1.2 * w, eyes_closed=w > .4, layer_turn=_ears(-8 * w + 6 * sway, 8 * w + 6 * sway))
 
 
+# ------------------------------------------------------------------ D: busy with the app's own parts
+# 2026-11-26 (user): with her dialog box folded away she should get up to things with the software
+# itself — mend the AI settings gear with a wrench, read the term library's book, sit and play on
+# its parts (``app/bunny_errands.py``). The props she holds are drawn by ``bunny_props``.
+# Where a paw is at the moment it touches something (bunny_errands places her by these), and when.
+STRIKE_S, STRIKE_HIT = 0.95, 0.52          # the wrench comes down on the gear at this part of the loop
+STRIKE_PAW = (34.0, -44.0, 0.0, 1.25)      # the right paw (and the wrench in it) at that moment
+KNOCK_S, KNOCK_HIT = 0.46, 0.30
+KNOCK_PAW = (58.0, -40.0, -22.0, 1.15)
+PUSH_PAW = (62.0, -34.0, 12.0, 1.15)
+PULL_PAW = (46.0, -30.0, -8.0, 1.15)
+POLISH_S = 0.6
+TICKLE_S = 0.26
+
+
+def _strike(k, t):        # 抡起扳手敲下去：举起 → 加速砸下 → 碰到时弹一下 → 放松（loops）
+    if k < .40:                                  # wind up: the wrench goes up and back over her shoulder
+        u = ease(k / .40)
+        turn, lift, body = -58 * u, -12 * u, -4 * u
+    elif k < STRIKE_HIT:                         # the swing, faster and faster
+        u = (k - .40) / (STRIKE_HIT - .40)
+        turn, lift, body = -58 * (1 - u * u), -12 * (1 - u * u), -4 + 10 * u * u
+    elif k < .64:                                # the hit: it bounces back a little
+        u = (k - STRIKE_HIT) / (.64 - STRIKE_HIT)
+        turn, lift, body = -9 * math.sin(math.pi * u), 0.0, 6 * (1 - u)
+    else:
+        turn = lift = body = 0.0
+    hit = max(0.0, 1 - abs(k - STRIKE_HIT) / .06)
+    return Pose(turn=body, dx=6 + 6 * hit, dy=4 * hit, sy=1 - .05 * hit, sx=1 + .03 * hit,
+                paws={'right': (STRIKE_PAW[0], STRIKE_PAW[1] + lift, turn, STRIKE_PAW[3]), 'left': (8, -26, 10, 1.1)},
+                layer_turn=_ears(-8 - 16 * hit, 10 + 16 * hit), layer_shift={'眉毛': (0, 12)},
+                eyes_closed=hit > .5, base=False)
+
+
+def _knock(k, t):         # 敲敲：前爪朝按钮敲（loops）
+    hit = max(0.0, math.sin(k * 2 * math.pi)) ** 3
+    back = max(0.0, -math.sin(k * 2 * math.pi))
+    paw = (KNOCK_PAW[0] - 26 * (1 - hit), KNOCK_PAW[1] - 10 * back, KNOCK_PAW[2] * hit, KNOCK_PAW[3])
+    return Pose(turn=4 * hit, dx=4 * hit, paws={'right': paw}, layer_turn=_ears(-4 * hit, 6 + 6 * hit), base=False)
+
+
+def _push(k, t):          # 用力推：身体前倾，两爪顶着，抖（loops）
+    strain = math.sin(t * 2 * math.pi * 11) * 2
+    return Pose(turn=13, dx=16 + strain, dy=4, sx=1.04, sy=.96, eyes_closed=True,
+                paws={'right': PUSH_PAW, 'left': (PUSH_PAW[0] + 8, PUSH_PAW[1] + 4, PUSH_PAW[2] + 6, 1.15)},
+                layer_turn=_ears(-30, 26 + strain), layer_shift={'眉毛': (0, 16)}, base=False)
+
+
+def _pull(k, t):          # 往后拉：身体后仰，两爪抓着，抖（loops）
+    strain = math.sin(t * 2 * math.pi * 10) * 2
+    return Pose(turn=-14, dx=-10 + strain, sx=1.03, sy=.97, eyes_closed=True,
+                paws={'right': PULL_PAW, 'left': (PULL_PAW[0] + 6, PULL_PAW[1] + 4, 0, 1.15)},
+                layer_turn=_ears(-36, 34 + strain), layer_shift={'眉毛': (0, 16)}, base=False)
+
+
+def _tumble(k, t):        # 一屁股坐倒，又爬起来
+    w = window(k, 0, .12, .62, 1)
+    return Pose(turn=-26 * w, dx=-20 * w, dy=30 * w, sy=1 - .1 * w, sx=1 + .05 * w, eyes_closed=w > .3,
+                layer_turn=_ears(-44 * w, 40 * w), paws={'left': (-30 * w, -50 * w, -20 * w), 'right': (30 * w, -60 * w, 20 * w)},
+                base=False)
+
+
+def _lift(k, t):          # 举起来：两爪举过头，摇摇晃晃（loops）
+    wob = math.sin(t * 2 * math.pi * 3.5)
+    return Pose(sy=.93, sx=1.04, turn=3 * wob, dx=3 * wob, eyes_closed=True,
+                paws={'left': (-24, -196 + 4 * wob, -14, 1.2), 'right': (24, -196 - 4 * wob, 14, 1.2)},
+                layer_turn=_ears(-30, 30), layer_shift={'眉毛': (0, 16)}, base=False)
+
+
+def _flick(k, t):         # 弹一下：爪子快速一弹
+    hit = math.sin(min(1.0, k / .4) * math.pi) if k < .4 else 0.0
+    return Pose(turn=5 * hit, paws={'right': (40 + 30 * hit, -36, -30 * hit, 1.2)}, layer_turn=_ears(0, 10 * hit))
+
+
+def _tickle(k, t):        # 挠痒痒：两爪快速抓挠（loops）
+    a = math.sin(k * 2 * math.pi)
+    b = math.sin(k * 2 * math.pi + 1.6)
+    return Pose(turn=6, dx=8, mouth_open=True, eyes_closed=True, blush=1.8,
+                paws={'right': (52 + 10 * a, -40 + 12 * b, 20 * a, 1.15), 'left': (60 + 10 * b, -30 + 12 * a, 20 * b, 1.15)},
+                layer_turn=_ears(-10 + 6 * a, 12 + 6 * b), base=False)
+
+
+def _polish(k, t):        # 用布擦：右爪画圈（loops）
+    a = k * 2 * math.pi
+    return Pose(turn=4 + 2 * math.sin(a), dx=6, paws={'right': (44 + 16 * math.cos(a), -40 + 12 * math.sin(a), 10 * math.sin(a), 1.2)},
+                layer_turn=_ears(-4 + 4 * math.sin(a), 6 + 4 * math.sin(a)))
+
+
+def _blow(k, t):          # 鼓起脸吹一口气
+    puff = window(k, 0, .3, .5, .6)
+    blow = window(k, .5, .58, .85, 1)
+    return Pose(sx=1 + .07 * puff, sy=1 - .02 * puff, turn=6 * blow, dx=8 * blow, blush=1 + puff, mouth_open=blow > .3,
+                eyes_closed=puff > .5, layer_turn=_ears(6 * blow, -6 * blow))
+
+
+def _lean_nap(k, t):      # 靠着打盹（loops）
+    dip = max(0.0, math.sin(t * 2 * math.pi / 3.2)) ** 3
+    return Pose(turn=10, dx=12, dy=6 * dip, eyes_closed=True, layer_turn=_ears(-12, 10), paws={'right': (40, -20, 20)},
+                base=False)
+
+
+def _wipe_brow(k, t):     # 擦擦汗
+    w = window(k, 0, .25, .7, 1)
+    swipe = math.sin(k * 2 * math.pi * 2) * w
+    return Pose(paws={'right': (-16 + 30 * swipe, -150 * w, -20, 1.2)}, turn=-3 * w, eyes_closed=.3 < k < .7,
+                layer_turn=_ears(-6 * w, 6 * w))
+
+
+def _catch(k, t):         # 像猫一样扑上去抓光标：两爪高举乱抓，嘴巴张开（loops）
+    a = math.sin(t * 2 * math.pi * 6)
+    return Pose(sy=1.06, sx=.96, mouth_open=True, blush=1.4,
+                paws={'left': (-22, -206 + 10 * a, -14 + 12 * a, 1.25), 'right': (22, -214 - 10 * a, 14 - 12 * a, 1.25)},
+                layer_turn=_ears(10 + 6 * a, -10 + 6 * a), layer_shift={'眉毛': (0, -14)}, base=False)
+
+
+def _curl_nap(k, t):      # 缩成一团睡（loops: slow breathing, a nod now and then）
+    breath = math.sin(k * 2 * math.pi)
+    nod = max(0.0, math.sin(t * 2 * math.pi / 5.3)) ** 4
+    return Pose(sy=.92 + .015 * breath, sx=1.05 - .01 * breath, dy=14 + 8 * nod, turn=7 + 4 * nod, eyes_closed=True,
+                layer_turn=_ears(-26 - 4 * breath, 22 + 4 * breath), paws={'left': (18, -8, 20, 1.05), 'right': (-18, -8, -20, 1.05)},
+                layer_shift={'脚': (0, -8)}, blush=1.3, base=False)
+
+
+def _trot(k, t):          # 一跳一跳往前走（loops: one loop a hop）
+    a = math.sin(k * 2 * math.pi)
+    return Pose(layer_turn={**_ears(-8 + 8 * a, 8 + 8 * a), '脚': 18 * a},
+                paws={'left': (-6, -10 - 8 * a, -10 * a), 'right': (6, -10 + 8 * a, 10 * a)}, base=False)
+
+
+def _read(k, t):          # 捧着书看（loops: a slow nod as she reads down the page）
+    nod = math.sin(k * 2 * math.pi)
+    return Pose(dy=8 + 4 * nod, turn=-2 + 1.5 * nod, layer_turn=_ears(-8 + 3 * nod, 8 - 3 * nod),
+                paws={'left': (34, -34, 18, 1.2), 'right': (-34, -34, -18, 1.2)},
+                layer_shift={'眉毛': (0, 6)}, base=False)
+
+
+def _sit(k, t):           # 坐在上面晃脚（loops）
+    kick = math.sin(k * 2 * math.pi)
+    look = math.sin(k * 2 * math.pi / 2 + .6)
+    return Pose(sy=.95, sx=1.03, dy=10, turn=2.5 * look, layer_turn={**_ears(-4 + 6 * look, 4 + 6 * look), '脚': 14 * kick},
+                layer_shift={'脚': (0, -10 - 4 * abs(kick))}, paws={'left': (-10, -6, -8), 'right': (10, -6, 8)}, base=False)
+
+
+def _cling(k, t):         # 抓住光标挂着：两爪举高抓紧，脚乱蹬，开心地张嘴（loops）
+    kick = math.sin(t * 2 * math.pi * 3.2)
+    wiggle = math.sin(t * 2 * math.pi * 1.1)
+    return Pose(sy=1.04, sx=.97, mouth_open=abs(wiggle) > .7, blush=1.5,
+                paws={'left': (-16, -210, -8, 1.2), 'right': (16, -212, 8, 1.2)},
+                layer_turn={**_ears(14 + 6 * wiggle, -14 + 6 * wiggle), '脚': 14 * kick},
+                layer_shift={'眉毛': (0, -10)}, base=False)
+
+
+def _hang(k, t):          # 挂在按钮下面荡（loops: she swings from her key ring, feet kicking）
+    swing = math.sin(k * 2 * math.pi)
+    kick = math.sin(k * 2 * math.pi * 2 + .4)
+    return Pose(hang=11 * swing, layer_turn={**_ears(-10 * swing - 6, -10 * swing + 6), '脚': 10 * kick},
+                layer_shift={'双手': (0, -18)}, mouth_open=abs(swing) > .92, base=False)
+
+
 MOVES = {
     'tilt': Move(1.6, _tilt, title='歪头疑惑'),
     'ears_up': Move(1.0, _ears_up, title='耳朵竖直抖一抖'),
@@ -339,6 +499,25 @@ MOVES = {
     'apology': Move(2.4, _apology, title='鞠躬道歉'),
     'beam': Move(2.2, _beam, title='开心晃晃'),
     'heart_hands': Move(2.0, _heart_hands, title='比心'),
+    'strike': Move(STRIKE_S, _strike, loop=True, title='抡起扳手敲'),
+    'knock': Move(KNOCK_S, _knock, loop=True, title='敲敲'),
+    'push': Move(0.7, _push, loop=True, title='用力推'),
+    'pull': Move(0.7, _pull, loop=True, title='往后拉'),
+    'tumble': Move(1.1, _tumble, title='一屁股坐倒'),
+    'lift': Move(0.6, _lift, loop=True, title='举起来'),
+    'flick': Move(0.5, _flick, title='弹一下'),
+    'tickle': Move(TICKLE_S, _tickle, loop=True, title='挠痒痒'),
+    'polish': Move(POLISH_S, _polish, loop=True, title='用布擦'),
+    'blow': Move(1.4, _blow, title='吹一口气'),
+    'lean_nap': Move(3.2, _lean_nap, loop=True, title='靠着打盹'),
+    'wipe_brow': Move(1.2, _wipe_brow, title='擦擦汗'),
+    'trot': Move(0.36, _trot, loop=True, title='一跳一跳走'),
+    'curl_nap': Move(3.0, _curl_nap, loop=True, title='缩成一团睡'),
+    'catch': Move(0.3, _catch, loop=True, title='扑上去抓'),
+    'read': Move(2.6, _read, loop=True, title='捧着书看'),
+    'sit': Move(2.0, _sit, loop=True, title='坐着晃脚'),
+    'hang': Move(1.8, _hang, loop=True, title='挂着荡秋千'),
+    'cling': Move(1.0, _cling, loop=True, title='抓住光标挂着'),
 }
 
 

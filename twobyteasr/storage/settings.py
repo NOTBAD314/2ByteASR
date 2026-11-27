@@ -86,6 +86,7 @@ DEFAULT_SETTINGS = {
         "ai_design_read_idle_seconds": 300,
         "ai_service": "",
         "provider_profiles": {},
+        "reasoning_profiles": {},
     },
     "switches": {
         "enable_qwen_asr_reference": True,
@@ -402,7 +403,7 @@ def _merge_known_settings(defaults, payload):
         if result["models"][key] not in allowed_transports:
             result["models"][key] = defaults["models"][key]
             warnings.append(f"models.{key} has an unsupported AI transport; default was used")
-    allowed_llm_protocols = {"auto", "responses", "chat_completions", "openai_compatible_chat"}
+    allowed_llm_protocols = {"auto", "responses", "chat_completions", "openai_compatible_chat", "anthropic_messages", "gemini_native"}
     for key in ("polish_protocol", "group_protocol"):
         if result["models"][key] not in allowed_llm_protocols:
             result["models"][key] = defaults["models"][key]

@@ -188,19 +188,51 @@ def snap(boundaries, candidates: CandidateSet) -> tuple[list[int], list[dict]]:
 
 # --- timing ------------------------------------------------------------------------------------
 
+def _spread_in_row(segment):
+    from ..recognition.transcript_data import WordUnit
+    length = max(1, display_length(segment.text))
+    step = max(0.001, (float(segment.end) - float(segment.start)) / length)
+    return [WordUnit(float(segment.start) + i * step, float(segment.start) + (i + 1) * step, "", 0.0)
+            for i in range(display_length(segment.text))]
+
+
+def _inside_row(units, segment):
+    """Unit times kept inside the row's own sentence envelope.
+
+    2026-11-26 (比利犬 13/16/17, three Japanese episodes failed at stage 9):
+    aligner word times ran past their row (おらい 793.76-794.40 s), the cue cut
+    from them claimed seconds outside its source, the contract rejected the
+    batch, and the retained-source fallback, split on the same times, was
+    rejected too, so the whole task failed. Word evidence may place a cut
+    inside the row; it never widens the row. Evidence that mostly lies outside
+    the row is from another time domain and is replaced by an even spread.
+    """
+    from ..recognition.transcript_data import WordUnit
+    low, high = float(segment.start), float(segment.end)
+    if not units or high <= low:
+        return units
+    inside = sum(1 for unit in units if float(unit.end) > low and float(unit.start) < high)
+    if inside * 2 < len(units):
+        return _spread_in_row(segment)
+    result, floor = [], low
+    for unit in units:
+        start = min(max(float(unit.start), floor), high)
+        end = min(max(float(unit.end), start), high)
+        result.append(WordUnit(start, end, getattr(unit, "text", ""), getattr(unit, "probability", 0.0)))
+        floor = start
+    return result
+
+
 def _timeline(segment_batch, firered_tokens):
-    from .segmentation_alignment import segment_content_timeline
+    from .segmentation_alignment import segment_content_timeline, tokens_near_segments
+    firered_tokens = tokens_near_segments(segment_batch, firered_tokens)   # same answer, far fewer tokens
     units = []
     for segment in segment_batch:
         own = segment_content_timeline(segment, firered_tokens)
         if len(own) != display_length(segment.text):
             # No usable unit timing for this row: spread inside the row's own bounds.
-            length = max(1, display_length(segment.text))
-            step = max(0.001, (float(segment.end) - float(segment.start)) / length)
-            from ..recognition.transcript_data import WordUnit
-            own = [WordUnit(float(segment.start) + i * step, float(segment.start) + (i + 1) * step, "", 0.0)
-                   for i in range(display_length(segment.text))]
-        units.extend(own)
+            own = _spread_in_row(segment)
+        units.extend(_inside_row(own, segment))
     return units
 
 
@@ -235,7 +267,24 @@ def cues_for(segment_batch, boundaries, firered_tokens=(), speech_regions=()):
     from .grouping import _bind_cue_speakers
     cues = _bind_cue_speakers(cues, segment_batch)
     from .segmentation_alignment import snap_internal_cue_boundaries
-    return snap_internal_cue_boundaries(cues, segment_batch, firered_tokens, speech_regions)
+    cues = snap_internal_cue_boundaries(cues, segment_batch, firered_tokens, speech_regions)
+    # A cue never claims seconds outside the rows its characters come from
+    # (the same envelope cues_from_quality keeps for the other languages).
+    spans, cursor = [], 0
+    for segment in segment_batch:
+        length = display_length(segment.text)
+        spans.append((cursor, cursor + length, segment))
+        cursor += length
+    left = 0
+    for cue, right in zip(cues, boundaries):
+        owners = [segment for a, b, segment in spans if a < right and left < b] or [
+            segment for a, b, segment in spans if a <= left <= b][:1]
+        if owners:
+            low, high = min(float(s.start) for s in owners), max(float(s.end) for s in owners)
+            cue.start = max(low, min(float(cue.start), high - 0.001))
+            cue.end = max(cue.start + 0.001, min(high, float(cue.end)))
+        left = right
+    return cues
 
 
 # --- checking and local repair -----------------------------------------------------------------

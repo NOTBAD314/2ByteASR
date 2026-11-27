@@ -118,6 +118,11 @@ class ProviderConnectionTester(QThread):
             measured = getattr(provider, 'cli_diagnostics', lambda: {})() if provider is not None else {}
             explicit = {key: self.diagnostics[key] for key in ('category', 'request_succeeded') if key in self.diagnostics}
             self.diagnostics = {**self.diagnostics, **measured, **explicit}
+            trace = getattr(provider, "invocation_trace", lambda: {})() or {}
+            boundary = trace.get("response_boundary") or {}
+            if boundary.get("thinking_compatibility"):
+                self.diagnostics["reasoning_receipt"] = {key: boundary.get(key) for key in
+                    ("thinking_compatibility", "reasoning_tokens", "prompt_tokens", "completion_tokens", "http_status")}
             self.diagnostics['last_tested_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
             self.finished_status.emit(ok, message)
         try:
@@ -130,7 +135,7 @@ class ProviderConnectionTester(QThread):
                     'required': ['ok', 'text'], 'additionalProperties': False}
                 answer = provider.structured_complete([
                     {'role': 'user', 'content': '请只返回 JSON：{"ok":true,"text":"兔白字幕"}。'}],
-                    schema, max_tokens=80, temperature=0, timeout=45,
+                    schema, max_tokens=2048 if getattr(provider, "transport", None) is AITransport.OPENAI_COMPATIBLE else 80, temperature=0, timeout=45,
                     cancel_check=self.isInterruptionRequested, stage='connection_test',
                     operation_kind='polish')
                 from jsonschema import Draft202012Validator
@@ -572,6 +577,8 @@ class EndpointEditor(QFrame):
         for label, value in (
             ("Auto", "auto"),
             ("Responses API", "responses"),
+            ("Anthropic Messages", "anthropic_messages"),
+            ("Gemini generateContent", "gemini_native"),
             ("Chat Completions", "chat_completions"),
             ("OpenAI-compatible Chat", "openai_compatible_chat"),
         ):
@@ -856,24 +863,25 @@ class EndpointEditor(QFrame):
         self.max_output_tokens.setToolTip("仅限制输出；不是输入与输出总量，也不要求用满预算。")
         grid.addWidget(QLabel("最大输出 Token"), 7, 0)
         grid.addWidget(self.max_output_tokens, 7, 1)
-        self.enable_thinking = QCheckBox("开启字幕处理思考")
-        self.enable_thinking.setChecked(bool(models.get(f"{prefix}_enable_thinking", False)))
-        grid.addWidget(self.enable_thinking, 8, 1)
+        self._reasoning_scope = None
+        self._reasoning_drafts = {}
+        self.reasoning_mode = FramelessPopupCombo()
+        for label, value in (("关闭", "off"), ("使用服务商默认", "default"),
+                             ("低（同意使用最低思考档）", "low"), ("高", "high")):
+            self.reasoning_mode.addItem(label, value)
+        grid.addWidget(QLabel("思考模式"), 8, 0)
+        grid.addWidget(self.reasoning_mode, 8, 1)
         self.thinking_protocol = FramelessPopupCombo()
-        for label, value in (("自动（中转能力未知）", "auto"),
-                ("DeepSeek thinking（已确认）", "deepseek"),
-                ("enable_thinking（已确认）", "enable_thinking"),
-                ("reasoning_effort（已确认）", "reasoning_effort")):
+        for label, value in (("自动识别", "auto"), ("DeepSeek thinking.type", "deepseek"),
+                ("reasoning_effort", "reasoning_effort"), ("DeepSeek 双字段（中转测试）", "deepseek_combined"),
+                ("Qwen / DashScope", "enable_thinking"), ("OpenRouter", "openrouter"),
+                ("Anthropic Messages", "anthropic")):
             self.thinking_protocol.addItem(label, value)
-        self.thinking_protocol.setCurrentIndex(max(0, self.thinking_protocol.findData(models.get(f"{prefix}_thinking_protocol", "auto"))))
         grid.addWidget(QLabel("思考控制协议"), 9, 0)
         grid.addWidget(self.thinking_protocol, 9, 1)
-        # 2026-11-16: still-failed format/truncation results get one more try, thinking one level higher.
-        self.escalate_on_failure = QCheckBox("失败时提高思考等级再试一次")
+        self.escalate_on_failure = QCheckBox("部分失败时保留思考设置再试一次")
         self.escalate_on_failure.setChecked(bool(models.get(f"{prefix}_escalate_on_failure", True)))
-        self.escalate_on_failure.setToolTip(
-            "JSON 格式错误或输出被截断、正常重试后仍失败的字幕，集中起来用同一个模型、"
-            "高一级的思考再请求一轮；会多花一些费用和时间。思考控制协议为“自动”且服务未知时不会生效。")
+        self.escalate_on_failure.setToolTip("对符合条件的失败字幕缩小批次或增加输出预算，继续使用同一思考模式。")
         grid.addWidget(self.escalate_on_failure, 10, 1)
         # 2026-11-18: DeepSeek's strict tool call makes the answer follow the JSON contract.
         self.strict_output = QCheckBox("严格结构化输出（DeepSeek 官方，测试中）")
@@ -882,6 +890,25 @@ class EndpointEditor(QFrame):
             "只对 DeepSeek 官方服务的流式请求生效：用 beta 接口的严格工具调用让模型按字段契约回答。"
             "服务拒绝或回答不可用时，同一请求自动改用 JSON Mode，之后本次运行不再尝试。")
         grid.addWidget(self.strict_output, 11, 1)
+        self.reasoning_custom = QPlainTextEdit()
+        self.reasoning_custom.setObjectName("endpointDiagnostics")
+        self.reasoning_custom.setPlaceholderText('{"thinking":{"type":"disabled"}}')
+        self.reasoning_custom.setMaximumHeight(58)
+        grid.addWidget(QLabel("自定义思考 JSON"), 12, 0)
+        grid.addWidget(self.reasoning_custom, 12, 1)
+        self.reasoning_preview = QPlainTextEdit()
+        self.reasoning_preview.setObjectName("endpointDiagnostics")
+        self.reasoning_preview.setReadOnly(True)
+        self.reasoning_preview.setMaximumHeight(90)
+        grid.addWidget(QLabel("最终思考参数"), 13, 0)
+        grid.addWidget(self.reasoning_preview, 13, 1)
+        self.reasoning_status = QLabel()
+        self.reasoning_status.setWordWrap(True)
+        grid.addWidget(self.reasoning_status, 14, 1)
+        self.reasoning_probe = QPushButton("检测模型思考能力")
+        self.reasoning_probe.setObjectName("endpointSecondary")
+        self.reasoning_probe.clicked.connect(self.test_connection)
+        grid.addWidget(self.reasoning_probe, 15, 1)
         grid.setColumnStretch(1, 1)
         advanced_layout.addLayout(grid)
         self.advanced_box.hide()
@@ -938,9 +965,17 @@ class EndpointEditor(QFrame):
         self.key.textChanged.connect(self._invalidate_model_discovery)
         for signal in (self.model.currentTextChanged, self.base_url.textChanged,
                 self.key.textChanged, self.protocol.currentIndexChanged,
-                self.json_mode.toggled, self.structured_output.toggled, self.enable_thinking.toggled,
+                self.json_mode.toggled, self.structured_output.toggled, self.reasoning_mode.currentIndexChanged,
+                self.reasoning_custom.textChanged,
                 self.max_output_tokens.valueChanged, self.thinking_protocol.currentIndexChanged):
             signal.connect(self._invalidate_endpoint_tasks)
+        for signal in (self.model.currentTextChanged, self.base_url.textChanged,
+                       self.protocol.currentIndexChanged, self.service.currentIndexChanged):
+            signal.connect(self._load_reasoning_scope)
+        for signal in (self.reasoning_mode.currentIndexChanged, self.thinking_protocol.currentIndexChanged,
+                       self.reasoning_custom.textChanged, self.max_output_tokens.valueChanged):
+            signal.connect(self._show_reasoning_preview)
+        self._load_reasoning_scope()
         self._queue_model_discovery()
         self.refresh_theme_palette()
 
@@ -1198,7 +1233,7 @@ class EndpointEditor(QFrame):
             QFrame#endpointCard QLabel#statusWarn {{ color: {theme.warning}; }}
             QFrame#endpointCard QLabel#endpointStep {{ color: {theme.text_secondary}; font-size: 12px; font-weight: 700; }}
             QFrame#endpointCard QWidget#endpointAdvancedBox {{ background: transparent; border: 0; }}
-            QFrame#endpointCard QLabel {{ color: {theme.text}; background: transparent; }}
+            QFrame#endpointCard QLabel, QFrame#endpointCard QCheckBox {{ color: {theme.text}; background: transparent; }}
             QFrame#endpointCard QLabel#endpointTitle {{ color: {accent}; font-size: 15px; font-weight: 700; }}
             QFrame#endpointCard QLineEdit, QFrame#endpointCard QComboBox {{
                 color: {theme.text}; background: {theme.surface_input}; border: 1px solid {theme.border};
@@ -1241,11 +1276,13 @@ class EndpointEditor(QFrame):
         return prov, burl
 
     def _refresh_endpoint_hint(self):
+        from .llm_config import default_protocol, endpoint_url
         base = normalize_base_url(self.base_url.text())
-        protocol = str(self.protocol.currentData() or "auto")
-        suffix = ("/messages" if str(self.provider.currentData() or "") == "anthropic"
-                  else "/responses" if protocol == "responses" else "/chat/completions")
-        bind_text(self.endpoint_hint, "实际请求：{url}", url=base+suffix) if base else bind_text(self.endpoint_hint, "填写 Base URL，程序会按所选协议补全请求路径。")
+        provider = str(self.provider.currentData() or "custom")
+        selected = self.protocol.currentData()
+        protocol = default_protocol(provider, base) if selected == "auto" or provider == "anthropic" else selected
+        url = endpoint_url(base, protocol, self.model.currentText().strip()) if base else ""
+        bind_text(self.endpoint_hint, "实际请求：{url}", url=url) if url else bind_text(self.endpoint_hint, "填写 Base URL，程序会按所选协议补全请求路径。")
 
     def _on_key_text_changed(self, text: str) -> None:
         # Manual editing (including select-all + delete) never clears the
@@ -1347,6 +1384,85 @@ class EndpointEditor(QFrame):
                 self.status.style().unpolish(self.status)
                 self.status.style().polish(self.status)
 
+    def _reasoning_endpoint(self):
+        from .llm_config import default_protocol
+        service = str(self.service.currentData() or "custom")
+        provider = AI_SERVICE_SPECS[service]["provider"]
+        base = normalize_base_url(self.base_url.text())
+        protocol = self.protocol.currentData()
+        if protocol == "auto" or provider == "anthropic":
+            protocol = default_protocol(provider, base)
+        return dict(provider=provider, base_url=base, model=self.model.currentText().strip(),
+                    protocol=protocol, max_output_tokens=self.max_output_tokens.value())
+
+    def _reasoning_editor_values(self):
+        return (self.reasoning_mode.currentData(), self.thinking_protocol.currentData(),
+                self.reasoning_custom.toPlainText())
+
+    def _load_reasoning_scope(self, *_):
+        from PySide6.QtCore import QSignalBlocker
+        from .reasoning_adapter import profile_from_settings, profile_key
+        from .subtitle_request_policy import settings_policy
+        endpoint = self._reasoning_endpoint()
+        try:
+            scope = profile_key(*(endpoint[k] for k in ("provider", "base_url", "model", "protocol")))
+        except ValueError:
+            scope = None
+        if scope == self._reasoning_scope:
+            self._show_reasoning_preview()
+            return
+        if self._reasoning_scope:
+            self._reasoning_drafts[self._reasoning_scope] = self._reasoning_editor_values()
+        self._reasoning_scope = scope
+        settings = self._settings_ref or {}
+        saved = profile_from_settings(settings, endpoint) if scope else ""
+        legacy = settings_policy(settings, self.stage, endpoint)
+        mode, dialect, custom = self._reasoning_drafts.get(
+            scope, ("high" if legacy["enable_thinking"] else "off", legacy["thinking_protocol"], ""))
+        if saved and scope not in self._reasoning_drafts:
+            try:
+                value = json.loads(saved)
+                mode, dialect = value["mode"], value["dialect"]
+                custom = json.dumps(value["custom"], ensure_ascii=False) if value["custom"] else ""
+            except (KeyError, TypeError, ValueError):
+                custom = saved
+        blockers = [QSignalBlocker(widget) for widget in
+                    (self.reasoning_mode, self.thinking_protocol, self.reasoning_custom)]
+        self.reasoning_mode.setCurrentIndex(max(0, self.reasoning_mode.findData(mode)))
+        self.thinking_protocol.setCurrentIndex(max(0, self.thinking_protocol.findData(dialect)))
+        self.reasoning_custom.setPlainText(custom)
+        del blockers
+        self._show_reasoning_preview()
+
+    def _show_reasoning_preview(self, *_):
+        from .reasoning_adapter import encode_profile, wire_identity
+        endpoint = self._reasoning_endpoint()
+        mode, dialect, custom = self._reasoning_editor_values()
+        try:
+            profile = encode_profile(mode, dialect, json.loads(custom) if custom.strip() else {})
+            result = wire_identity({**endpoint, "reasoning_profile": profile})
+        except (ValueError, KeyError, TypeError):
+            self.reasoning_preview.clear()
+            self.reasoning_status.setText("思考 JSON 无效或与当前模式冲突。")
+            self._reasoning_error = "请修正高级设置中的自定义思考 JSON。"
+            self._reasoning_profile = ""
+            self.reasoning_probe.setEnabled(False)
+            return
+        self._reasoning_error = ""
+        self._reasoning_profile = profile
+        self.reasoning_preview.setPlainText(json.dumps(result["parameters"], ensure_ascii=False, indent=2))
+        notes = {
+            "disable_not_supported": "该模型不能关闭思考。可明确选择低档后再试。",
+            "unsupported_mode": "该模型或端点不支持此档位。",
+            "unsupported_or_unknown": "此端点的思考能力未知，可选择兼容协议或填写已确认的 JSON。",
+            "not_requested": "沿用服务商默认设置。",
+            "requested_unverified": "参数已生成，检测后可查看服务商响应证据。",
+            "ungraded_thinking": "此接口仅提供开启／关闭开关，开启后的强度由服务商决定。",
+            "fixed_non_reasoning": "已识别为非推理模型，响应仍会核对实际用量。",
+        }
+        self.reasoning_status.setText(endpoint["protocol"] + " · " + notes.get(result["capability"], ""))
+        self.reasoning_probe.setEnabled(result["capability"] not in {"disable_not_supported", "unsupported_mode"})
+
     def values(self) -> dict:
         service_id = str(self.service.currentData() or "custom")
         spec = AI_SERVICE_SPECS[service_id]
@@ -1364,7 +1480,10 @@ class EndpointEditor(QFrame):
             "structured_output": self.structured_output.isChecked(),
             "stream": False,
             "max_output_tokens": self.max_output_tokens.value(),
-            "enable_thinking": self.enable_thinking.isChecked(),
+            "enable_thinking": self.reasoning_mode.currentData() in {"low", "high"},
+            "reasoning_scope": self._reasoning_scope,
+            "reasoning_profile": getattr(self, "_reasoning_profile", ""),
+            "reasoning_error": getattr(self, "_reasoning_error", ""),
             "thinking_protocol": self.thinking_protocol.currentData(),
             "escalate_on_failure": self.escalate_on_failure.isChecked(),
             "strict_output": self.strict_output.isChecked(),
@@ -1397,8 +1516,9 @@ class EndpointEditor(QFrame):
         finally:
             del blockers
         self.max_output_tokens.setValue(int(values.get("max_output_tokens", 10000)))
-        self.enable_thinking.setChecked(bool(values.get("enable_thinking", False)))
-        self.thinking_protocol.setCurrentIndex(max(0, self.thinking_protocol.findData(values.get("thinking_protocol", "auto"))))
+        self._reasoning_scope = None
+        self._reasoning_drafts.clear()
+        self._load_reasoning_scope()
         self.escalate_on_failure.setChecked(bool(values.get("escalate_on_failure", True)))
         self.strict_output.setChecked(bool(values.get("strict_output", False)))
         self.refresh_secret_status()
@@ -1430,6 +1550,8 @@ class EndpointEditor(QFrame):
         service_id = str(values.get("service") or "custom")
         if service_id in AI_SERVICE_SPECS:
             activate_ai_service(overlay, service_id, stage=self.stage)
+        if values["reasoning_scope"] and values["reasoning_profile"]:
+            overlay["models"].setdefault("reasoning_profiles", {})[values["reasoning_scope"]] = values["reasoning_profile"]
         for key in ("max_output_tokens", "enable_thinking", "thinking_protocol"):
             overlay["models"][f"{self.stage}_{key}"] = values[key]
         overlay["models"][f"{self.stage}_transport"] = values["transport"]
@@ -1731,6 +1853,9 @@ class EndpointEditor(QFrame):
 
     def test_connection(self):
         values = self.values()
+        if values.get("reasoning_error") and values["transport"] == AITransport.OPENAI_COMPATIBLE.value:
+            self.status.setText(values["reasoning_error"])
+            return
         if values["transport"] != AITransport.OPENAI_COMPATIBLE.value:
             if self._tester is not None and self._tester.isRunning():
                 self._tester.requestInterruption()
@@ -1767,13 +1892,10 @@ class EndpointEditor(QFrame):
             key = prov_key
         if not key and prov in {"bailian", "dashscope"}:
             key = resolve_api_key(self.stage)[0]
-        endpoint = {
-            **values,
-            "api_key": key,
-            "url": responses_url(values["base_url"]) if values.get("protocol") == "responses" else chat_completion_url(values["base_url"]),
-        }
-        if values.get("provider") == "anthropic":  # Claude: the Messages API (2026-10-18)
-            endpoint.update(protocol="anthropic_messages", url=messages_url(values["base_url"]))
+        from .llm_config import endpoint_url
+        effective = self._reasoning_endpoint()
+        endpoint = {**effective, "api_key": key,
+                    "url": endpoint_url(effective["base_url"], effective["protocol"], effective["model"])}
         try:
             validate_endpoint(endpoint, "当前模型")
         except RuntimeError as exc:
@@ -1782,7 +1904,10 @@ class EndpointEditor(QFrame):
             self.status.style().unpolish(self.status)
             self.status.style().polish(self.status)
             return
+        if self._tester is not None and self._tester.isRunning():
+            return
         self.test_button.setEnabled(False)
+        self.reasoning_probe.setEnabled(False)
         bind_text(self.status, '正在测试…')
         self._tester = ProviderConnectionTester(self._provider_settings(), self.stage, prompt_test=True)
         self._tester.finished_status.connect(self._endpoint_callback(self._tester, '_tester', self._connection_finished))
@@ -1838,6 +1963,7 @@ class EndpointEditor(QFrame):
         except Exception:  # noqa: BLE001 - a record that cannot be written only means "test again"
             pass
         self.connection_tested.emit(bool(ok))
+        self._show_reasoning_preview()
         self.test_button.setEnabled(True)
         bind_text(self.test_button, '测试连接')
         if self.values()['transport'] != AITransport.OPENAI_COMPATIBLE.value:
@@ -1852,7 +1978,28 @@ class EndpointEditor(QFrame):
                     message = f"{message} · 尚未保存：点击保存后 AI 设计才会使用此 Provider"
             except (OSError, RuntimeError, TypeError, ValueError):
                 pass
-        self.status.setObjectName("statusGood" if ok else "statusWarn")
+        evidence = (getattr(self._tester, "diagnostics", {}) or {}).get("reasoning_receipt", {})
+        warning = False
+        if evidence:
+            state = evidence["thinking_compatibility"]
+            reasoning_tokens = evidence["reasoning_tokens"]
+            labels = {
+                "reported_zero": "已请求关闭，服务商报告 0 个思考 Token",
+                "reasoning_returned_despite_disable": "警告：请求关闭后，服务商仍返回思考证据",
+                "disable_unverified": "已发送关闭参数，服务商没有提供可验证的证据",
+                "disable_not_configured": "未识别可用的关闭协议，未发送关闭参数",
+                "fixed_non_reasoning": "此接口模型资料标记为非推理模型",
+                "disable_not_supported": "该模型不支持关闭",
+                "request_rejected": "API 拒绝思考参数",
+            }
+            count = "未知" if reasoning_tokens is None else str(reasoning_tokens)
+            receipt = labels.get(state, "请求完成")
+            self.reasoning_status.setText(f"{receipt} · 思考 Token {count}")
+            warning = state in {"reasoning_returned_despite_disable", "disable_unverified",
+                                "disable_not_configured", "disable_not_supported", "request_rejected"}
+            if warning:
+                message = self.reasoning_status.text()
+        self.status.setObjectName("statusGood" if ok and not warning else "statusWarn")
         self.status.setText(message)
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)

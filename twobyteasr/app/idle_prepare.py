@@ -96,6 +96,11 @@ def _dialog_or_motion() -> bool:
     try:
         if motion is not None and motion.flying():
             return True
+        # 2026-11-27 (user: when Home appears and while 兔白 plays with the page she stutters): a
+        # step here held the GUI thread 30-200 ms between her frames. Not while she is in motion.
+        from ..design import frame_clock
+        if frame_clock.motion_active():
+            return True
         from ..design import transitions
         return bool(transitions._ACTIVE_FADES)
     except Exception:  # noqa: BLE001 - never stop preparation over a probe

@@ -138,6 +138,67 @@ def build_menu(page, menu, cue_id):
         menu.addAction(tr("选择关联原文并添加译文…"), lambda: edit_translation(page, ""))
 
 
+def build_cue_list_menu(page, menu, cue_id: str) -> None:
+    """Context menu for a cue card in the left subtitle list."""
+    from .studio_cue_table import cue_translation_text, project_has_translations
+    from .translation_actions import translate_selected
+
+    if not page.project or not cue_id:
+        return
+    cue = next((item for item in page.project.cues if item.id == cue_id), None)
+    has_translations = project_has_translations(page.project) or getattr(getattr(page, "cue_model", None), "text_layer", "original") != "original"
+    menu.setToolTipsVisible(True)
+    if has_translations:
+        has_cue_trans = bool(cue is not None and cue_translation_text(page.project, cue).strip())
+        menu.addAction(tr("编辑译文") if has_cue_trans else tr("添加译文"),
+                       lambda cid=cue_id: page._open_caption_editor(cid, "translation"))
+        menu.addAction(tr("编辑原文"),
+                       lambda cid=cue_id: page._open_caption_editor(cid, "original"))
+        retranslate_action = menu.addAction(
+            tr("重翻此句"),
+            lambda cid=cue_id: translate_selected(page, cue_id=cid),
+        )
+        retranslate_action.setToolTip(tr("只重翻这一句译文，不影响其他字幕，可 Ctrl+Z 撤销"))
+        menu.addSeparator()
+    else:
+        menu.addAction(tr("编辑原文"),
+                       lambda cid=cue_id: page._open_caption_editor(cid, "original"))
+        menu.addAction(tr("添加译文"), lambda cid=cue_id: edit_translation(page, cid))
+        menu.addSeparator()
+    menu.addAction(tr("翻译所选字幕…"), lambda: translate_selected(page))
+    if callable(getattr(page, "_split_current", None)):
+        menu.addSeparator()
+        menu.addAction(tr("拆分"), page._split_current)
+    if callable(getattr(page, "_merge_next", None)):
+        menu.addAction(tr("与下一条合并"), page._merge_next)
+    if callable(getattr(page, "_delete_current", None)):
+        menu.addAction(tr("删除"), page._delete_current)
+    append_rough_cut = getattr(page, "_append_rough_cut_context_actions", None)
+    if callable(append_rough_cut):
+        append_rough_cut(menu, cue_id)
+
+
+def show_cue_list_context_menu(page, pos) -> None:
+    """Right-click menu on the left subtitle list cards."""
+    table = getattr(page, "cue_table", None)
+    model = getattr(page, "cue_model", None)
+    if table is None or model is None or not getattr(page, "project", None):
+        return
+    index = table.indexAt(pos)
+    if not index.isValid():
+        return
+    cue_id = str(model.data(model.index(index.row(), 0), Qt.ItemDataRole.UserRole) or "")
+    if not cue_id:
+        return
+    if cue_id not in (getattr(page, "selected_cue_ids", lambda: [])() or ()):
+        if callable(getattr(page, "select_cue", None)):
+            page.select_cue(cue_id)
+    from ..design.studio_theme import create_studio_menu
+    menu = create_studio_menu(table)
+    build_cue_list_menu(page, menu, cue_id)
+    menu.exec(table.viewport().mapToGlobal(pos))
+
+
 def handle_key(page, event):
     if not page.project or getattr(page.timeline, "active_subtitle_layer", "original") != "translation" or page._editing_has_focus():
         return False
@@ -177,7 +238,9 @@ def sync_editor_layer(page, *, explicit=False):
     timeline = page.timeline
     translation = timeline.active_subtitle_layer == "translation"
     model = getattr(page, 'cue_model', None)
-    if model is not None and hasattr(model, 'set_text_layer'):
+    if (model is not None and hasattr(model, 'set_text_layer')
+            and not getattr(page, '_syncing_layer_from_table', False)
+            and getattr(model, 'text_layer', 'original') != 'bilingual'):
         from PySide6.QtCore import QSignalBlocker
         table = getattr(page, 'cue_table', None)
         blocker = QSignalBlocker(table.selectionModel()) if table is not None else None

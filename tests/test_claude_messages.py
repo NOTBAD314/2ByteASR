@@ -56,7 +56,7 @@ def posted(monkeypatch):
     calls = []
 
     def install(response):
-        def post(url, headers=None, json=None, stream=False, timeout=None):
+        def post(url, headers=None, json=None, stream=False, timeout=None, allow_redirects=True):
             calls.append({"url": url, "headers": dict(headers or {}), "body": json})
             return response
         from twobyteasr.providers import network_policy
@@ -189,7 +189,7 @@ def test_provider_sends_a_messages_request_and_parses_json(posted):
     assert call["headers"]["x-api-key"] == "sk-ant-x" and call["headers"]["anthropic-version"] == "2023-06-01"
     assert "Authorization" not in call["headers"]
     assert call["body"]["model"] == "claude-sonnet-5-5" and "temperature" not in call["body"]
-    assert call["body"]["system"].startswith("只回 JSON") and call["body"]["output_config"] == {"effort": "low"}
+    assert call["body"]["system"].startswith("只回 JSON") and call["body"]["thinking"] == {"type": "between_tools"}
     assert provider.last_invocation_trace["request_id"] == "msg_01"
     assert provider.last_invocation_trace["reported_usage"]["completion_tokens"] == 7
 

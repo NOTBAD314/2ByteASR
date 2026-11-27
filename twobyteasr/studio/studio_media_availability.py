@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt, QRect
 from PySide6.QtGui import QImage, QPainter, QColor, QFont
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QMessageBox
 
-from ..media.media_availability import apply_availability, media_available, probe_sources, probe_due, availability_identity
+from ..media.media_availability import apply_availability, media_available, probe_sources, probe_due, playback_identity_changed
 
 from ..i18n import bind_text
 
@@ -262,10 +262,10 @@ class StudioMediaAvailability(QObject):
         image.fill(QColor('#202124'))
         painter = QPainter(image)
         painter.setPen(QColor('#c4c5c7'))
-        painter.setFont(QFont('Microsoft YaHei UI', 32))
+        painter.setFont(_ui_font(32))
         painter.drawText(QRect(80, 390, 1760, 90), Qt.AlignCenter,
                          '媒体脱机' if active else '当前位置没有视频')
-        painter.setFont(QFont('Microsoft YaHei UI', 20))
+        painter.setFont(_ui_font(20))
         painter.drawText(QRect(80, 500, 1760, 140), Qt.AlignHCenter | Qt.TextWordWrap,
                          '、'.join(offline[key].display_name for key in sorted(active)) if active else '字幕与时间轴仍可播放')
         painter.end()
@@ -322,7 +322,7 @@ class StudioMediaAvailability(QObject):
         if page.project is not project or not set(paths).issubset({a.canonical_source for a in project.media_pool}):
             return
         previous = getattr(project, '_media_availability', {})
-        playback_changed = any(availability_identity(previous.get(path, {})) != availability_identity(row)
+        playback_changed = any(playback_identity_changed(previous.get(path, {}), row)
                                for path, row in results.items())
         changed = apply_availability(project, results)
         if not changed:
@@ -340,7 +340,7 @@ class StudioMediaAvailability(QObject):
         from ..media.indexed_media import GLOBAL_INDEXED_MEDIA
         for path, row in results.items():
             GLOBAL_MEDIA_SERVICE.invalidate_metadata(path, row.get('signature'))
-            if availability_identity(previous.get(path,{}))!=availability_identity(row):
+            if playback_identity_changed(previous.get(path, {}), row):
                 GLOBAL_INDEXED_MEDIA.invalidate_source(path)
         page._audio_contract_signature = None
         from ..playback.playback_plan import invalidate_playback_plan
@@ -350,3 +350,10 @@ class StudioMediaAvailability(QObject):
         page.ensure_active_subtitle_renderer(reason='media_availability')
         page._studio_trace('MEDIA_AVAILABILITY', assets=[dict(asset_id=a.asset_id, offline=a.offline,
             status=results.get(a.canonical_source, {}).get('status')) for a in project.media_pool])
+
+def _ui_font(points):
+    """The interface face (随包思源黑体), as everywhere else (2026-11-26)."""
+    from ..design.typography import application_font
+    font = application_font()
+    font.setPointSize(points)
+    return font

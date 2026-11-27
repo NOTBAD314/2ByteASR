@@ -12,15 +12,18 @@ from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import QButtonGroup, QFrame, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from twobyteasr.design.ui_theme import GREEN, INK, MUTED
-from .typography import emphasis_qss
+from .typography import PLAYFUL_FONT_STACK, emphasis_qss
 
 
 # Pages that share this sidebar (Model Workshop, Term Library, History) used
 # different page/sidebar stylesheets, so switching between them changed the
 # title size and the navigation height. Sizes live here; colours stay themed by
 # each page. A widget's own style sheet wins over its ancestors' sheets.
-PAGE_TITLE_QSS = "font-size: 24px; font-weight: 800;"
-SIDEBAR_HEADING_QSS = "font-size: 14px; font-weight: 600;"
+# 2026-11-26 (user: the workshop's side column and titles were all 思源黑体, which made the few
+# 猫啃什锦黑 header buttons look out of place): the page title, the column heading and the
+# navigation rows take the playful accent too; the cards, lists and numbers stay 思源黑体.
+PAGE_TITLE_QSS = f"font-family: {PLAYFUL_FONT_STACK}; font-size: 26px; font-weight: 800;"
+SIDEBAR_HEADING_QSS = f"font-family: {PLAYFUL_FONT_STACK}; font-size: 15px; font-weight: 600;"
 
 # 2026-10-12: one sidebar column for all three pages. Its width is constant
 # (logical px, scaled by the interface zoom) whatever a page adds below the
@@ -60,13 +63,14 @@ QPushButton#workspaceNav {{
     border: 1px solid transparent; border-radius: 10px;
     padding: 9px 12px; margin: 0px;
     min-height: 22px; max-height: 22px;
-    font-size: 13px; font-weight: 500; text-align: left;
+    font-family: {PLAYFUL_FONT_STACK}; font-size: 15px; font-weight: 500; text-align: left;
 }}
 QPushButton#workspaceNav:hover, QPushButton#workspaceNav:pressed {{
     background: {theme.selected}; color: {theme.text}; border-color: transparent;
 }}
 QPushButton#workspaceNav:checked {{
-    background: {theme.accent_tint}; color: {theme.text}; font-weight: 600; border-color: transparent;
+    background: {theme.accent_tint}; color: {theme.text}; font-family: {PLAYFUL_FONT_STACK}; font-weight: 600;
+    border-color: transparent;
 }}
 QPushButton#workspaceNav:focus {{ border-color: {theme.focus}; }}
 """

@@ -2867,7 +2867,9 @@ class RecognitionHistoryPage(QWidget):
         self.search.setObjectName("historySearch")
         bind_text(self.search, translate('搜索素材、模型、AI 或状态', language), property='placeholderText')
         self.search.setClearButtonEnabled(True)
-        self.search.setMinimumWidth(220)
+        # 2026-11-26: the wider interface face (then 猫啃什锦黑) overflowed this row
+        # at 1440 px; a narrower search box and an icon-only repair button fit it.
+        self.search.setMinimumWidth(150)
         self.search.setMaximumWidth(340)
         self.search.textChanged.connect(self._search_changed)
         header.addWidget(self.search, 1)
@@ -2876,8 +2878,9 @@ class RecognitionHistoryPage(QWidget):
         bind_text(online, "在线下载记录")
         online.clicked.connect(self.online_requested)
         header.addWidget(online)
-        self.repair_button = QPushButton(translate("修复索引", language))
+        self.repair_button = QPushButton()
         self.repair_button.setObjectName("historyToolButton")
+        bind_text(self.repair_button, translate("修复索引", language), property='accessibleName')
         self.repair_button.setIcon(qta.icon("fa5s.database", color=MUTED))
         bind_text(self.repair_button, translate('从旧安装目录等已知位置找回历史识别报告（复制到稳定目录，不改动原始文件）', language), property='toolTip')
         self.repair_button.clicked.connect(self._repair_records)

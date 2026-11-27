@@ -56,7 +56,7 @@ CUTE = (
     '嘿嘿，被你发现我啦～',
     '今天也一起做字幕吧！',
     '别戳啦，耳朵会痒的！',
-    '我的眼镜是不是很好看？',
+    '我的眼镜好看吧？',
     '累了就休息一下，喝口水～',
     '字幕做好了记得夸夸我！',
     '跟着亮黄色的字点就对啦',
@@ -192,6 +192,8 @@ def segments_html(segments, colors: dict, shown: int | None = None, keep_words: 
             at += len(words)
         joints = _joints(''.join(words for words, _style in segments), tuple(runs))
     out, left, position = [], (10 ** 9 if shown is None else max(0, int(shown))), 0
+    from ..design.typography import TITLE_FONT_STACK
+    heavy = 'font-family:' + TITLE_FONT_STACK.replace('"', "'") + ';'
     for words, style in segments:
         visible, hidden = words[:left], words[left:]
         left -= len(visible)
@@ -205,13 +207,13 @@ def segments_html(segments, colors: dict, shown: int | None = None, keep_words: 
             safe = html.escape(chunk)
             if style == 'em':
                 color = colors['accent'] if seen else 'transparent'
-                out.append(f'<span style="color:{color}; font-weight:700;">{safe}</span>')
+                out.append(f'<span style="{heavy} color:{color}; font-weight:800;">{safe}</span>')
             elif style == 'hi':
                 if seen:
-                    out.append(f'<span style="background-color:{colors["mark"]}; color:{colors["mark_text"]};'
-                               f' font-weight:700;">{safe}</span>')
+                    out.append(f'<span style="{heavy} background-color:{colors["mark"]}; color:{colors["mark_text"]};'
+                               f' font-weight:800;">{safe}</span>')
                 else:
-                    out.append(f'<span style="color:transparent; font-weight:700;">{safe}</span>')
+                    out.append(f'<span style="{heavy} color:transparent; font-weight:800;">{safe}</span>')
             elif style == 'del':
                 # The line takes the text colour, so words not typed yet carry an invisible line too.
                 # ``StrikeLabel`` draws it itself where the font's own line is too thin to see.
@@ -219,7 +221,7 @@ def segments_html(segments, colors: dict, shown: int | None = None, keep_words: 
                 out.append(f'<span style="{STRIKE_CSS}{color}">{safe}</span>')
             elif style == 'big':
                 color = '' if seen else ' color:transparent;'
-                out.append(f'<span style="font-size:x-large; font-weight:700;{color}">{safe}</span>')
+                out.append(f'<span style="{heavy} font-size:x-large; font-weight:800;{color}">{safe}</span>')
             elif style == 'small':
                 color = '' if seen else ' color:transparent;'
                 out.append(f'<span style="font-size:small;{color}">{safe}</span>')
@@ -652,6 +654,14 @@ class MascotVoice(QObject):
         vowel = lower if typed_vowel else self.VOWELS[code % len(self.VOWELS)]
         consonant = '' if typed_vowel else names[(code >> 3) % len(names)].strip()
         return consonant, vowel, (code >> 7) % len(SPREAD), (code >> 11) % len(GLIDES)
+
+    def play_pcm(self, pcm: bytes) -> bool:
+        """Mix a ready 48 kHz stereo int16 sound into her output (``bunny_sfx``); False when muted or
+        there is no output. 2026-11-27: her sound effects share this one output with her voice."""
+        if not self.enabled or not pcm or self._output() is None:
+            return False
+        self._stream.push(pcm)
+        return True
 
     def say(self, char: str, mood: str = '') -> bool:
         """A syllable for ``char`` (punctuation and spaces are silent); True when one starts.

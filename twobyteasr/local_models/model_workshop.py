@@ -2178,7 +2178,7 @@ QFrame#workshopComboCard {
 }
 QLabel#workshopComboHeading {
     color: #28261f;
-    font-family: "Microsoft YaHei UI", "Microsoft YaHei";
+    font-family: "Source Han Sans SC Medium", "Microsoft YaHei UI";
     font-size: 15px;
     font-weight: 600;
 }
@@ -2468,7 +2468,7 @@ QPlainTextEdit#workshopDownloadLog {
     border: 1px solid #ddd6c8;
     border-radius: 12px;
     padding: 10px;
-    font-family: "Cascadia Mono", "Microsoft YaHei UI";
+    font-family: "Cascadia Mono", "Source Han Sans SC Medium";
     font-size: 11px;
 }
 QDialog#technicalDetails {
@@ -2809,7 +2809,7 @@ QFrame#workshopModelCard:hover {{ background: {row_hover}; border: 0; border-bot
 QFrame#workshopModelCard[selected="true"],
 QFrame#workshopModelCard[selected="true"]:hover {{ background: {t.selected}; border: 0;
     border-bottom: 1px solid transparent; border-radius: 12px; }}
-QLabel#workshopModelTitle {{ color: {t.text}; font-size: 22px; {heavy} }}
+QLabel#workshopModelTitle {{ color: {t.text}; font-size: 19px; {heavy} }}
 QFrame#workshopModelCard QLabel#workshopMuted {{ font-size: 14px; }}
 QFrame#workshopTabBar {{ background: transparent; border: 0; border-bottom: 1px solid {t.border}; }}
 QPushButton#workshopTab {{ background: transparent; border: 0; border-bottom: 3px solid transparent; border-radius: 0;
@@ -4030,6 +4030,9 @@ class ModelDownloadDialog(QDialog):
         environment.insert('TWOBYTEASR_DEPLOY_JOB_ID', self._journal.job_id)
         if self.model.key == 'haas_ja':
             environment.insert('TWOBYTEASR_HAAS_DEVICE', getattr(self, 'haas_device', 'cpu'))
+            environment.insert('TWOBYTEASR_HAAS_PROGRAM', sys.executable)
+            if not getattr(sys, 'frozen', False):
+                environment.insert('TWOBYTEASR_HAAS_ENTRY_SCRIPT', str(self.root / 'quick_start.py'))
         environment.insert("PYTHONUTF8", "1")
         environment.insert("PYTHONIOENCODING", "utf-8")
         try:
@@ -4041,16 +4044,31 @@ class ModelDownloadDialog(QDialog):
         except Exception:
             pass
         try:
-            if self.operation=='verify':
-                from ..recognition.asr import _main_worker_python
-                program=str(_main_worker_python()) if self.model.key!='mfa_aligner' else ''
-                if self.model.key=='mfa_aligner':
+            if self.operation == 'haas_import':
+                program = sys.executable
+                arguments = ['--prepare-haas', '--model', self.model.download_key,
+                             '--device', self.haas_device, '--import-file', str(self.haas_import_file)]
+                if not getattr(sys, 'frozen', False):
+                    arguments[:0] = ['-B', str(self.root / 'quick_start.py')]
+                self.source_combo.setVisible(False)
+            elif self.operation=='verify':
+                if self.model.key == 'haas_ja':
+                    program = sys.executable
+                    arguments = ['--prepare-haas', '--model', self.model.download_key,
+                                 '--device', self.haas_device, '--verify']
+                    if not getattr(sys, 'frozen', False):
+                        arguments[:0] = ['-B', str(self.root / 'quick_start.py')]
+                elif self.model.key=='mfa_aligner':
                     from ..recognition import mfa_aligner
                     program=str(mfa_aligner.runtime_python() or '')
                     if not program:raise RuntimeError('MFA 独立环境未准备完成')
                     activated=mfa_aligner.runtime_environment(mfa_aligner.runtime_prefix(),{k:environment.value(k) for k in environment.keys()})
                     for k,v in activated.items():environment.insert(k,str(v))
-                arguments=['-I','-X','utf8',str(self.root/'scripts/validate_prepared_model.py'),'--root',str(self.root),'--model',str(self.model.download_key)]
+                else:
+                    from ..recognition.asr import _main_worker_python
+                    program=str(_main_worker_python())
+                if self.model.key != 'haas_ja':
+                    arguments=['-I','-X','utf8',str(self.root/'scripts/validate_prepared_model.py'),'--root',str(self.root),'--model',str(self.model.download_key)]
                 self._phase='loading'
                 bind_text(self.headline,'验证 {value0}',value0=self.display_name)
                 bind_text(self.progress_status,'正在验证本机可用性…')
@@ -5947,6 +5965,13 @@ class _ToolStripPlacer(QObject):
 
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Type.Resize:
+            # 2026-11-27 (user: entering 模型工坊 the parts jump around): the first frame showed the
+            # tools beside the tabs and the next one moved them (and every card) down a row. The
+            # bar's first size is decided now, before that first frame; later resizes still wait
+            # for the end of the layout pass.
+            if not self.bar.isVisible() or not getattr(self, '_placed_once', False):
+                self._placed_once = self.bar.isVisible()
+                self.place()
             QTimer.singleShot(0, self.place)  # outside the layout pass
         return False
 
@@ -6824,6 +6849,13 @@ class ModelWorkshopPage(QWidget):
         self.detail_haas_speakers = QCheckBox(tr('本机独立区分说话人'))
         self.detail_haas_speakers.clicked.connect(self._change_haas_configuration)
         options.addWidget(self.detail_haas_speakers, 2, 0, 1, 2)
+        self.detail_haas_disk = QLabel()
+        self.detail_haas_disk.setWordWrap(True)
+        options.addWidget(self.detail_haas_disk, 3, 0, 1, 2)
+        self.detail_haas_import = QPushButton(tr('导入本机 GGUF'))
+        self.detail_haas_import.setObjectName('workshopToolButton')
+        self.detail_haas_import.clicked.connect(self._import_haas)
+        options.addWidget(self.detail_haas_import, 4, 0, 1, 2)
         self.detail_haas_options.hide()
         layout.addWidget(self.detail_haas_options)
         # 文案保持紧凑，主要操作稳定落在详情栏底部。
@@ -6876,9 +6908,11 @@ class ModelWorkshopPage(QWidget):
         if not self._ui_built:
             return
         # Sidebar/detail widths are now set via SizePolicy + max in _build_*; keep only font scaling here.
+        # 2026-11-26 (user): the page title in 猫啃什锦黑 like the side column (ui_navigation.PAGE_TITLE_QSS).
+        from ..design.typography import PLAYFUL_FONT_STACK
         self.page_title.setStyleSheet(
-            emphasis_qss(f"font-family: {TITLE_FONT_STACK}; "
-            f"font-size: {24 if comfortable else 21}px; font-weight: {WEIGHT_SCALE['heavy']};")
+            emphasis_qss(f"font-family: {PLAYFUL_FONT_STACK}; "
+            f"font-size: {26 if comfortable else 23}px; font-weight: {WEIGHT_SCALE['heavy']};")
         )
         self.detail_title.setStyleSheet(
             emphasis_qss(f"font-family: {TITLE_FONT_STACK}; "
@@ -7363,9 +7397,11 @@ class ModelWorkshopPage(QWidget):
             if not mfa_runtime_python():
                 return 'runtime_missing'
         elif model.key == 'haas_ja':
-            from ..recognition.haas_backend import configuration, runtime_executable
-            if not runtime_executable(configuration(self.runtime_settings).device):
-                return 'runtime_missing'
+            from .haas_preparation import readiness
+            from ..recognition.haas_backend import configuration
+            state = readiness(configuration(self.runtime_settings))
+            if state != 'installed':
+                return state
         elif model.platforms:
             # MLX models run in their own torch-free runtime (2026-10-13).
             from ..recognition.mlx_backend import runtime_python as mlx_runtime_python
@@ -7872,10 +7908,20 @@ class ModelWorkshopPage(QWidget):
         self.detail_haas_options.setVisible(model.key == 'haas_ja')
         if model.key == 'haas_ja':
             from ..recognition.haas_backend import configuration
+            from ..model_integrity import locked_model
+            from .haas_runtime import ARCHIVE_BYTES, RUNTIME_BYTES
+            from .model_storage import format_bytes
             config = configuration(self.runtime_settings)
+            weight = locked_model(config.model_key)['download_bytes']
+            runtime = RUNTIME_BYTES[config.device]
+            archive = ARCHIVE_BYTES[config.device] if config.device == 'cuda' else 0
+            self.detail_haas_disk.setText(tr('权重 {weight} · 运行库 {runtime} · 首次安装最多约 {total}',
+                                          weight=format_bytes(weight), runtime=format_bytes(runtime),
+                                          total=format_bytes(weight + runtime + archive)))
             busy = any(self._active_download_dialog(key) for key in model.install_keys)
             self.detail_haas_speakers.setChecked(bool(self.runtime_settings.get('models', {}).get('haas_diarization')))
             self.detail_haas_speakers.setEnabled(not busy and model_platform_available(model))
+            self.detail_haas_import.setEnabled(not busy and model_platform_available(model))
             for selector, value in ((self.detail_haas_precision, config.quantization), (self.detail_haas_device, config.device)):
                 selector.setCurrentIndex(selector.findData(value))
                 selector.setEnabled(not busy and model_platform_available(model))
@@ -8317,6 +8363,7 @@ class ModelWorkshopPage(QWidget):
         auto_start=False,
         source_mode="AUTO",
         operation="prepare",
+        haas_import_file=None,
     ):
         keys = tuple(dict.fromkeys(str(key) for key in download_keys if key))
         if not keys:
@@ -8330,6 +8377,7 @@ class ModelWorkshopPage(QWidget):
             if same_keys or (running and operation!='verify' and getattr(existing,'operation','prepare')!='verify'):
                 if same_keys and not running:
                     existing.operation=operation
+                    existing.haas_import_file = haas_import_file
                     existing.source_combo.setVisible(operation!='verify')
                 # P0-7: Surface even if previously hidden (download continues in background)
                 existing.showNormal()
@@ -8362,6 +8410,7 @@ class ModelWorkshopPage(QWidget):
         )
         if haas_key:
             dialog.haas_device = configuration(self.runtime_settings).device
+            dialog.haas_import_file = haas_import_file
         dialog.source_combo.setCurrentIndex(max(0, dialog.source_combo.findData(source_mode)))
         dialog._launch_origin = 'first_use_preset' if auto_start else 'user_model_workshop'
         self._download_dialogs.append(dialog)
@@ -8378,6 +8427,17 @@ class ModelWorkshopPage(QWidget):
         if auto_start:
             QTimer.singleShot(0, dialog.start)
         return dialog
+
+    def _import_haas(self):
+        from PySide6.QtWidgets import QFileDialog
+        from ..recognition.haas_backend import configuration
+
+        config = configuration(self.runtime_settings)
+        source, _ = QFileDialog.getOpenFileName(self, tr('选择与当前量化相符的 Haas 权重'), '',
+                                                'GGUF (*.gguf)')
+        if source:
+            self.download_combination([config.model_key], 'Haas-ja-v1.0', operation='haas_import',
+                                      haas_import_file=source, auto_start=True)
 
     def _repair_selected(self):
         model = self._active_haas_variant(self._cards[self.detail_model_key].model)

@@ -618,7 +618,7 @@ def chat_completion_url(base_url: str) -> str:
 def responses_url(base_url: str) -> str:
     """Build the official OpenAI Responses endpoint from a Base URL."""
     base = normalize_base_url(base_url)
-    return f"{base}/responses" if base else ""
+    return f"{base.removesuffix('/responses')}/responses" if base else ""
 
 
 ANTHROPIC_VERSION = "2023-06-01"
@@ -632,14 +632,24 @@ def messages_url(base_url: str) -> str:
     return f"{base}/messages" if base else ""
 
 
-def default_protocol(provider: str) -> str:
+def default_protocol(provider: str, base_url: str = "") -> str:
     """What ``protocol: auto`` means for a provider."""
     provider = str(provider or "")
+    parts = urlsplit(str(base_url or ""))
+    if parts.hostname == "api.anthropic.com" or parts.path.rstrip("/").endswith("/messages"):
+        return "anthropic_messages"
+    if parts.hostname == "generativelanguage.googleapis.com" and not parts.path.rstrip("/").endswith("/openai"):
+        return "gemini_native"
+    if parts.path.rstrip("/").endswith("/responses"):
+        return "responses"
     return ("responses" if provider == "openai" else
             "anthropic_messages" if provider == "anthropic" else "openai_compatible_chat")
 
 
-def endpoint_url(base_url: str, protocol: str) -> str:
+def endpoint_url(base_url: str, protocol: str, model: str = "") -> str:
+    if protocol == "gemini_native":
+        from urllib.parse import quote
+        return f"{base_url.rstrip('/')}/models/{quote(model.removeprefix('models/'), safe='')}:generateContent"
     if protocol == "responses":
         return responses_url(base_url)
     if protocol == "anthropic_messages":
@@ -1034,7 +1044,7 @@ def endpoint_from_settings(settings: dict, stage: str, *, prefer_role: bool = Fa
     model = str(models.get(f"{prefix}_model", "") or "").strip()
     protocol = str(models.get(f"{prefix}_protocol", "auto") or "auto").strip()
     if protocol == "auto":
-        protocol = default_protocol(provider)
+        protocol = default_protocol(provider, base_url)
     ephemeral_key = str(models.get(f"{prefix}_api_key") or "").strip()
     # Preserve old installations whose Bailian key was saved before scoped
     # provider credentials existed. A custom/OpenAI-compatible endpoint must
@@ -1057,7 +1067,7 @@ def endpoint_from_settings(settings: dict, stage: str, *, prefer_role: bool = Fa
                 model = str(active_values.get("model") or model).strip()
             protocol = str(active_values.get("protocol") or protocol).strip()
             if protocol == "auto":
-                protocol = default_protocol(provider)
+                protocol = default_protocol(provider, base_url)
     if provider == "anthropic":
         protocol = "anthropic_messages"  # the Messages API is Claude's only HTTP route here
     if model_is_retired(model):
@@ -1083,16 +1093,18 @@ def endpoint_from_settings(settings: dict, stage: str, *, prefer_role: bool = Fa
     if not api_key and ephemeral_key:
         api_key, key_source = ephemeral_key, "当前输入"
     from .subtitle_request_policy import settings_policy
-    return {
-        **settings_policy(settings, stage),
+    from .reasoning_adapter import profile_from_settings
+    endpoint = {
         "provider": provider,
         "model": model,
         "base_url": base_url,
         "protocol": protocol,
-        "url": endpoint_url(base_url, protocol),
+        "url": endpoint_url(base_url, protocol, model),
         "api_key": api_key,
         "key_source": key_source,
     }
+    return {**endpoint, **settings_policy(settings, stage, endpoint),
+            "reasoning_profile": profile_from_settings(settings, endpoint)}
 
 
 def endpoint_requires_key(endpoint: dict) -> bool:

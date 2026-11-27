@@ -482,6 +482,23 @@ def _text_width(label) -> float:
     return QFontMetricsF(label.font()).horizontalAdvance(text)
 
 
+def settle_layout(window) -> None:
+    """Bring ``window``'s layout up to date before a picture of it is taken: its own pending
+    responsive passes (``settle_for_picture``), then every queued layout request."""
+    from PySide6.QtCore import QCoreApplication, QEvent
+    try:
+        settle = getattr(window, 'settle_for_picture', None)
+        # 2026-11-27: three rounds - a pass of the settle (the zoom, the cards' names) can change
+        # sizes that the next round's layout and passes depend on.
+        for _round in range(3):
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+            if callable(settle):
+                settle()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+    except Exception:  # noqa: BLE001 - a picture slightly off is better than no start
+        pass
+
+
 def _land(shell, window) -> bool:
     """B2's end (2026-11-23): the launch screen's drawer draws Home coming in under it and the
     wordmark flying onto Home's title, ending on Home's picture; then the window goes. The drawer
@@ -496,6 +513,11 @@ def _land(shell, window) -> bool:
                 or os.environ.get('TWOBYTEASR_LAUNCH_FADE', '1') == '0'
                 or not window.isVisible() or window.isMinimized()):
             return False
+        # 2026-11-27 (user: for the first two seconds Home looked broken — the header's buttons cut
+        # to two characters, the left card narrow beside an empty gap): the picture was grabbed at
+        # Home's first paint, while the layout of its final (often just maximized) size was still
+        # queued, and the drawer showed that stale picture until the flight ended. Settle first.
+        settle_layout(window)
         targets = _brand_targets(shell, window)
         if targets is None:
             return False

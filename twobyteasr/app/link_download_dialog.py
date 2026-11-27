@@ -16,19 +16,23 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl, QSize
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QFileDialog, QFrame, QGridLayout, QGroupBox,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QDialog, QFileDialog, QFrame, QGridLayout, QGroupBox,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ..i18n import tr, bind_text
 from ..i18n_widgets import user_text
 from ..design.studio_theme import apply_secondary_surface_theme, refresh_secondary_surface_theme, StudioComboBox
+from ..design.presentation import field_width
 from ..design.soft_widgets import SegmentedControl, WrapLayout
 from ..media.link_catalog import SOURCES, language_matches, preferred_track
 from ..media import link_choices as choices
 from .link_download_controller import link_preferences, save_link_preferences, default_directory
 from .link_download_widgets import (STAGES, FILTERS, CoverView, TaskCard, apply_link_sheet, button, divider,
     icon_button, icon_label, named_label, pill, task_filter, ACTIVE, progress_parts)
+from .link_ticket_widgets import (ClampLabel, EarsButton, HelperLine, KindTicket, MiniTicket, PassChip, Perforation,
+                                  RowLabel, ticket_qss)
+from ..runtime_paths import get_runtime_paths
 
 __all__ = ["LinkDownloadDialog", "STAGES"]
 HISTORY_LIMIT = 12
@@ -268,7 +272,7 @@ class LinkDownloadDialog(QDialog):
         body.setObjectName("linkRoot")
         scroll.setWidget(body)
         outer = QHBoxLayout(body)
-        outer.setContentsMargins(24, 12, 24, 16)
+        outer.setContentsMargins(20, 12, 20, 16)
         outer.addStretch(1)
         center = QWidget()
         center.setMaximumWidth(880)
@@ -280,30 +284,75 @@ class LinkDownloadDialog(QDialog):
         column.setSpacing(10)
         self.hero_space = QWidget()
         column.addWidget(self.hero_space)
+        # 2026-11-26 (user picked draft A 售票窗口): 兔白 at the ticket window, her
+        # speech bubble is the page title; the link, the download kind and the
+        # login stamp share one counter; recent parses are ticket stubs; 兔白助手
+        # and the Ctrl+V tip are one quiet line.
+        # 兔白 is not in the layout: she floats over the counter's top-left corner
+        # with her feet inside its edge, peeking out from behind it (2026-11-26,
+        # user: her place and size should match the draft, the bubble was too small).
+        from ..design.bunny_mascot import BunnyMascot
+        self.booth_bunny = BunnyMascot(center, height=92, motion="bob")
         self.hero_head = QWidget()
-        head = QVBoxLayout(self.hero_head)
-        head.setContentsMargins(0, 0, 0, 4)
-        head.setSpacing(4)
-        title = named_label(tr("下载视频与字幕"), "linkHeroTitle")
-        note = named_label(tr("支持 Bilibili、YouTube 等视频链接；尝试获取字幕并导入工作台"), "linkHeroNote")
-        for label in (title, note):
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            head.addWidget(label)
+        head = QHBoxLayout(self.hero_head)
+        head.setContentsMargins(0, 0, 0, 12)
+        head.setSpacing(0)
+        head.addSpacing(self.BUNNY_INSET + self.booth_bunny.width() + 4)
+        bubble = QFrame()
+        bubble.setObjectName("linkBubble")
+        words = QHBoxLayout(bubble)
+        words.setContentsMargins(18, 11, 20, 11)
+        words.setSpacing(10)
+        words.addWidget(named_label(tr("下载视频与字幕"), "linkBubbleTitle", wrap=True))
+        words.addWidget(named_label(tr("粘贴链接，兔白帮你看看有没有字幕"), "linkBubbleNote", wrap=True))
+        head.addWidget(bubble, 0, Qt.AlignmentFlag.AlignBottom)
+        head.addStretch(1)
+        from .ui_zoom import set_size
+        set_size(self.hero_head, min_h=max(0, self.booth_bunny.height() - self.BUNNY_OVERLAP - 10))
         column.addWidget(self.hero_head)
+        self.counter = QFrame()
+        self.counter.setObjectName("linkCounter")
+        counter = QVBoxLayout(self.counter)
+        counter.setContentsMargins(16, 16, 16, 14)
+        counter.setSpacing(12)
+        column.addWidget(self.counter)
+        self.counter.installEventFilter(self)
+        self.field_row = QHBoxLayout()
+        self.field_row.setSpacing(10)
         self.url_field = QFrame()
         self.url_field.setObjectName("linkUrlField")
         field = QHBoxLayout(self.url_field)
-        field.setContentsMargins(18, 0, 18, 0)
-        field.setSpacing(10)
+        field.setContentsMargins(18, 0, 6, 0)
+        field.setSpacing(8)
         field.addWidget(icon_label("fa5s.link", 15, "muted"))
+        from ..design.typography import content_font
+
         self.url = QLineEdit()
-        self.url.setPlaceholderText(tr("粘贴 Bilibili、YouTube 或其他网站的单个视频链接"))
+        self.url.setFont(content_font())
+        self.url.setPlaceholderText(tr("粘贴视频链接，或在字幕工作台按 Ctrl+V"))
         self.url.returnPressed.connect(self.parse)
         self.url.textChanged.connect(self._url_changed)
         field.addWidget(self.url, 1)
-        column.addWidget(self.url_field)
-        controls = QHBoxLayout()
-        controls.setSpacing(10)
+        self.parsed_pill = pill(tr("已解析"), "ok")
+        self.parsed_pill.hide()
+        field.addWidget(self.parsed_pill)
+        self.paste_button = button(tr("粘贴"), "linkGhost", "fa5s.paste", "secondary")
+        self.paste_button.setProperty("small", True)
+        self.paste_button.clicked.connect(self.paste_from_clipboard)
+        field.addWidget(self.paste_button)
+        self.cancel_parse = button(tr("取消解析"), "linkGhost")
+        self.cancel_parse.setProperty("small", True)
+        self.cancel_parse.clicked.connect(self._cancel_parse)
+        self.cancel_parse.setEnabled(False)
+        self.cancel_parse.hide()
+        field.addWidget(self.cancel_parse)
+        self.parse_button = button(tr("解析"), "linkPrimary", "fa5s.search", "on_accent")
+        self.parse_button.setProperty("small", True)
+        self.parse_button.clicked.connect(self.parse)
+        self.parse_button.setEnabled(False)
+        field.addWidget(self.parse_button)
+        self.field_row.addWidget(self.url_field, 1)
+        counter.addLayout(self.field_row)
         self.mode = StudioComboBox()
         for value, label in choices.MODES:
             self.mode.addItem(tr(label), value)
@@ -313,97 +362,157 @@ class LinkDownloadDialog(QDialog):
         self.mode_segment.setObjectName("linkSegmented")
         self.mode_segment.setAccessibleName(tr("下载内容"))
         self.mode_segment.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        controls.addWidget(self.mode_segment, 0)
-        controls.addStretch(1)
-        self.cancel_parse = button(tr("取消解析"), "linkGhost")
-        self.cancel_parse.clicked.connect(self._cancel_parse)
-        self.cancel_parse.setEnabled(False)
-        self.cancel_parse.hide()
-        controls.addWidget(self.cancel_parse)
-        self.parse_button = button(tr("解析视频"), "linkPrimary", "fa5s.search", "on_accent")
-        self.parse_button.clicked.connect(self.parse)
-        self.parse_button.setEnabled(False)
-        controls.addWidget(self.parse_button)
-        column.addLayout(controls)
-        authorization = QHBoxLayout()
-        self.cookie = QLineEdit()
-        self.cookie.setReadOnly(True)
-        self.cookie.setPlaceholderText(tr("无需登录"))
-        authorization.addWidget(self.cookie, 1)
-        authorize = button(tr("网站授权…"), "linkGhost")
-        authorize.clicked.connect(self._authorization_menu)
-        authorization.addWidget(authorize)
-        browser = button(tr("兔白助手"), "linkGhost")
-        browser.clicked.connect(self._show_helper)
-        authorization.addWidget(browser)
-        column.addLayout(authorization)
+        self.field_row.addWidget(self.mode_segment)
+        self.pass_row = QWidget()
+        passes = QHBoxLayout(self.pass_row)
+        passes.setContentsMargins(0, 0, 0, 0)
+        passes.setSpacing(8)
+        ticket_row = QWidget(self.pass_row)
+        ticket_layout = WrapLayout(ticket_row, spacing=8, fill=False)
+        passes.addWidget(ticket_row, 1)
+        self.kind_tickets = []
+        kind_group = QButtonGroup(self.pass_row)
+        icons = {"both": "fa5s.film", "video": "fa5s.video", "audio": "fa5s.music", "subtitles": "fa5s.closed-captioning"}
+        for index, (value, label) in enumerate(choices.MODES):
+            ticket = KindTicket(tr(label), icons.get(value, "fa5s.film"))
+            ticket.setToolTip(tr(choices.MODE_NOTES[value]))
+            kind_group.addButton(ticket, index)
+            ticket_layout.addWidget(ticket)
+            self.kind_tickets.append(ticket)
+        kind_group.idClicked.connect(self.mode.setCurrentIndex)
+        self.cookie = PassChip(tr("公开下载"))
+        self.cookie.clicked.connect(self._authorization_menu)
+        passes.addWidget(self.cookie)
+        counter.addWidget(self.pass_row)
         self.hero_tools = QWidget()
-        tools = QHBoxLayout(self.hero_tools)
-        tools.setContentsMargins(0, 2, 0, 0)
-        tools.setSpacing(10)
-        tools.addStretch(1)
-        paste = button(tr("粘贴"), "linkGhost", "fa5s.paste", "secondary")
-        paste.clicked.connect(self.paste_from_clipboard)
-        tools.addWidget(paste)
-        self.history_button = button(tr("解析历史"), "linkGhost", "fa5s.history", "secondary")
+        tools = QVBoxLayout(self.hero_tools)
+        tools.setContentsMargins(0, 4, 0, 0)
+        tools.setSpacing(6)
+        head = QHBoxLayout()
+        head.addWidget(named_label(tr("最近解析"), "linkFieldLabel"))
+        head.addStretch(1)
+        self.history_button = button(tr("全部记录"), "linkLink", "fa5s.history", "accent")
         self.history_button.clicked.connect(self._show_history)
-        tools.addWidget(self.history_button)
-        tools.addStretch(1)
+        head.addWidget(self.history_button)
+        tools.addLayout(head)
+        recent = QHBoxLayout()
+        recent.setSpacing(10)
+        self.recent_tickets = [MiniTicket(), MiniTicket(), MiniTicket()]
+        for ticket in self.recent_tickets:
+            ticket.chosen.connect(self._open_recent)
+            recent.addWidget(ticket, 1)
+        tools.addLayout(recent)
         column.addWidget(self.hero_tools)
-        self.hero_hints = QWidget()
-        hints = QVBoxLayout(self.hero_hints)
-        hints.setContentsMargins(0, 6, 0, 0)
-        hints.setSpacing(2)
-        for text in ("在字幕工作台按 Ctrl+V，可以直接用小卡片下载，不用打开这个窗口。",
-                     "先尝试公开下载。网站要求登录时，可从兔白助手发送授权，或选择本次的 Cookie 文件。"):
-            label = named_label(tr(text), "linkHint", wrap=True)
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            hints.addWidget(label)
-        column.addWidget(self.hero_hints)
+        self.helper_strip = HelperLine()
+        self.helper_strip.manage.connect(self._show_helper)
+        column.addWidget(self.helper_strip)
         self.result_card = self._build_result_card()
         self.result_card.hide()
         column.addWidget(self.result_card)
         column.addStretch(1)
+        self._hero = None
         self._set_hero(True)
         return scroll
 
     def _set_hero(self, hero: bool):
         from .ui_zoom import set_size
-        set_size(self.hero_space, fixed_h=20 if hero else 0)
-        for widget in (self.hero_head, self.hero_tools, self.hero_hints):
+        set_size(self.hero_space, fixed_h=2 if hero else 0)
+        for widget in (self.hero_head, self.helper_strip, self.pass_row):
             widget.setVisible(hero)
+        self.booth_bunny.setVisible(hero)
+        self._place_bunny()
         self.result_card.setVisible(not hero)
-        self.url_field.setProperty("compact", not hero)
-        self.url_field.style().unpolish(self.url_field)
-        self.url_field.style().polish(self.url_field)
+        self.paste_button.setVisible(hero)
+        self.parsed_pill.setVisible(not hero)
+        # Parsed: the counter becomes a plain row, the kind a segment beside the link.
+        self.mode_segment.setVisible(not hero)
+        self._hero = hero
+        self._sync_kind_tickets()
+        self._refresh_recent()
+        for widget in (self.url_field, self.counter):
+            widget.setProperty("compact", not hero)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+        self.counter.layout().setContentsMargins(*((16, 16, 16, 14) if hero else (0, 0, 0, 0)))
         self.fit_height_later()
 
+    BUNNY_INSET = 18      # from the counter's left edge
+    BUNNY_OVERLAP = 30    # how far her feet reach into the counter
+
+    def _place_bunny(self):
+        bunny = getattr(self, "booth_bunny", None)
+        if bunny is None or not hasattr(self, "counter"):
+            return
+        feet = bunny.height() - round(bunny.mascot_height * 0.06)      # the widget keeps a little room below her
+        bunny.move(self.counter.x() + self.BUNNY_INSET, self.counter.y() + self.BUNNY_OVERLAP - feet)
+        bunny.raise_()
+
+    def eventFilter(self, watched, event):
+        from PySide6.QtCore import QEvent
+        if watched is getattr(self, "counter", None) and event.type() in (QEvent.Type.Move, QEvent.Type.Resize,
+                                                                         QEvent.Type.Show):
+            self._place_bunny()
+        return super().eventFilter(watched, event)
+
+    def _sync_kind_tickets(self):
+        index = self.mode.currentIndex()
+        tickets = getattr(self, "kind_tickets", ())
+        if 0 <= index < len(tickets):
+            tickets[index].setChecked(True)
+
+    def _refresh_recent(self):
+        history = [entry for entry in self.preferences.get("history", []) if entry.get("url")][:3]
+        for index, ticket in enumerate(self.recent_tickets):
+            if index < len(history):
+                ticket.set_entry(history[index])
+            else:
+                ticket.url = ""
+            ticket.setVisible(index < len(history))
+        self.hero_tools.setVisible(bool(history) and bool(self._hero))
+
+    def _open_recent(self, url):
+        if url:
+            self.url.setText(url)
+            self.parse()
+
+    def _refresh_helper(self):
+        from .browser_helper_setup import detect, registration
+        root = get_runtime_paths().install_root
+        ready = []
+        try:
+            for name in detect():
+                if registration(root, name):
+                    ready.append(name)
+        except OSError:
+            ready = []
+        self.helper_strip.refresh(root, ready)
+
     def _field(self, text):
-        label = named_label(tr(text), "linkFieldLabel")
-        label.setMinimumWidth(64)
-        return label
+        return named_label(tr(text), "linkPairLabel")
 
     def _build_result_card(self):
+        """The parsed video as a ticket (2026-11-25, draft A 票根): video on top,
+        a perforation, then 画面 / 字幕 / 去向 rows and the download button."""
         card = QFrame()
         card.setObjectName("linkCard")
+        card.setProperty("ticket", True)
         column = QVBoxLayout(card)
-        column.setContentsMargins(18, 14, 18, 14)
-        column.setSpacing(10)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
         top = QHBoxLayout()
-        top.setSpacing(14)
+        top.setContentsMargins(16, 14, 16, 10)
+        top.setSpacing(16)
         self.cover = CoverView(176, 99, 10)
         top.addWidget(self.cover, 0, Qt.AlignmentFlag.AlignTop)
         info = QVBoxLayout()
         info.setSpacing(5)
-        self.title = user_text(QLabel(tr("解析后选择画质、音轨和字幕；有字幕即可直接编辑，无须识别模型。")))
+        self.title = user_text(ClampLabel(tr("解析后选择画质、音轨和字幕；有字幕即可直接编辑，无须识别模型。"), lines=2))
         self.title.setObjectName("linkTitle")
-        self.title.setTextFormat(Qt.TextFormat.PlainText)
-        self.title.setWordWrap(True)
         info.addWidget(self.title)
         self.meta_label = user_text(named_label("", "linkMeta", wrap=True))
         info.addWidget(self.meta_label)
         self.summary_row = QHBoxLayout()
-        self.summary_row.setSpacing(8)
+        self.summary_row.setSpacing(6)
         self.summary_pills = [pill(), pill(), pill()]
         for item in self.summary_pills:
             self.summary_row.addWidget(item)
@@ -412,35 +521,42 @@ class LinkDownloadDialog(QDialog):
         info.addStretch(1)
         top.addLayout(info, 1)
         column.addLayout(top)
-        column.addWidget(divider())
-        # One form grid: 画质 / 字幕 / 工程原文 labels in one column, 音轨 and
-        # 双语译文 in another (2026-10-26; the subtitle pair sat indented in
-        # smaller grey words under the chips).
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(8)
+        column.addWidget(Perforation())
+        rows = QVBoxLayout()
+        rows.setContentsMargins(16, 6, 16, 4)
+        rows.setSpacing(8)
+        column.addLayout(rows)
+
+        # 画面: quality and audio track side by side.
+        film = self._ticket_row(rows, "film", "fa5s.film", "画面")
+        pair = QGridLayout()
+        pair.setHorizontalSpacing(8)
+        pair.setVerticalSpacing(6)
         self.video_format = StudioComboBox()
         self.audio_format = StudioComboBox()
         self.audio_format.currentIndexChanged.connect(self._audio_warning)
         self.video_format.currentIndexChanged.connect(self._video_changed)
-        grid.addWidget(self._field("画质"), 0, 0)
-        grid.addWidget(self.video_format, 0, 1)
-        grid.addWidget(self._field("音轨"), 0, 2)
-        grid.addWidget(self.audio_format, 0, 3)
-        grid.setColumnStretch(1, 3)
-        grid.setColumnStretch(3, 2)
+        for widget in (self.video_format, self.audio_format):
+            widget.currentIndexChanged.connect(self._update_size)
+        pair.addWidget(self._field("画质"), 0, 0)
+        pair.addWidget(self.video_format, 0, 1)
+        pair.addWidget(self._field("音轨"), 0, 2)
+        pair.addWidget(self.audio_format, 0, 3)
+        pair.setColumnStretch(1, 3)
+        pair.setColumnStretch(3, 2)
         self.audio_note = named_label("", "linkHint", wrap=True)
-        grid.addWidget(self.audio_note, 1, 1, 1, 3)
-        label = self._field("字幕")
-        label.setContentsMargins(0, 7, 0, 0)
-        grid.addWidget(label, 2, 0, Qt.AlignmentFlag.AlignTop)
-        stack = QVBoxLayout()
-        stack.setSpacing(6)
+        self.audio_note.hide()
+        pair.addWidget(self.audio_note, 1, 1, 1, 3)
+        film.addLayout(pair)
+
+        # 字幕: chips, the full list on demand, which track is the original
+        # and which the translation, and how the lines are rebuilt.
+        subtitles = self._ticket_row(rows, "subtitles", "fa5s.closed-captioning", "字幕")
         self.chip_host = QWidget()
-        self.chip_layout = WrapLayout(self.chip_host, spacing=8, fill=False)
-        stack.addWidget(self.chip_host)
+        self.chip_layout = WrapLayout(self.chip_host, spacing=6, fill=False)
+        subtitles.addWidget(self.chip_host)
         self.subtitle_status = named_label(tr("尚未解析字幕"), "linkHint", wrap=True)
-        stack.addWidget(self.subtitle_status)
+        subtitles.addWidget(self.subtitle_status)
         self.all_tracks = QWidget()
         all_tracks = QVBoxLayout(self.all_tracks)
         all_tracks.setContentsMargins(0, 0, 0, 0)
@@ -460,39 +576,58 @@ class LinkDownloadDialog(QDialog):
         self.tracks.itemChanged.connect(self._selection_changed)
         all_tracks.addWidget(self.tracks)
         self.all_tracks.hide()
-        stack.addWidget(self.all_tracks)
-        grid.addLayout(stack, 2, 1, 1, 3)
+        subtitles.addWidget(self.all_tracks)
+        roles = QGridLayout()
+        roles.setHorizontalSpacing(8)
         self.primary = StudioComboBox()
         self.translation = StudioComboBox()
         self.primary.currentIndexChanged.connect(self._audio_warning)
-        grid.addWidget(self._field("工程原文"), 3, 0)
-        grid.addWidget(self.primary, 3, 1)
-        grid.addWidget(self._field("双语译文（可选）"), 3, 2)
-        grid.addWidget(self.translation, 3, 3)
+        roles.addWidget(self._field("原文"), 0, 0)
+        roles.addWidget(self.primary, 0, 1)
+        roles.addWidget(self._field("译文"), 0, 2)
+        roles.addWidget(self.translation, 0, 3)
+        roles.setColumnStretch(1, 3)
+        roles.setColumnStretch(3, 2)
+        subtitles.addLayout(roles)
         self.subtitle_hint = named_label(tr("只下载勾选语言。额外语言保留文件；译文按时间关联，无法可靠匹配的部分保留待处理。"),
                                          "linkHint", wrap=True)
         self.subtitle_hint.hide()
-        grid.addWidget(self.subtitle_hint, 4, 1, 1, 3)
-        column.addLayout(grid)
-        processing = QHBoxLayout()
-        processing.addWidget(self._field("字幕处理"))
+        subtitles.addWidget(self.subtitle_hint)
+        processing = WrapLayout(spacing=10, fill=False, by_minimum=True)
+        mode_group = QWidget()
+        mode_layout = QHBoxLayout(mode_group)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.setSpacing(8)
+        mode_layout.addWidget(self._field("处理"))
         self.subtitle_mode = StudioComboBox()
         for key, label in (("smart", "智能整句重建"), ("original", "原始字幕"), ("ai", "AI 精细断句")):
             self.subtitle_mode.addItem(tr(label), key)
-        processing.addWidget(self.subtitle_mode, 1)
-        self.keep_sound = QCheckBox(tr("保留音乐、笑声等标记"))
+        mode_layout.addWidget(self.subtitle_mode, 1)
+        processing.addWidget(mode_group)
+        self.keep_sound = QCheckBox(tr("保留音乐、笑声标记"))
         self.keep_sound.setChecked(True)
         processing.addWidget(self.keep_sound)
-        self.recognize = QCheckBox(tr("下载后进行 AI 识别"))
+        self.recognize = QCheckBox(tr("下载后 AI 识别"))
         processing.addWidget(self.recognize)
         self.subtitle_mode.currentIndexChanged.connect(lambda: self.keep_sound.setEnabled(
             self.subtitle_mode.currentData() != "original"))
-        column.addLayout(processing)
-        column.addWidget(divider())
-        self.details_toggle = button(tr("导入细节：素材片段与已有字幕"), "linkLink", "fa5s.chevron-down", "accent")
+        subtitles.addLayout(processing)
+
+        # 去向: where it goes in the workbench and on disk.
+        place = self._ticket_row(rows, "place", "fa5s.folder", "去向")
+        line = WrapLayout(spacing=10, fill=True, by_minimum=True)
+        self.destination = StudioComboBox()
+        self.destination.currentIndexChanged.connect(self._mode_changed)
+        line.addWidget(self.destination)
+        self.directory_link = button("", "linkLink", "fa5s.folder-open", "accent")
+        self.directory_link.setProperty("flexibleWidth", True)
+        self.directory_link.clicked.connect(lambda: self.show_page("settings"))
+        line.addWidget(self.directory_link)
+        self.details_toggle = button(tr("素材片段"), "linkLink", "fa5s.chevron-down", "accent")
         self.details_toggle.setCheckable(True)
         self.details_toggle.toggled.connect(self._toggle_details)
-        column.addWidget(self.details_toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        line.addWidget(self.details_toggle)
+        place.addLayout(line)
         self.import_details = QWidget()
         details = QGridLayout(self.import_details)
         details.setContentsMargins(0, 0, 0, 0)
@@ -510,27 +645,63 @@ class LinkDownloadDialog(QDialog):
         details.addWidget(self.policy, 2, 1)
         details.setColumnStretch(1, 1)
         self.import_details.hide()
-        column.addWidget(self.import_details)
+        place.addWidget(self.import_details)
+
+        # Long choices ("1080p · 60 fps · H.264 · 774.4 MiB") must not set the
+        # card's width: the old card scrolled sideways (2026-11-25).
+        for combo in (self.video_format, self.audio_format, self.primary, self.translation,
+                      self.subtitle_mode, self.destination, self.clip, self.policy):
+            field_width(combo, 'expanding')
+            combo.setSizeAdjustPolicy(StudioComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(5)
         footer = QHBoxLayout()
-        footer.setSpacing(10)
+        footer.setContentsMargins(16, 6, 16, 14)
+        footer.setSpacing(12)
         self.auto_import = QCheckBox(tr("下载完成后导入"))
         self.auto_import.setChecked(True)
         self.auto_import.toggled.connect(self._update_add_text)
         footer.addWidget(self.auto_import)
-        self.destination = StudioComboBox()
-        self.destination.currentIndexChanged.connect(self._mode_changed)
-        self.destination.setMinimumWidth(220)
-        footer.addWidget(self.destination, 1)
-        self.directory_link = button("", "linkLink")
-        self.directory_link.setProperty("flexibleWidth", True)
-        self.directory_link.clicked.connect(lambda: self.show_page("settings"))
-        footer.addWidget(self.directory_link)
-        self.add_button = button(tr("下载并导入"), "linkPrimary", "fa5s.download", "on_accent")
+        footer.addStretch(1)
+        self.size_label = named_label("", "linkHint")
+        footer.addWidget(self.size_label)
+        self.add_button = EarsButton(tr("下载并导入"), "fa5s.download")
         self.add_button.setEnabled(False)
         self.add_button.clicked.connect(self.enqueue)
-        footer.addWidget(self.add_button)
+        footer.addWidget(self.add_button, 0, Qt.AlignmentFlag.AlignBottom)
         column.addLayout(footer)
         return card
+
+    def _ticket_row(self, rows, kind, icon, title):
+        """One pale framed row: its label on the left, its controls stacked
+        on the right. Returns the controls column."""
+        frame = QFrame()
+        frame.setObjectName("linkTicketRow")
+        grid = QHBoxLayout(frame)
+        grid.setContentsMargins(12, 10, 12, 10)
+        grid.setSpacing(12)
+        grid.addWidget(RowLabel(kind, icon, tr(title)), 0, Qt.AlignmentFlag.AlignTop)
+        controls = QVBoxLayout()
+        controls.setSpacing(8)
+        grid.addLayout(controls, 1)
+        rows.addWidget(frame)
+        return controls
+
+    def _update_size(self, *_):
+        """About how big the chosen picture and sound are, when known."""
+        if not hasattr(self, "size_label"):
+            return
+        total = 0
+        if self.catalog:
+            mode = self.mode.currentData()
+            wanted = []
+            if mode in ("both", "video"):
+                wanted.append(self.video_format.currentData())
+            if mode != "subtitles":
+                wanted.append(self.audio_format.currentData())
+            sizes = {f["format_id"]: choices.size_bytes(f) for f in self.catalog.get("formats", [])}
+            parts = [sizes.get(key) for key in wanted if key]
+            total = sum(parts) if parts and all(parts) else 0
+        self.size_label.setText(tr("约 {size}", size=choices.size_text(total)) if total else "")
 
     def _toggle_details(self, shown):
         self.import_details.setVisible(shown)
@@ -624,6 +795,8 @@ class LinkDownloadDialog(QDialog):
         self._populating = True
         self._set_hero(False)
         self.title.setText(catalog["title"])
+        if not self.url.hasFocus():
+            self.url.setCursorPosition(0)
         meta = [catalog.get("uploader", ""), choices.upload_date_text(catalog.get("upload_date", "")),
                 choices.duration_text(catalog.get("duration", 0)),
                 {"youtube": "YouTube", "bilibili": "Bilibili"}.get(str(catalog.get("platform", "")).lower(), catalog.get("platform", ""))]
@@ -693,9 +866,12 @@ class LinkDownloadDialog(QDialog):
 
     def _remember(self, catalog):
         history = [entry for entry in self.preferences.get("history", []) if entry.get("url") != catalog["url"]]
-        history.insert(0, dict(url=catalog["url"], title=catalog["title"]))
+        import time
+        history.insert(0, dict(url=catalog["url"], title=catalog["title"],
+                               duration=catalog.get("duration") or 0, saved=round(time.time())))
         self.preferences["history"] = history[:HISTORY_LIMIT]
         save_link_preferences(self.preferences)
+        self._refresh_recent()
 
     def _set_summary(self):
         catalog = self.catalog
@@ -844,6 +1020,7 @@ class LinkDownloadDialog(QDialog):
         self._mode_changed()
 
     def _mode_changed(self, *_):
+        self._sync_kind_tickets()
         if not hasattr(self, "clip"):
             return
         mode = self.mode.currentData()
@@ -862,13 +1039,14 @@ class LinkDownloadDialog(QDialog):
         if self.catalog:
             self._video_changed()
             self._audio_warning()
+        self._update_size()
 
     def _refresh_directory_link(self):
         if hasattr(self, "directory"):
             path = Path(self.directory.text())
             folder = f"{path.parent.name}{os.sep}{path.name}" if path.parent.name else str(path)
-            bind_text(self.directory_link, "保存到 {folder}", folder=folder)
-            self.directory_link.setToolTip(str(path))
+            self.directory_link.setText(folder)
+            self.directory_link.setToolTip(tr("保存到 {folder}", folder=str(path)))
 
     def import_target(self):
         target = dict(self.controller.context(), kind=self.destination.currentData(),
@@ -1279,6 +1457,7 @@ class LinkDownloadDialog(QDialog):
         if getattr(self, "_theme_refresh_pending", False):
             self.refresh_theme_palette()
         super().showEvent(event)
+        self._refresh_helper()
         self.fit_height_later()
 
     def closeEvent(self, event):

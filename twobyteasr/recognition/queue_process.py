@@ -14,6 +14,38 @@ import time
 from .task_journal import TaskJournal, FileLease, read_record, write_text_atomic
 
 
+SILENCE_NOTICE_SECONDS = 120.0
+SILENCE_NOTICE_EVERY_SECONDS = 60.0
+# Longer than any single bounded wait inside a run (AI requests stop after
+# 10 minutes without a reply, Studio's media lock after 15 minutes).
+SILENCE_LIMIT_SECONDS = 1800.0
+
+
+def _minutes(seconds):
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60} 分 {seconds % 60:02d} 秒" if seconds >= 60 else f"{seconds} 秒"
+
+
+def activity_text(kind, value):
+    """A short name for what the child last reported, for the silence notice."""
+    if kind == 'console':
+        text = ' '.join(str(value or '').split())
+        return text[:80]
+    if kind == 'event' and isinstance(value, dict):
+        return str(value.get('label') or '')[:80]
+    return ''
+
+
+def silence_notice(seconds, last_activity):
+    tail = f"最后一步：{last_activity}" if last_activity else "还没有收到任何进度"
+    return f"   [等待识别进程] 已 {_minutes(seconds)} 没有新进度，仍在等待（{tail}）。"
+
+
+def silence_error(seconds, last_activity):
+    tail = f"最后一步：{last_activity}。" if last_activity else ""
+    return f"识别进程 {_minutes(seconds)} 没有任何进度，已停止，原字幕没有改动。{tail}请重新开始识别。"
+
+
 def _command():
     if getattr(sys, 'frozen', False):
         return [sys.executable, '--recognition-queue-worker']
@@ -78,6 +110,12 @@ def supervise(media_paths, options, token, event_sink, console_sink):
     error_text = ''
     cancelled_at = None
     eof = False
+    # 2026-11-27: every message from the child counts as progress. Silence is
+    # shown on screen after SILENCE_NOTICE_SECONDS and ends the run after
+    # SILENCE_LIMIT_SECONDS, so no wait inside the child can hang the window's
+    # task forever with an unchanged last line.
+    last_message_at = last_notice_at = time.monotonic()
+    last_activity = ''
     try:
         # Resolved credentials remain in an anonymous pipe, not a task file.
         process.stdin.write(json.dumps({'paths':list(media_paths), 'options':asdict(options),
@@ -93,7 +131,17 @@ def supervise(media_paths, options, token, event_sink, console_sink):
             try:
                 line = messages.get(timeout=.1)
             except queue.Empty:
+                silent = time.monotonic() - last_message_at
+                if silent >= SILENCE_LIMIT_SECONDS and not error_text:
+                    error_text = silence_error(silent, last_activity)
+                    console_sink(error_text, 'stderr')
+                    stop_process_tree(process)
+                elif (silent >= SILENCE_NOTICE_SECONDS and not error_text
+                        and time.monotonic() - last_notice_at >= SILENCE_NOTICE_EVERY_SECONDS):
+                    last_notice_at = time.monotonic()
+                    console_sink(silence_notice(silent, last_activity), 'stdout')
                 continue
+            last_message_at = time.monotonic()
             if line is None:
                 eof = True; continue
             try:
@@ -101,6 +149,7 @@ def supervise(media_paths, options, token, event_sink, console_sink):
             except ValueError:
                 console_sink(line.rstrip(), 'stderr'); continue
             kind, value = message.get('kind'), message.get('value')
+            last_activity = activity_text(kind, value) or last_activity
             if kind == 'identity':
                 try:diagnostics.identify(value)
                 except Exception as exc:console_sink(f'原生诊断附加失败：{type(exc).__name__}','stderr')

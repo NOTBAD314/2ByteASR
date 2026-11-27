@@ -22,6 +22,13 @@ _COPIES: "weakref.WeakSet[BundleSummaryPanel]" = weakref.WeakSet()
 _SOURCE = None                                          # weakref to the workshop's panel
 
 
+def _playful(label) -> None:
+    """2026-11-26 (user): the column's headings in 猫啃什锦黑, like the navigation above them; the
+    model names, statuses and numbers stay 思源黑体. Only the family: size and colour come from the page."""
+    from ..design.typography import PLAYFUL_FONT_STACK
+    label.setStyleSheet(f"font-family: {PLAYFUL_FONT_STACK};")
+
+
 class BundleSummaryPanel(QWidget):
     """The sidebar's lower part, the same on every workspace page."""
 
@@ -39,6 +46,7 @@ class BundleSummaryPanel(QWidget):
         label = QLabel("当前组合")
         label.setObjectName("workshopMuted")
         label.setWordWrap(True)
+        _playful(label)
         layout.addWidget(label)
         combo = QFrame()
         combo.setObjectName("workshopComboCard")
@@ -49,6 +57,7 @@ class BundleSummaryPanel(QWidget):
         self.combo_title = QLabel("质量优先")
         self.combo_title.setObjectName("workshopComboHeading")
         self.combo_title.setWordWrap(True)
+        _playful(self.combo_title)
         title_row.addWidget(self.combo_title, 1)
         badge = QLabel("推荐")
         badge.setObjectName("workshopRecommendationBadge")
@@ -97,6 +106,7 @@ class BundleSummaryPanel(QWidget):
         health_title = QLabel("模型组合健康")
         health_title.setObjectName("workshopSection")
         health_title.setWordWrap(True)
+        _playful(health_title)
         health_layout.addWidget(health_title)
         self.health_summary = QLabel("正在检查模型文件…")
         self.health_summary.setObjectName("workshopTiny")

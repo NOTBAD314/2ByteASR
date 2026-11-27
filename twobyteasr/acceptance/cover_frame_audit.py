@@ -10,7 +10,7 @@ from .studio_acceptance_audit import require
 
 
 def start(window,out):
-    def run():
+    def run(page):
         from ..cover.cover_templates_ui import TemplatePicker
         from ..cover.cover_document import CoverDocument
         from ..cover.cover_local_library import LocalCoverLibrary
@@ -18,7 +18,7 @@ def start(window,out):
         from ..cover.cover_psd import psd_metadata
         from ..diagnostics.build_identity import load_build_identity
         report=dict(passed=False,checks={},build=load_build_identity().to_dict())
-        page=window.studio_page;controller=page.cover_controller;editor=None
+        controller=page.cover_controller;editor=None
         def pump(seconds=.05):
             until=time.monotonic()+seconds
             while time.monotonic()<until:QApplication.processEvents();time.sleep(.004)
@@ -70,7 +70,7 @@ def start(window,out):
                         if picker.cards.item(index).data(Qt.UserRole)['id']==entry['id']:
                             picker.cards.setCurrentRow(index);break
                     picker.grab().save(str(out/'template-picker-headed.png'))
-                    QTest.mouseClick(next(b for b in picker.findChildren(QPushButton) if b.text()=='使用模板'),Qt.LeftButton)
+                    QTest.mouseClick(picker.use_button,Qt.LeftButton)
                 picker_timer.timeout.connect(choose);picker_timer.start();menu(2)
                 wait(lambda:controller.editor is not None and not controller.editor.busy,'template applied')
                 editor=controller.editor;doc=editor.session.document
@@ -82,8 +82,7 @@ def start(window,out):
                 editor.export_document(out/'frozen.png');wait(lambda:not editor.busy,'frozen export')
                 editor.grab().save(str(out/'frozen-headed.png'))
                 # Use the editor's own update entry, then the Studio screenshot action.
-                action=next(a for a in editor.toolbar.actions() if a.text()=='使用 / 更新当前帧')
-                QTest.mouseClick(editor.toolbar.widgetForAction(action),Qt.LeftButton)
+                QTest.mouseClick(editor.frame_button,Qt.LeftButton)
                 page._seek(4);pump(.3);menu(0)
                 wait(lambda:not controller.busy and editor.isVisible(),'updated frame')
                 doc=editor.session.document
@@ -114,4 +113,19 @@ def start(window,out):
                 opened.session.saved_signature=opened.session.document.signature();opened.close()
             page.project_dirty=False
             window.close();QApplication.quit()
-    QTimer.singleShot(1800,run)
+    deadline = time.monotonic() + 60
+
+    def start_when_ready():
+        page = window.built_page('studio')
+        if page is not None:
+            run(page)
+        elif time.monotonic() < deadline:
+            QTimer.singleShot(100, window, start_when_ready)
+        else:
+            phase = os.environ.get('TWOBYTEASR_COVER_FRAME_PHASE', 'create')
+            (out / (phase + '-cover-frame.json')).write_text(
+                json.dumps(dict(passed=False, error='Studio view did not initialise')), 'utf8')
+            window.close()
+            QApplication.quit()
+
+    QTimer.singleShot(1800, window, start_when_ready)

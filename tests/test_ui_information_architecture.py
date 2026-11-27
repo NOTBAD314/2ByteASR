@@ -81,8 +81,15 @@ def test_header_mascot_is_complete_and_does_not_overlap_wordmark():
         assert not mascot_rect.intersects(wordmark_rect)
         assert win.header_mascot.pixmap().height() <= win.header_mascot.height()
         assert win.header_mascot.pixmap().width() <= win.header_mascot.width()
-        gap = wordmark_rect.left() - mascot_rect.right() - 1
-        assert 8 <= gap <= 16
+        # 2026-11-26: the brand is a subtitle bubble (app/brand_bubble.py): her head peeks over its
+        # left end and the bubble carries 「兔白字幕」 and 2ByteASR, right of her face.
+        tag = win.brand_bubble.tag
+        tag_rect = QRect(tag.mapTo(win.app_header, QPoint(0, 0)), tag.size())
+        subtitle_rect = QRect(win.header_subtitle.mapTo(win.app_header, QPoint(0, 0)), win.header_subtitle.size())
+        assert win.app_header.rect().contains(tag_rect)
+        assert tag_rect.contains(wordmark_rect) and tag_rect.contains(subtitle_rect)
+        assert mascot_rect.left() < tag_rect.left() < mascot_rect.right()        # she covers its left end
+        assert not mascot_rect.intersects(subtitle_rect)
         rendered_sizes.append(win.header_mascot.pixmap().height())
 
     assert min(rendered_sizes) >= 84

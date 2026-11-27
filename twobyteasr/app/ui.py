@@ -448,9 +448,10 @@ def populate_available_asr_choices(primary, review, timeline, settings, root=APP
             if value == 'haas_native' and desired.get('primary_asr_backend') != 'haas_ja':
                 continue
             if value == 'haas_ja':
-                from ..recognition.haas_backend import configuration, runtime_executable
+                from ..local_models.haas_preparation import readiness
+                from ..recognition.haas_backend import configuration
                 config = configuration(settings)
-                if value not in unavailable_backends and config.model_key in installed and runtime_executable(config.device):
+                if value not in unavailable_backends and config.model_key in installed and readiness(config) == 'installed':
                     rows.append((label, value, True))
                 continue
             if setting_key=='firered_asr_backend' and value in {'qwen_aligner','mfa_aligner'} and value not in unavailable_backends:
@@ -544,11 +545,12 @@ def missing_selected_local_models(values: dict, root=APP_ROOT, *, models=None) -
                 continue
         required = requirements[role].get(selected, set())
         if selected == 'haas_ja':
-            from ..recognition.haas_backend import configuration, runtime_executable
+            from ..local_models.haas_preparation import readiness
+            from ..recognition.haas_backend import configuration
             config = configuration({'models': models or values})
             required = {config.model_key}
-            if not runtime_executable(config.device):
-                missing.append(f"{labels[role]}：Haas CrispASR {config.device.upper()} 尚未準備")
+            if required <= installed and readiness(config) != 'installed':
+                missing.append(f"{labels[role]}：Haas CrispASR {config.device.upper()} 尚未通過工坊驗證")
         absent = sorted(required - installed)
         if absent:
             missing.append(f"{labels[role]}：{selected}（缺少 {', '.join(absent)}）")
@@ -873,6 +875,11 @@ def persist_ai_configuration(
         )
         models["ai_service"] = active_service
         models["provider_profiles"] = profile_view["models"].get("provider_profiles", {})
+    for values in (polish, group):
+        if values.get("transport") == AITransport.OPENAI_COMPATIBLE.value and values.get("reasoning_error"):
+            raise RuntimeError(values["reasoning_error"])
+        if values.get("reasoning_scope") and values.get("reasoning_profile"):
+            models.setdefault("reasoning_profiles", {})[values["reasoning_scope"]] = values["reasoning_profile"]
     for stage, values in (('polish', polish), ('group', group)):
         for key, default in (("max_output_tokens", 10000), ("enable_thinking", False), ("thinking_protocol", "auto"),
                              ("escalate_on_failure", True), ("strict_output", False)):
@@ -1318,9 +1325,9 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             print(f"[MCP] 本机访问未启动：{exc}", file=sys.stderr)
 
     def _set_brand_text(self):
+        # 2026-11-26: the small line on the brand tag, under 「兔白字幕」 in the bubble (app/brand_bubble.py).
         self.brand.setText(
-            f'<span style="font-size:{ui_zoom.px(26)}px; font-weight:800;">2</span>'
-            f'<span style="font-size:{ui_zoom.px(23)}px; font-weight:800;">ByteASR</span>'
+            f'<span style="font-size:{ui_zoom.px(11)}px; font-weight:700; letter-spacing:2px;">2ByteASR</span>'
         )
 
     def apply_ui_zoom(self, _factor):
@@ -1620,10 +1627,23 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         outer = QHBoxLayout(header)
         outer.setContentsMargins(14, 6, 8, 6)
         outer.setSpacing(8)
-        mascot = HeaderMascot(full_artwork=True, logical_size=86)
+        # 2026-11-26 (user, brand drafts round 2, B + E): 兔白's head from the original icon peeks over
+        # a subtitle bubble with 「兔白字幕」 and a small 2ByteASR (app/brand_bubble.py). The three
+        # widgets keep their names: header_mascot (her head), header_subtitle and brand (in the bubble).
+        self.brand = BrandLabel()
+        self._set_brand_text()
+        self.brand.setObjectName("brand")
+        self.brand.setTextFormat(Qt.TextFormat.RichText)
+        self.brand.setAccessibleName("2ByteASR")
+        subtitle = QLabel("兔白字幕")
+        self.header_subtitle = subtitle
+        subtitle.setObjectName("headerSubtitle")
+        from .brand_bubble import BrandBubble
+        self.brand_bubble = BrandBubble(subtitle, self.brand)
+        mascot = self.brand_bubble.charm
         self.header_mascot = mascot
         bind_text(mascot, '2ByteASR 品牌标志', property='accessibleName')
-        outer.addWidget(mascot, 0, Qt.AlignmentFlag.AlignVCenter)
+        outer.addWidget(self.brand_bubble, 0, Qt.AlignmentFlag.AlignVCenter)
         chrome = QWidget()
         chrome_column = QVBoxLayout(chrome)
         chrome_column.setContentsMargins(0, 0, 0, 0)
@@ -1636,21 +1656,10 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         row = QHBoxLayout(header_content)
         row.setContentsMargins(2, 0, 8, 0)
         row.setSpacing(10)
-        self.brand = BrandLabel()
-        self._set_brand_text()
-        self.brand.setObjectName("brand")
-        self.brand.setTextFormat(Qt.TextFormat.RichText)
-        self.brand.setAccessibleName("2ByteASR")
-        subtitle = QLabel("兔白字幕")
-        self.header_subtitle = subtitle
-        subtitle.setObjectName("headerSubtitle")
         self.header_status = QLabel("")
         self.header_status.setObjectName("headerStatus")
         bind_text(self.header_status, '当前任务状态', property='accessibleName')
         self.header_status.hide()
-        row.addWidget(self.brand)
-        row.addWidget(subtitle)
-        row.addSpacing(12)
         row.addStretch(1)
         from ..design.presentation import button_role
         self.support_button = button_role(QPushButton(), "secondary", size="compact")
@@ -1777,7 +1786,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         QTimer.singleShot(0, self._open_tutorial_menu)   # after the 说明 menu has closed
 
     def _open_tutorial_menu(self):
-        """The tutorial centre (design C, 2026-11-16): chapters and 新手任务; the chosen chapter starts."""
+        """Open the tutorial question cards and start the chosen chapter."""
         from .tutorial_centre import open_tutorial_centre
         chosen = open_tutorial_centre(self)
         if chosen:
@@ -1789,8 +1798,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         menu = CuteMenu(self)
         menu.add_hello()
         # 2026-11-14 (user): 「问问兔白」 gets its own entry, first: an AI plays 兔白 and answers.
-        # 2026-11-16: 新手教学 opens a small menu of the whole tutorial and its chapters.
-        menu.add_row("新手教学", "分章节学，还有新手任务", "fa5s.graduation-cap", self._show_tutorial_menu)
+        menu.add_row("新手教学", "搜索问题，跟着示范练习", "fa5s.graduation-cap", self._show_tutorial_menu)
         menu.add_row("打开范例工程", "看看做好的字幕长什么样", "fa5s.folder-open", self._open_sample_project)
         menu.add_row("选择识别方式…", "云端还是本机，随时能换", "fa5s.cloud",
                      lambda: self._next_step_action("choose_plan"))
@@ -3918,6 +3926,18 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         try:
             from . import bunny_events, bunny_resident
             if bunny_resident.auto_start_allowed() and bunny_events.load()['resident']:
+                # 2026-11-26 (user): the chat's big 兔白 by default, not the small one in the corner
+                # that had to be clicked first; she is easier to pick up and drag. Closing the chat
+                # leaves the small one in the corner as before.
+                # Later the same day (user: for a second or two after loading the home page looked
+                # wrong — the small one showed, the window stalled while the chat was built, then the
+                # small one vanished and an empty dialog box popped up and typed its hello): only
+                # the big 兔白 now, her dialog box folded until she is clicked, and she is made
+                # before the small one so the small one never shows first.
+                if (bunny_events.resident_wanted() and self.isVisible() and not self.isMinimized()
+                        and not bunny_resident.tour_open(self)):
+                    from .bunny_chat import show_bunny
+                    show_bunny(self)
                 bunny_resident.install(self)
         except Exception as exc:  # noqa: BLE001 - never in the way of the app starting
             print(f'[bunny] resident not started: {type(exc).__name__}')
@@ -4175,6 +4195,11 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         module = sys.modules.get('twobyteasr.app.home_tour')
         tour_type = getattr(module, 'GuidedTour', None) if module is not None else None
         tour = self.findChild(tour_type) if tour_type is not None else None
+        # 2026-11-27 (user: when Home appears and while 兔白 plays with the page she stutters):
+        # module warm-up waits while she is in motion (her entrance, an errand, a flight).
+        from ..design import frame_clock
+        if frame_clock.motion_active():
+            return False
         return (self.pages.currentWidget() is self.settings_scroll
                 and not self._modal_host.isVisible()
                 and not (tour is not None and tour.mode not in ('idle','closed') and tour.isVisible())
@@ -4228,7 +4253,9 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         from .studio_module_preload import StudioModulePreloader
         loader = self.__dict__.get('_studio_module_preloader')
         if loader is None:
-            loader = self._studio_module_preloader = StudioModulePreloader(self, allowed=self._studio_idle_allowed)
+            loader = self._studio_module_preloader = StudioModulePreloader(
+                self, allowed=self._studio_idle_allowed,
+                urgent=lambda: self.__dict__.get('_studio_entry_pending') is not None)
             loader.ready.connect(self._studio_modules_prepared)
             loader.failed.connect(self._studio_module_prepare_failed)
         loader.start()
@@ -8334,6 +8361,49 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 button.setText("" if compact else translate(label, current_language()))
                 ui_zoom.set_size(button, min_w=36 if compact else 0)
 
+    def settle_for_picture(self) -> None:
+        """Run the responsive passes that normally wait for a timer or the next event, now: the
+        launch screen takes Home's picture right after its first paint (launch_picture._land)."""
+        # 2026-11-27 (user, at 120% interface zoom: Home looks right, then a second later its
+        # parts move): the zoom pass after a resize waits 120 ms (_ui_zoom_settle); the picture
+        # was taken before it, with the model names and the bottom bar at their 100% sizes.
+        zoom_timer = self.__dict__.get("_ui_zoom_settle")
+        if zoom_timer is not None and zoom_timer.isActive():
+            zoom_timer.stop()
+            self._settle_ui_zoom()
+        self._refresh_header_density()
+        studio = self.built_page("studio")
+        if studio is None or self.pages.currentWidget() is not studio:
+            self.apply_density()
+        # The model cards fit their names and status line in a 0 ms pass after a resize (and the
+        # names to the cards' new height): run those now too, or the picture shows the old names.
+        plan = self.__dict__.get("recognition_plan")
+        if plan is not None:
+            try:
+                for card in getattr(plan, "cards", {}).values():
+                    if getattr(card, "_resize_layout_pending", False):
+                        card._settle_resize_layout()
+                plan._sync_identity_height()
+            except Exception:  # noqa: BLE001 - a picture slightly off is better than no start
+                pass
+        timer = getattr(self, "_home_fit_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
+            self._fit_home_rhythm()
+        pin = self.__dict__.get("home_studio_pin")      # the left card: placed and its cover sized now
+        if pin is not None:
+            try:
+                pin._sync_timer.stop()
+                pin.sync(fit_now=True)
+            except Exception:  # noqa: BLE001 - a picture slightly off is better than no start
+                pass
+
+    def _settle_ui_zoom(self) -> None:
+        """One zoom pass over what a resize re-sized (header, current page, bottom bar)."""
+        ui_zoom.apply_to(self.app_header)
+        ui_zoom.apply_to(self.pages.currentWidget())
+        ui_zoom.apply_to(self.bottom_bar)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._refresh_header_density()
@@ -8346,9 +8416,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 timer = self._ui_zoom_settle = QTimer(self)
                 timer.setSingleShot(True)
                 timer.setInterval(120)
-                timer.timeout.connect(lambda: (ui_zoom.apply_to(self.app_header),
-                                               ui_zoom.apply_to(self.pages.currentWidget()),
-                                               ui_zoom.apply_to(self.bottom_bar)))
+                timer.timeout.connect(self._settle_ui_zoom)
             timer.start()
         if hasattr(self, "drop_overlay"):
             self.drop_overlay.setGeometry(self.rect().adjusted(16, 16, -16, -16))
@@ -9653,7 +9721,23 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(6)
         layout.addLayout(row)
-        guard_row = QHBoxLayout()
+        # 2026-11-26 (user: nobody can tell what these three do): the language
+        # guard row (严格语言模式 / 自动修复异常语言 / 备用模型复核 + 修复档位)
+        # is no longer shown. Strict + auto repair stay on, backup review off,
+        # normal repair profile; a choice saved while the row was visible is
+        # reset to these defaults so no hidden setting keeps applying.
+        guard_defaults = {'strict_language': True, 'auto_language_repair': True,
+                          'language_backup_review': False, 'repair_profile': 'normal'}
+        if any(saved.get(key, value) != value for key, value in guard_defaults.items()):
+            saved.update(guard_defaults)
+            try:
+                self.legacy.RUNTIME_SETTINGS.setdefault('subtitle_language', {}).update(guard_defaults)
+                save_runtime_settings(self.legacy.RUNTIME_SETTINGS)
+            except Exception:
+                pass
+        self._language_guard_row = QWidget()
+        guard_row = QHBoxLayout(self._language_guard_row)
+        guard_row.setContentsMargins(0, 0, 0, 0)
         self._language_guard_checks = {}
         for key, label, tooltip, default in (
             ('strict_language', '严格语言模式', '指定语言后检查原文，并避开会忽略语言参数的原生分轨。', True),
@@ -9669,7 +9753,8 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             self._language_guard_checks[key] = check
             guard_row.addWidget(check)
         guard_row.addStretch(1)
-        layout.addLayout(guard_row)
+        layout.addWidget(self._language_guard_row)
+        self._language_guard_row.hide()
         from PySide6.QtWidgets import QSpinBox
         self._language_repair_profile = FramelessPopupCombo()
         for value, label in (('normal', '普通修复'), ('active', '积极修复'), ('custom', '自定义修复')):
@@ -9697,6 +9782,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             self._language_repair_spins[key] = spin
         limits.addStretch(1)
         layout.addWidget(self._language_repair_limits)
+        self._language_repair_limits.hide()   # 2026-11-26: hidden with the guard row
         self._language_repair_profile.currentIndexChanged.connect(self._subtitle_language_changed)
         from .home_widgets import MarkedPill
         # 2026-11-10 (user: the lines under the row are only hints, remove them
@@ -9777,7 +9863,6 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                                                        and checks['auto_language_repair'].isChecked())
             repair_enabled = checks['language_backup_review'].isEnabled()
             self._language_repair_profile.setEnabled(repair_enabled)
-            self._language_repair_limits.setVisible(repair_enabled and self._language_repair_profile.currentData() == 'custom')
         if self.__dict__.get("recognition_language") is not None:
             self._sync_translation_targets(self._subtitle_language_options()["recognition_language"])
         options = self._subtitle_language_options()
@@ -12273,7 +12358,13 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         self._quota_watch().feed(compact)
         lowered = compact.lower()
         if getattr(self, "_studio_recognition_context", None):
-            if "cuda" in lowered or "显存" in compact:
+            # 2026-11-27: long preparation and silent waits name themselves in
+            # Studio instead of leaving the last cloud-check line on screen.
+            if "[准备识别]" in compact:
+                self.studio_page.set_recognition_runtime_stage("准备识别音频", compact)
+            elif "[等待识别进程]" in compact:
+                self.studio_page.set_recognition_runtime_stage("等待识别进程", compact)
+            elif "cuda" in lowered or "显存" in compact:
                 self.studio_page.set_recognition_runtime_stage("初始化 CUDA", compact)
             elif "加载" in compact and ("模型" in compact or "asr" in lowered):
                 self.studio_page.set_recognition_runtime_stage("加载权重", compact)
@@ -13576,11 +13667,18 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             self.open_studio_result_button.setVisible(True)
         if not studio_context and foreground_progress and not getattr(self, "_tutorial_demo_result", False):
             self._show_task_notification(*self._completion_notification_with_cause(result, outcomes))
-        elif studio_context and (failure_count or cancel_count or queue_outcome.core_status in {'needs_recovery', 'empty_result'}):
+        elif studio_context and (failure_count or cancel_count or not outcomes
+                                 or queue_outcome.core_status in {'needs_recovery', 'empty_result'}):
+            # 2026-11-27: the failure's own reason, not a generic line; an
+            # empty result (nothing came back) also ends Studio's 「识别中」.
+            cause = next((' '.join(str(item.error).split()) for item in result.results
+                          if item.status == 'failed' and item.error), '')
             self.studio_page.fail_recognition_runtime(
                 '取得转写，但尚未生成可用字幕；请从完成页核对候选并恢复' if queue_outcome.core_status == 'needs_recovery' else
                 '没有生成可用字幕，原字幕和人工修改保持' if queue_outcome.core_status == 'empty_result' else
-                "任务已取消" if cancel_count and not failure_count else "识别失败，请检查模型与运行日志"
+                "任务已取消" if cancel_count and not failure_count else
+                "识别没有返回结果，原字幕没有改动；请重新开始识别" if not outcomes else
+                (cause[:300] if cause else "识别失败，请检查模型与运行日志")
             )
             # 四十二轮：识别转后台后用户可能已离开 Studio 页——失败/取消也要
             # 任务通知，否则只剩藏在字幕列表里的芯片，用户无感知。
@@ -13949,7 +14047,8 @@ def run_desktop_app(
     for height in (150, 170):
         assets.request(height, app.primaryScreen().devicePixelRatio())
     _register_bundled_fonts()
-    app.setFont(_app_font())
+    from twobyteasr.design.typography import install_application_fonts
+    install_application_fonts(app)
     instance_guard = instance_guard or _acquire_instance_lock()
     if instance_guard is None:
         _show_error(
@@ -14331,7 +14430,8 @@ def _preview(screenshot_path: str, state: str = "settings") -> int:
     app.setStyle("Fusion")
     apply_application_theme(app)
     _register_bundled_fonts()
-    app.setFont(_app_font())
+    from twobyteasr.design.typography import install_application_fonts
+    install_application_fonts(app)
     preview_media = [] if state in {"empty", "terms"} else [
         r"F:\直播回放\舰礼有等身抱枕～代刮刮刮乐～_vocal.wav"
     ]

@@ -75,6 +75,32 @@ def source_to_timeline(sequence: EditSequence, source_ms: int, *, segment: Video
     return None
 
 
+def contiguous_successor(sequence: EditSequence, segment: VideoSegment) -> VideoSegment | None:
+    """The next timeline segment when the decoder can simply keep playing into it.
+
+    A razor split leaves two segments where the second starts at the very
+    source frame and timeline time where the first ends, in the same file and
+    at the same speed. Crossing that cut needs no seek: an exact seek to the
+    frame mpv is already decoding froze the picture at every such cut (user
+    report 2026-11-27, about a second on long-GOP recordings).
+    """
+    rows = sorted(sequence.segments, key=lambda item: (item.timeline_in_ms, item.source_in_ms))
+    index = next((i for i, row in enumerate(rows) if row.id == segment.id), None)
+    if index is None or index + 1 >= len(rows):
+        return None
+    following = rows[index + 1]
+    same_file = (following.source_path or sequence.source_path) == (segment.source_path or sequence.source_path)
+    if (not same_file or following.timeline_in_ms != segment.timeline_out_ms
+            or following.source_in_ms != segment.source_out_ms
+            or following.duration_ms <= 0 or segment.duration_ms <= 0):
+        return None
+    # Same speed: equal timeline/source ratios (exact integer cross-multiplication).
+    if (following.source_duration_ms * segment.duration_ms
+            != segment.source_duration_ms * following.duration_ms):
+        return None
+    return following
+
+
 def next_segment_after_source(sequence: EditSequence, source_ms: int) -> VideoSegment | None:
     time = int(source_ms)
     later = [item for item in sequence.segments if item.source_in_ms >= time]

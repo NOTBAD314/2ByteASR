@@ -89,6 +89,92 @@ def sync_controls(page, settings: BilingualSettings | None = None) -> None:
     timeline = getattr(page, "timeline", None)
     if timeline is not None and hasattr(timeline, "set_bilingual"):
         timeline.set_bilingual(shown)
+    model = getattr(page, "cue_model", None)
+    if model is not None and hasattr(model, "set_text_layer"):
+        from .studio_cue_table import project_has_translations
+        if (settings.mode == "bilingual" and project_has_translations(page.project)
+                and model.text_layer == "original" and not getattr(model, "_explicit_layer", False)):
+            model.set_text_layer("bilingual")
+    sync_cue_list_layer_controls(page)
+
+
+CUE_LIST_LAYERS = (
+    ("bilingual", "双行", "同时显示译文（主行）与原文（次行）；双击主行改译文，双击次行改原文"),
+    ("original", "原文", "仅显示字幕原文"),
+    ("translation", "译文", "仅显示字幕译文"),
+)
+
+
+def set_cue_list_text_layer(page, layer: str, *, explicit: bool = True) -> None:
+    """Switch the left cue list between 双行 / 原文 / 译文 and persist optional preference."""
+    model = getattr(page, "cue_model", None)
+    if model is None or not hasattr(model, "set_text_layer"):
+        return
+    if explicit and page.project is not None and isinstance(page.project.studio_state, dict):
+        if layer in {"bilingual", "original", "translation"}:
+            page.project.studio_state["cue_list_text_layer"] = layer
+    model.set_text_layer(layer, explicit=explicit)
+    sync_cue_list_layer_controls(page)
+
+
+def build_cue_layer_switcher(page):
+    """Compact ≤6-char segmented switcher (双行 / 原文 / 译文) for bilingual projects."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QButtonGroup, QFrame, QHBoxLayout, QPushButton, QSizePolicy
+
+    track = QFrame()
+    track.setObjectName("cueLayerTrack")
+    row = QHBoxLayout(track)
+    row.setContentsMargins(3, 3, 3, 3)
+    row.setSpacing(3)
+    group = QButtonGroup(track)
+    group.setExclusive(True)
+    buttons: dict[str, QPushButton] = {}
+    for key, caption, tip in CUE_LIST_LAYERS:
+        button = QPushButton(tr(caption))
+        button.setObjectName("cueLayerChip")
+        button.setCheckable(True)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setMinimumWidth(0)
+        button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        bind_text(button, caption)
+        bind_text(button, tip, property="toolTip")
+        button.clicked.connect(lambda _checked=False, value=key: set_cue_list_text_layer(page, value, explicit=True))
+        group.addButton(button)
+        buttons[key] = button
+        row.addWidget(button, 1)
+    buttons["bilingual"].setChecked(True)
+    page.cue_layer_track = track
+    page.cue_layer_group = group
+    page.cue_layer_buttons = buttons
+    track.hide()
+    return track
+
+
+def sync_cue_list_layer_controls(page) -> None:
+    """Keep the 双行/原文/译文 switcher and reading row height synchronized with CueTableModel."""
+    from .studio_cue_table import CueReadingDelegate, project_has_translations
+
+    model = getattr(page, "cue_model", None)
+    table = getattr(page, "cue_table", None)
+    track = getattr(page, "cue_layer_track", None)
+    buttons = getattr(page, "cue_layer_buttons", None) or {}
+    project = getattr(page, "project", None)
+    has_translations = project_has_translations(project)
+    layer = getattr(model, "text_layer", "original") if model is not None else "original"
+    if track is not None:
+        visible = bool(project is not None and (has_translations or layer != "original"))
+        track.setVisible(visible)
+    for key, button in buttons.items():
+        button.blockSignals(True)
+        button.setChecked(key == layer)
+        button.blockSignals(False)
+    if table is not None and getattr(table, "reading", False) and model is not None:
+        height = CueReadingDelegate.row_height(table.font(), bilingual=bool(getattr(model, "bilingual_cards", False)))
+        header = table.verticalHeader()
+        if header is not None and header.defaultSectionSize() != height:
+            header.setDefaultSectionSize(height)
+            table.viewport().update()
 
 
 def settings_for_changes(project, **changes) -> BilingualSettings:

@@ -4,10 +4,12 @@ from pathlib import Path
 
 
 def run(window, output, check):
-    from PySide6.QtCore import QCoreApplication, QEvent, QTimer, Qt
+    from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, QSize, QTimer, Qt
+    from PySide6.QtGui import QWheelEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QPushButton
     from ..app import onboarding, newbie_tasks, tutorial_chapters
+    from ..app.help_menu import CuteMenu
     from ..app.home_tour import GuidedTour, TourStep
     from ..app.tutorial_centre import TutorialCentre
     from ..design.theme_manager import apply_theme
@@ -30,40 +32,122 @@ def run(window, output, check):
         if isinstance(widget,GuidedTour) and widget.bubble.isVisible():
             until(lambda:not widget._typer.running,12)
         check('screenshot '+name,widget.grab().save(str(output/(name+'.png'))))
+    def wheel_rows(timeline):
+        bar = timeline.vertical_scrollbar
+        check('tutorial track rows overflow', bar.maximum() > bar.minimum())
+        start = timeline.visible_start_ms
+        for name, x, delta, modifiers in (
+            ('track names', timeline.TRACK_HEADER_WIDTH // 2, 120, Qt.NoModifier),
+            ('time area with Shift', timeline.TRACK_HEADER_WIDTH + 40, -120, Qt.ShiftModifier),
+        ):
+            local = QPointF(x, timeline._track_viewport().center().y())
+            global_pos = QPointF(timeline.mapToGlobal(local.toPoint()))
+            previous = bar.value()
+            event = QWheelEvent(local, global_pos, QPoint(), QPoint(0, delta),
+                                Qt.NoButton, modifiers, Qt.NoScrollPhase, False)
+            app.sendEvent(timeline, event)
+            check('vertical wheel over ' + name, event.isAccepted()
+                  and (previous - bar.value()) * delta > 0
+                  and timeline.visible_start_ms == start)
+        bar.setValue(bar.minimum())
     # All files and settings belong to the launcher's isolated acceptance profile.
     state=onboarding.load_state();onboarding.save_state(dict(state,chapters_done=[],tasks_done=[]))
     window._first_run_downloads=None;window._tutorial_plan_chosen=True
+    set_language('zh')
+    entry = {}
+    def visit_help():
+        centre = next((dialog for dialog in window.findChildren(TutorialCentre) if dialog.isVisible()), None)
+        if centre is not None:
+            entry['cards'] = len(centre.cards)
+            centre.reject()
+            entry_timer.stop()
+            return
+        menu = next((popup for popup in window.findChildren(CuteMenu) if popup.isVisible()), None)
+        if menu is None:
+            return
+        action = next((item for item in menu.actions() if item.text() == '新手教学'), None)
+        entry['caption'] = getattr(action, 'caption', '')
+        if action is not None:
+            action.trigger()
+        menu.close()
+    entry_timer = QTimer(window)
+    entry_timer.timeout.connect(visit_help)
+    entry_timer.start(50)
+    window.help_button.click()
+    check('Help describes the tutorial question cards', entry.get('caption') == '搜索问题，跟着示范练习')
+    until(lambda: 'cards' in entry, 10)
+    check('Help opens the production tutorial centre', entry['cards'] == 6)
+    until(lambda: not any(dialog.isVisible() for dialog in window.findChildren(TutorialCentre)), 5)
+    entry_timer.deleteLater()
+
+    original_geometry = window.geometry()
+    room = window.screen().availableGeometry().size()
+    window.resize(QSize(2190, 1200).boundedTo(room))
+    settle(.25)
+    wide = TutorialCentre(window)
+    wide.show()
+    settle(.45)
+    bounds = TutorialCentre.open_size(window)
+    check('wide tutorial uses the main window width and fits its content',
+          wide.width() == bounds.width()
+          and wide.minimumHeight() <= wide.height() <= bounds.height())
+    card = wide.cards['timeline']
+    tallest = max(item.heightForWidth(item.width()) for item in wide.cards.values())
+    check('wide question card follows its content height',
+          card.height() <= tallest + 2 and not hasattr(card, 'learn_label'))
+    if wide._fitted_height(bounds) < bounds.height():
+        holder, viewport = wide.scroll.widget(), wide.scroll.viewport()
+        check('wide tutorial fits its pills without excess space',
+              holder.height() <= viewport.height() + 1
+              and viewport.height() - wide._flow.parentWidget().geometry().bottom() <= wide._px(24))
+    shot(wide, 'centre-wide')
+    wide.search.setText('红线')
+    settle(.2)
+    check('wide search returns only the compact timeline card',
+          [key for key, item in {**wide.cards, **wide.pills}.items() if item.isVisibleTo(wide)] == ['timeline']
+          and card.height() <= card.heightForWidth(card.width()) + 2)
+    shot(wide, 'centre-wide-search')
+    wide.reject()
+    until(lambda: not wide.isVisible())
+    wide.deleteLater()
+    window.setGeometry(original_geometry)
+    settle(.25)
+
     for theme in ('sand','midnight'):
         apply_theme(theme,app);set_language('zh');settle(.35)
         centre=TutorialCentre(window);centre.resize(1100,760);centre.show();settle(.3)
-        check('eleven available chapters '+theme,len(centre.rows)==11 and not any(c.soon for c in tutorial_chapters.CATALOG))
-        if os.environ.get('TWOBYTEASR_TUTORIAL_LEARNING_PATH_AUDIT') == '1':
-            from ..app.tutorial_centre import recommended
-            keys = [chapter.id for chapter in tutorial_chapters.CATALOG]
-            check('numbered learning path ' + theme,
-                  [key for _node, key in centre.path.nodes] == keys
-                  and [centre.nodes[key].text() for key in keys] == [str(i) for i in range(1, 12)])
-            check('recommended chapter highlighted ' + theme,
-                  centre.path.next_up == recommended(set()) == centre.pick
-                  and centre.nodes[centre.pick].property('picked'))
-            until(lambda: centre.windowOpacity() >= .99)
-            QTest.mouseClick(centre.rows[keys[1]], Qt.LeftButton)
-            check('actual chapter click updates path and preview ' + theme,
-                  centre.pick == centre.path.picked == keys[1]
-                  and centre.nodes[keys[1]].property('picked')
-                  and '1.</span>' in centre.preview_learn.text())
-            if os.environ.get('TWOBYTEASR_ROUND_REGION') == '1':
-                check('native Windows rounded tutorial ' + theme, _has_rounded_region(centre))
-        for key in centre.rows:
-            centre.select(key);settle(.02)
-            check('chapter selectable '+theme+' '+key,centre.start_button.isEnabled() and centre.pick==key)
-        centre.select('render');shot(centre,'centre-'+theme)
-        centre.show_tab('tasks');settle(.15)
-        check('thirteen tasks '+theme,len(centre.task_cards)==13)
-        shot(centre,'tasks-'+theme)
+        # 2026-11-27 (draft B 「我想…」): every chapter is one question, six cards and the rest pills.
+        keys=[chapter.id for chapter in tutorial_chapters.CATALOG]
+        check('every chapter is one question '+theme,sorted([*centre.cards,*centre.pills])==sorted(keys)
+              and len(centre.cards)==6 and not any(c.soon for c in tutorial_chapters.CATALOG))
+        shot(centre,'centre-'+theme)
+        entrance = getattr(centre, '_entrance_motion', None)
+        until(lambda: entrance is None or entrance.currentTime() >= entrance.duration(), 5)
+        QApplication.setActiveWindow(centre)
+        card = centre.cards['timeline']
+        QTest.mouseClick(card, Qt.LeftButton, pos=card.rect().center(), delay=50)
+        (output/f'card-click-{theme}.json').write_text(json.dumps(dict(
+            active=centre.isActiveWindow(), visible=card.isVisible(), enabled=card.isEnabled(),
+            selected=centre.pick, detail_visible=centre.detail_page.isVisible(),
+            detail_x=centre.detail_page.pos().x())), 'utf8')
+        check('actual card click opens its details '+theme,
+              centre.detail_page.isVisible() and centre.pick=='timeline')
+        until(lambda: centre.detail_page.pos().x()==0, 5)
+        check('details slide reaches its final position '+theme,centre.detail_page.pos().x()==0)
+        shot(centre,'centre-detail-'+theme);centre.close_detail()
+        if os.environ.get('TWOBYTEASR_ROUND_REGION') == '1':
+            check('native Windows rounded tutorial ' + theme, _has_rounded_region(centre))
+        for key in keys:
+            centre.open_detail(key);settle(.02)
+            check('chapter opens and can start '+theme+' '+key,centre.start_button.isEnabled() and centre.pick==key)
+            centre.close_detail()
+        centre.search.setText('红线');settle(.15)
+        check('search finds by everyday words '+theme,[k for k,w in {**centre.cards,**centre.pills}.items() if w.isVisibleTo(centre)]==['timeline'])
+        shot(centre,'search-'+theme);centre.search.clear()
         centre.reject();until(lambda:not centre.isVisible());centre.deleteLater();settle()
     set_language('en');centre=TutorialCentre(window);centre.resize(1100,760);centre.show();settle(.2)
-    centre.select('render');settle(.2);shot(centre,'centre-english');centre.reject();until(lambda:not centre.isVisible());centre.deleteLater();set_language('zh');settle()
+    shot(centre,'centre-english');centre.open_detail('render');settle(.6);shot(centre,'centre-detail-english')
+    centre.reject();until(lambda:not centre.isVisible());centre.deleteLater();set_language('zh');settle()
     # A missing step returns the window; the real escape route works for required teaching.
     t=GuidedTour(window,[TourStep('等待一张不会出现的页面',lambda:None,ready=lambda:False)])
     t.set_required(True);t.start();until(lambda:t.mode=='away',8)
@@ -125,6 +209,9 @@ def run(window, output, check):
                     shot(window,f'chapter-{key}-{index:02}-target');shot(tour,f'chapter-{key}-{index:02}')
                 check(f'chapter {key} step {index} bubble',tour.bubble.isVisible() and tour.skip.isVisible())
                 check(f'chapter {key} practice excluded {index}',not newbie_tasks.mark('cut'))
+                if key == 'timeline' and '往上滑==看看' in tour._text_source:
+                    wheel_rows(window.built_page('studio').timeline)
+                    continue
             if step.show_next:
                 QTest.mouseClick(tour.next,Qt.LeftButton);settle(.05)
             elif index not in actions and tour.action_buttons:

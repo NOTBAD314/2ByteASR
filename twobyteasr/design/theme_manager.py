@@ -334,6 +334,7 @@ QLabel#headerSubtitle, QLabel#recognitionRoleLabel, QLabel#recognitionModelName,
 QLabel#settingTileTitle, QLabel#settingTileSummary {{ color: {theme.text}; }}
 QLabel#pageSubtitle, QLabel#settingTileSummary {{ color: {theme.text_muted}; }}
 QLabel#headerStatus {{ color: {theme.success}; }}
+QLabel#brand {{ color: {theme.accent}; background: transparent; }}
 QLabel#headerStatus {{ padding: 0; min-width: 0; min-height: 0; background: transparent; }}
 QPushButton, QToolButton {{ color: {theme.text}; border-color: {theme.border}; }}
 QPushButton#outline, QPushButton#softAction {{

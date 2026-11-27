@@ -21,6 +21,7 @@ from pathlib import Path
 import queue
 import sqlite3
 import threading
+import time
 import uuid
 from urllib.parse import urlsplit
 
@@ -208,10 +209,12 @@ class Attempt:
         self.row['price'] = price_snapshot(endpoint, model, instant)
         self.row['cost'] = dict(known=False, reason='尚未取得用量')
         self.started = False
+        self.started_at = None
 
     def start(self):
         if not self.started:
             self.started = True
+            self.started_at = time.perf_counter()
             enqueue(self.row, self.path)
 
     def finish(self, diagnostics=None, *, error=''):
@@ -222,6 +225,15 @@ class Attempt:
         usage = normalize_usage(raw)
         self.row.update(status=error or ('received' if usage else 'usage_unknown'),
                         http_status=diag.get('http_status'), raw_usage=raw, usage=usage)
+        from .reasoning_adapter import observe_reasoning
+        evidence = dict(diag)
+        evidence["reasoning_tokens"] = (usage or {}).get("reasoning_tokens")
+        observe_reasoning(evidence)
+        self.row["reasoning"] = {key: evidence.get(key) for key in (
+            "thinking_requested", "thinking_mode", "reasoning_dialect",
+            "thinking_compatibility", "reasoning_parameters_sent", "reasoning_tokens")}
+        self.row["duration_ms"] = round((time.perf_counter() - self.started_at) * 1000, 1)
+        self.row["retry_reason"] = diag.get("retry_reason")
         self.row['cost'] = estimate(raw, self.row['price'])
         enqueue(self.row, self.path)
         from .api_usage import record_api_call
@@ -270,10 +282,10 @@ def tracked_diagnostics(parameter):
     return decorate
 
 
-def tracked_post(send, *, endpoint, model, provider, stage, mode):
+def tracked_post(send, *, endpoint, model, provider, stage, mode, request_policy=None):
     attempt = Attempt(endpoint=endpoint, model=model, provider=provider, stage=stage, mode=mode)
     attempt.start()
-    diag = {}
+    diag = dict(request_policy or {})
     error = ''
     try:
         response = send()
@@ -281,7 +293,15 @@ def tracked_post(send, *, endpoint, model, provider, stage, mode):
         try:
             payload = response.json()
             if isinstance(payload, dict):
-                diag['raw_usage'] = payload.get('usage')
+                from .reasoning_adapter import has_reasoning, rejected_reasoning
+                diag['raw_usage'] = payload.get('usage') or payload.get('usageMetadata')
+                diag['reasoning_content_present'] = any(
+                    isinstance(choice, dict) and has_reasoning(choice.get('message'))
+                    for choice in payload.get('choices') or ()) or any(
+                    isinstance(item, dict) and item.get('type') == 'reasoning'
+                    for item in payload.get('output') or ())
+                if rejected_reasoning(response.status_code, payload.get('error'), diag):
+                    diag['thinking_compatibility'] = 'request_rejected'
         except Exception:
             error = 'response_json_error'
         if response.status_code >= 400:

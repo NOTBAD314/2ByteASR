@@ -27,6 +27,7 @@ TASKS = (
     Task('set_ai', '连好文字 AI', '首页「AI 智能断句」卡：填 Key、测试连接', 'first'),
     Task('export', '导出一次字幕文件', '结果页或工作台的「导出字幕」', 'first'),
     Task('proofread', '用 AI 词库校对改对一个词', '结果页「开始校对」', 'fix'),
+    Task('expand_group', '展开折叠的次要角色', '时间轴最上面「次要角色」的小箭头', 'timeline'),
     Task('review', '按 R 进审核模式', '字幕工作台按 R', 'studio'),
     Task('cut', '切开一条字幕', '剃刀 C，或编辑时 Shift+C', 'studio'),
     Task('shift_all', '整片字幕一起提前或推后', 'Ctrl+A 全选，再 Alt+← / →', 'editor'),
@@ -34,7 +35,8 @@ TASKS = (
     Task('try_line', '用「试一句」看词库怎么改', '术语库 →「试一句」', 'terms'),
     Task('ask_bunny', '问兔白一个问题', '顶栏「问问兔白」', 'bunny'),
     Task('speakers', '在说话人管理里改名或合并', '工作台工具栏「说话人管理」', 'speakers'),
-    Task('translate', '翻译一次字幕', '工作台「翻译所选」，或首页「字幕显示」选双语', ''),
+    Task('translate', '翻译一次字幕', '工作台「翻译所选」，或首页「字幕显示」选双语', 'ai'),
+    Task('cut_video', '在播放头切开一次视频', '工作台：播放头放好按 Ctrl+K', 'cut'),
     Task('render', '压制一段带字幕的视频', '工作台「导出音视频」（Ctrl+Shift+E）', 'render'),
 )
 BY_KEY = {task.key: task for task in TASKS}

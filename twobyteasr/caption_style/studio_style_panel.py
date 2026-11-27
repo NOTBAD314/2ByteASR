@@ -20,6 +20,7 @@ from .studio_style_widgets import (StyleColorButton, StylePreview, StyleScopeSel
 from ..design.studio_theme import (StudioComboBox, create_studio_menu, studio_message_box)
 from ..studio.studio_widgets import (ScrubDoubleSpinBox, ScrubSpinBox, _icon)
 from .style_presets import (BUILTIN_PRESETS, StylePresetStore)
+from .preset_preview_delegate import install_preset_preview_delegate
 from .style_recipe import (FillSpec, StyleRecipe)
 from ..design.themed_icons import install_themed_icon
 from ..design.ui_theme import INK
@@ -163,6 +164,15 @@ class StudioStylePanelMixin:
 
         preset_card, preset_layout = self._style_section("样式预设")
         self.style_preset = StudioComboBox()
+        controller = getattr(self, "style_controller", None)
+        self._style_preset_delegate = install_preset_preview_delegate(
+            self.style_preset,
+            preset_resolver=(
+                controller._resolve_preset_preview_spec
+                if controller is not None and hasattr(controller, "_resolve_preset_preview_spec")
+                else None
+            ),
+        )
         self._refresh_style_presets()
         self.style_preset.currentIndexChanged.connect(self._load_style_inspector)
         # activated fires only for real user picks (not programmatic refresh),
@@ -389,7 +399,20 @@ class StudioStylePanelMixin:
         self.style_scope.addItem("选中字幕", "selected")
         self.style_scope.addItem("该说话人", "speaker")
         self.style_scope.addItem("全片", "all")
-        scope_layout.addWidget(self.style_scope)
+        self.style_scope.setCurrentIndex(max(0, self.style_scope.findData("all")))
+        scope_row = QHBoxLayout()
+        scope_row.setContentsMargins(0, 0, 0, 0)
+        scope_row.setSpacing(6)
+        scope_row.addWidget(self.style_scope, 1)
+        self.style_single_cue_hint = QLabel("仅改当前句")
+        self.style_single_cue_hint.setObjectName("styleSingleCueHint")
+        self.style_single_cue_hint.setProperty("softPill", "warn")
+        bind_text(self.style_single_cue_hint, "仅改当前句")
+        bind_text(self.style_single_cue_hint, "当前仅修改这一条字幕；如需统一全片请切回「全片」", property="toolTip")
+        self.style_single_cue_hint.hide()
+        scope_row.addWidget(self.style_single_cue_hint, 0, Qt.AlignmentFlag.AlignVCenter)
+        scope_layout.addLayout(scope_row)
+        self.style_scope.currentIndexChanged.connect(self._scope_changed)
         layout.addWidget(scope_card)
         apply_button = QPushButton("应用样式与动效")
         apply_button.setObjectName("studioPrimary")

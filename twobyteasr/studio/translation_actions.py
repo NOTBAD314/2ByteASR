@@ -42,7 +42,221 @@ def intent_current(page, intent, target):
                for cue_id, text, revision in rows)
 
 
-def translate_selected(page, *, merge=False):
+def _set_status(page, message: str) -> None:
+    save_state = getattr(page, 'save_state', None)
+    if save_state is not None and hasattr(save_state, 'setText'):
+        save_state.setText(str(message))
+
+
+def _refresh_cue_row(page, cue_id: str) -> None:
+    model = getattr(page, 'cue_model', None)
+    if model is not None and hasattr(model, 'refresh_cue'):
+        model.refresh_cue(str(cue_id), (3, 4))
+
+
+def _set_cue_retranslating(page, cue_id: str, active: bool) -> None:
+    inflight = getattr(page, '_retranslating_cue_ids', None)
+    if not isinstance(inflight, set):
+        inflight = set()
+        page._retranslating_cue_ids = inflight
+    if active:
+        inflight.add(str(cue_id))
+    else:
+        inflight.discard(str(cue_id))
+    model = getattr(page, 'cue_model', None)
+    if model is not None and hasattr(model, 'set_retranslating'):
+        model.set_retranslating(str(cue_id), active)
+    else:
+        _refresh_cue_row(page, cue_id)
+
+
+def _canonical_cue_id(project, cue_id: str) -> str:
+    raw = str(cue_id or '').strip()
+    if not raw or project is None:
+        return ''
+    if any(cue.id == raw for cue in project.cues):
+        return raw
+    from ..timeline.studio_edit_sequence import source_cue_id_of
+    mapped = source_cue_id_of(raw)
+    return mapped if any(cue.id == mapped for cue in project.cues) else ''
+
+
+def _apply_single_retranslation(page, project, session_generation, cue_id: str, result) -> bool:
+    _set_cue_retranslating(page, cue_id, False)
+    if (getattr(page, '_close_requested', False)
+            or getattr(page, 'project', None) is not project
+            or getattr(getattr(page, 'session', None), 'generation', None) != session_generation):
+        return False
+    if isinstance(result, Exception):
+        from ..providers.provider_diagnostics import redact_diagnostics
+        hint = failure_hint(getattr(result, 'category', ''))
+        detail = str(redact_diagnostics(str(result)))[:120]
+        _set_status(page, hint or tr('重翻此句失败：{error}', error=detail))
+        _refresh_cue_row(page, cue_id)
+        return False
+    from ..subtitle_rules.subtitle_translation import apply_translation_result
+    from .studio_bilingual import ApplyTranslationSnapshotCommand
+    before, after = apply_translation_result(project, result, commit=False)
+    if cue_id in result.translations and before != after:
+        command = ApplyTranslationSnapshotCommand(
+            project,
+            before,
+            after,
+            (cue_id,),
+            label=tr('重翻此句'),
+            refresh_text_ids=(cue_id,),
+        )
+        stack = getattr(page, 'undo_stack', None)
+        if stack is None and hasattr(page, 'session'):
+            stack = getattr(page.session, 'undo_stack', None)
+        if stack is not None:
+            stack.push(command)
+        else:
+            command.redo()
+        _refresh_cue_row(page, cue_id)
+        _set_status(page, tr('已重翻此句，可 Ctrl+Z 撤销'))
+        return True
+    if cue_id in result.discarded:
+        _set_status(page, tr('原文已变化，未覆盖此次译文'))
+        _refresh_cue_row(page, cue_id)
+        return False
+    if result.failed:
+        from ..providers.provider_diagnostics import redact_diagnostics
+        reason = str(redact_diagnostics(result.fatal_error or next(iter(result.failed.values()))))[:120]
+        _set_status(page, tr('重翻未成功：{error}', error=reason))
+        _refresh_cue_row(page, cue_id)
+        return False
+    _set_status(page, tr('译文未变化'))
+    _refresh_cue_row(page, cue_id)
+    return False
+
+
+def _retranslate_single_cue(page, cue_id: str, *, provider=None, sync: bool = False) -> bool:
+    """Retranslate a single cue in the background and commit through QUndoStack.
+
+    Missing text AI credentials never pop a modal error dialog and never
+    modify the original text; a calm status bar hint is shown instead.
+    """
+    project = getattr(page, 'project', None)
+    canonical = _canonical_cue_id(project, cue_id)
+    if project is None or not canonical:
+        return False
+    cue = next((item for item in project.cues if item.id == canonical), None)
+    if cue is None or not str(cue.text or '').strip():
+        _set_status(page, tr('当前字幕原文为空，无需重翻'))
+        return False
+    inflight = getattr(page, '_retranslating_cue_ids', None)
+    if isinstance(inflight, set) and canonical in inflight:
+        return False
+
+    from ..subtitle_rules.subtitle_translation import (
+        container_target,
+        same_language,
+        translate,
+        translation_source,
+    )
+    active_provider = provider
+    if active_provider is None:
+        from ..caption_design.studio_ai import GLOBAL_PROVIDER_REGISTRY
+        from ..providers.ai_providers import provider_for_stage
+        from ..providers.llm_config import text_ai_key_missing
+        try:
+            settings = GLOBAL_PROVIDER_REGISTRY.settings()
+        except Exception:  # noqa: BLE001 - gentle status hint, no modal crash
+            _set_status(page, tr('未配置文字 AI 服务，无法重翻此句；请先在 AI 设置中配置。'))
+            return False
+        if text_ai_key_missing(settings, 'polish'):
+            _set_status(page, failure_hint('auth_config'))
+            return False
+        try:
+            active_provider = provider_for_stage(settings, 'polish')
+        except Exception as exc:  # noqa: BLE001 - gentle status hint
+            _set_status(page, failure_hint(getattr(exc, 'category', '')) or tr('当前文字翻译服务不可用，请检查 AI 设置。'))
+            return False
+
+    source = translation_source(project)
+    if source.cue(canonical) is None:
+        _set_status(page, tr('该句不属于源语言字幕轨，无法重翻'))
+        return False
+    target = container_target(project)
+    if same_language(source.language, target):
+        _set_status(page, tr('源语言与目标译文语言相同，无需重翻'))
+        return False
+
+    meta = getattr(project, 'generation_metadata', None) or {}
+    game_context = str(meta.get('translation_context') or getattr(page, '_content_name', '') or '')
+    glossary_pairs = meta.get('translation_glossary') or ()
+    session_generation = getattr(getattr(page, 'session', None), 'generation', None)
+
+    _set_cue_retranslating(page, canonical, True)
+    _set_status(page, tr('正在重翻此句…'))
+
+    def run_translation():
+        try:
+            return translate(
+                source,
+                [canonical],
+                active_provider,
+                target=target,
+                game_context=game_context,
+                glossary_pairs=glossary_pairs,
+                overwrite_manual=True,
+                overwrite_legacy=True,
+                suggest_for_manual=False,
+                max_items=1,
+                entrypoint='studio_single_retranslate',
+            )
+        except Exception as exc:  # noqa: BLE001 - delivered back to UI status bar
+            return exc
+
+    if sync:
+        result = run_translation()
+        return _apply_single_retranslation(page, project, session_generation, canonical, result)
+
+    import threading
+    from PySide6.QtCore import QObject, Signal
+    from shiboken6 import isValid
+
+    class _Relay(QObject):
+        finished = Signal(object)
+
+    parent = page if isinstance(page, QObject) else None
+    relay = _Relay(parent)
+    relays = getattr(page, '_single_retranslate_relays', None)
+    if not isinstance(relays, list):
+        relays = []
+        page._single_retranslate_relays = relays
+    relays.append(relay)
+
+    def finish(result) -> None:
+        if relay in relays:
+            relays.remove(relay)
+        try:
+            _apply_single_retranslation(page, project, session_generation, canonical, result)
+        finally:
+            if isValid(relay):
+                relay.deleteLater()
+
+    relay.finished.connect(finish)
+
+    def work() -> None:
+        result = run_translation()
+        if isValid(relay):
+            relay.finished.emit(result)
+
+    thread = threading.Thread(target=work, name=f'retranslate-{canonical}', daemon=True)
+    thread.start()
+    return True
+
+
+def retranslate_cue(page, cue_id: str, *, provider=None, sync: bool = False) -> bool:
+    """Explicit single-cue retranslation entry point."""
+    return translate_selected(page, cue_id=cue_id, provider=provider, sync=sync)
+
+
+def translate_selected(page, *, merge=False, cue_id=None, provider=None, sync: bool = False):
+    if cue_id is not None and not merge:
+        return _retranslate_single_cue(page, str(cue_id), provider=provider, sync=sync)
     if not page.project or not page.selected_cue_ids():
         return
     if merge:

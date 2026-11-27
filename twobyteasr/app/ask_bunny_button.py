@@ -56,7 +56,8 @@ class AskBunnyButton(QPushButton):
         self.update()
 
     def _font(self) -> QFont:
-        font = QFont(self.font())
+        from ..design.typography import playful_font
+        font = playful_font(self.font())     # 2026-11-26 (user): one of the few 猫啃什锦黑 places
         font.setPixelSize(15)
         font.setBold(True)
         return font

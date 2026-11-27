@@ -482,17 +482,74 @@ class StudioProjectController:
             from ..studio.studio_readiness import StudioReadiness
             gate=getattr(page,'_readiness',None)
             if gate is None:gate=page._readiness=StudioReadiness(page)
-            gate.on_ready=on_ready
+            if expected_result_ref:
+                def _after_verified_ready():
+                    self._maybe_run_auto_pipeline(
+                        self.session.project,
+                        expected_result_ref=expected_result_ref,
+                        refresh_ui=True,
+                    )
+                    if callable(on_ready):
+                        on_ready()
+                gate.on_ready=_after_verified_ready
+            else:
+                gate.on_ready=on_ready
             return gate.begin(path,skip_dirty_guard=skip_dirty_guard,expected_result_ref=expected_result_ref)
         result=self.open_project(path,single_shot_fn=single_shot_fn,skip_dirty_guard=skip_dirty_guard,expected_result_ref=expected_result_ref)
         loaded_path = self.session.project_path
-        if (on_ready is not None and page.project is not None and page._project_view_state == 'open'
+        if (page.project is not None and page._project_view_state == 'open'
                 and loaded_path is not None and Path(loaded_path).resolve() == Path(path).resolve()):
             if expected_result_ref:
                 from ..recognition.recognition_result import verify_result_reference
                 verify_result_reference(expected_result_ref, project=page.project, project_path=loaded_path)
-            on_ready()
+                self._maybe_run_auto_pipeline(
+                    self.session.project,
+                    expected_result_ref=expected_result_ref,
+                    refresh_ui=True,
+                )
+            if on_ready is not None:
+                on_ready()
         return result
+
+    def _maybe_run_auto_pipeline(self, project, *, expected_result_ref=None, refresh_ui: bool = False):
+        """Run the scheme's 3-switch auto-pipeline once on newly delivered projects."""
+        if project is None:
+            return None
+        page = self.page
+        try:
+            from .auto_pipeline import maybe_run_auto_pipeline
+            receipt = maybe_run_auto_pipeline(
+                project,
+                is_new_delivery=bool(expected_result_ref),
+            )
+        except Exception as exc:  # noqa: BLE001
+            if hasattr(page, "_studio_trace"):
+                page._studio_trace("AUTO_PIPELINE_FAILED", exception_type=type(exc).__name__, message=str(exc))
+            return None
+        if receipt is None:
+            return None
+        if hasattr(page, "_studio_trace"):
+            page._studio_trace(
+                "AUTO_PIPELINE_APPLIED",
+                series_id=receipt.series_id,
+                auto_applied=receipt.auto_applied_count,
+                remaining_review=receipt.remaining_review_count,
+            )
+        if refresh_ui:
+            page._manual_text_baselines = {cue.id: cue.text for cue in project.cues}
+            if hasattr(page, "cue_model"):
+                page.cue_model.set_project(project)
+            if hasattr(page, "timeline"):
+                page.timeline.set_project(project)
+            if hasattr(page, "_populate_speakers"):
+                page._populate_speakers()
+            page._qc_terminology = terminology_from_project(project)
+            try:
+                from ..studio.studio_finish_flow import refresh_finish_checklist
+                refresh_finish_checklist(page)
+            except Exception:  # noqa: BLE001
+                pass
+        return receipt
 
     @observed('project.open')
     def open_project(
@@ -762,6 +819,8 @@ class StudioProjectController:
 
         page._studio_trace("PROJECT_ASSIGN", project_path=str(requested_path), cue_count=len(project.cues))
         self.session.project_path = requested_path.resolve()
+        if not expected_result_ref:
+            self._maybe_run_auto_pipeline(project, expected_result_ref=None, refresh_ui=False)
         yield from _gui_slice.checkpoint()
         self.session._cue_lookup = {cue.id: cue for cue in project.cues}
         page._manual_text_baselines = {cue.id: cue.text for cue in project.cues}
@@ -797,6 +856,11 @@ class StudioProjectController:
         self.session.undo_stack.setClean()
         page._recovered_autosave_pending = recovered_autosave
         user_text(page.filename).setText(display_project_name(path=self.session.project_path, project=project))
+        try:
+            from ..studio.studio_finish_flow import refresh_finish_checklist
+            refresh_finish_checklist(page)
+        except Exception:  # noqa: BLE001
+            pass
         yield from _gui_slice.checkpoint()
         _language = current_language()
         (bind_text(page.save_state, translate('已恢复自动保存（尚未保存）', _language)) if recovered_autosave else bind_text(page.save_state, translate('已保存', _language)))

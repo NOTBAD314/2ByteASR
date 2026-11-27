@@ -1376,6 +1376,11 @@ class TermLibraryDialog(QWidget):
         hint.setObjectName("termHint")
         hint.setWordWrap(True)
         hint_row.addWidget(hint, 1)
+        self.quick_capture_button = AnimatedButton('随手贴快添…')
+        self.quick_capture_button.setObjectName('termLinkButton')
+        bind_text(self.quick_capture_button, '贴上任意百科、攻略、聊天记录或错词清单，本机即时拆词或用文字 AI 整理并补易听错别名', property='toolTip')
+        self.quick_capture_button.clicked.connect(self.show_quick_capture_dialog)
+        hint_row.addWidget(self.quick_capture_button)
         self.quick_mapping_button = AnimatedButton('批量映射…')
         self.quick_mapping_button.setObjectName('termLinkButton')
         bind_text(self.quick_mapping_button, '一次贴上多行「听错的写法 -> 正确写法」', property='toolTip')
@@ -1389,8 +1394,8 @@ class TermLibraryDialog(QWidget):
         quick_add.addWidget(hint_box)
         # 2026-11-13 (plan 2026-11-13-glossary-library-redesign-c): one row.
         # The column names became placeholders, the two-way hint a tooltip, and
-        # 批量映射 / 试一句 sit at the end of the same row.
-        for link in (self.quick_mapping_button, self.term_try_toggle):
+        # 随手贴快添 / 批量映射 / 试一句 sit at the end of the same row.
+        for link in (self.quick_capture_button, self.quick_mapping_button, self.term_try_toggle):
             hint_row.removeWidget(link)
             composer_row.addWidget(link)
         bind_text(composer, '只写正确写法 → 帮识别写对；再写常被听成 → 识别成那样时自动改过来', property='toolTip')
@@ -4211,6 +4216,32 @@ class TermLibraryDialog(QWidget):
                 self._builtin_entry_cache.pop(game_name, None)
                 self.refresh_current_game()
                 self._show_toast(tr('已恢复「{value0}」。', value0=name))
+
+    def show_quick_capture_dialog(self):
+        """Open the zero-friction Paste / Single-Key AI quick term capture dialog."""
+        game_name = self.state.get("game") or "通用词库"
+        library_id = self._library_key(game_name) if self.state.get("game") else game_name
+        from .quick_term_dialog import QuickTermCaptureDialog
+
+        def _settings():
+            return getattr(self.legacy, "RUNTIME_SETTINGS", {}) or {}
+
+        dlg = QuickTermCaptureDialog(
+            library_name=game_name,
+            library_id=library_id,
+            legacy=self.legacy,
+            settings_getter=_settings,
+            parent=self,
+        )
+
+        def _on_committed(res):
+            if res.get("added", 0) > 0:
+                self._notify_library_changed()
+                self.refresh_current_game()
+                self._show_toast(tr('已加入 {count} 条词条到「{game}」。', count=res['added'], game=res['library']))
+
+        dlg.panel.committed.connect(_on_committed)
+        dlg.exec()
 
     def show_import_dialog(self, *, mapping_mode=False):
         """P0: Warm hosted import sheet inside TermLibrary content (no native SpringDialog)."""

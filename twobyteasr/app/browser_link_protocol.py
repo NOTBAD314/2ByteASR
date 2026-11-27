@@ -12,6 +12,7 @@ from ..media.link_catalog import BILIBILI_HOSTS, YOUTUBE_HOSTS, media_url
 HOST_NAME = "org.twobyteasr.helper"
 NATIVE_LIMIT = 64 * 1024
 MODES = {"both", "subtitles", "recognize"}
+PING_BROWSERS = {"Chrome", "Edge", "Brave", "Firefox"}
 
 
 def browser_video_url(value):
@@ -31,8 +32,15 @@ def browser_video_url(value):
 def validate(data, *, allow_ping=False):
     if not isinstance(data, dict) or type(data.get("version")) is not int or data["version"] != 1:
         raise ValueError("助手协议版本不相容。")
-    if allow_ping and data == {"version": 1, "action": "ping"}:
-        return {"version": 1, "action": "ping"}
+    if allow_ping and data.get("action") == "ping" and set(data) <= {"version", "action", "browser"}:
+        # 2026-11-26: the helper names its browser so the install window can
+        # tick "tried it" and show the last contact per browser.
+        browser = data.get("browser")
+        if browser is None:
+            return {"version": 1, "action": "ping"}
+        if isinstance(browser, str) and browser in PING_BROWSERS:
+            return {"version": 1, "action": "ping", "browser": browser}
+        raise ValueError("助手操作无效。")
     if (data.get("action") != "download" or set(data) - {"version", "action", "url", "mode", "cookies"}
             or not isinstance(data.get("mode"), str) or data["mode"] not in MODES):
         raise ValueError("助手操作无效。")

@@ -2491,10 +2491,26 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
     def cut_target():
         return cue_blocks([cue.id for cue in pieces()], pad=24.0)
 
+    def in_view(cue_ids):
+        """Bring these lines into the visible time (2026-11-27: after review the timeline sat with
+        0 s in the middle, the line to cut was off the right edge and the step waited forever)."""
+        page = studio()
+        timeline = getattr(page, 'timeline', None)
+        found = [cue for cue in getattr(page.project, 'cues', ()) if cue.id in set(cue_ids)] if page else []
+        if timeline is None or not found:
+            return
+        start, end = min(cue.start_ms for cue in found), max(cue.end_ms for cue in found)
+        left, width = timeline.visible_start_ms, timeline.visible_duration_ms
+        if start >= left and end <= left + width:
+            return
+        width = max(width, end - start + 4000)
+        timeline.set_visible_window(max(0, start - (width - (end - start)) // 2), width)
+
     def show_cut_line():
         page = studio()
         page._set_timeline_tool('selection')
         page.select_cue(cut_cue)
+        in_view([cut_cue])
 
     def cut_into_three():
         page = studio()
@@ -2510,6 +2526,7 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
 
     def remember_pieces():
         merge_mark['count'] = len(pieces())
+        in_view([cue.id for cue in pieces()])
 
     def merge_two():
         page = studio()
@@ -2524,6 +2541,7 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
         parts = pieces()
         if parts:
             page.select_cue(parts[-1].id)
+        in_view([cue.id for cue in parts])
 
     def ripple_merge():
         page = studio()
@@ -2544,6 +2562,7 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
             page._seek(21.05)
         except Exception:  # noqa: BLE001 - T still works wherever the playhead is
             pass
+        in_view(['tutorial-7', 'tutorial-8'])
 
     def key(action_id):
         """The key bound to a workbench command, as the shortcut settings name it."""
@@ -2991,7 +3010,7 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
     # 'first' is a fresh install's tutorial; 'fix' and 'studio' set up their own demo data.
     if part == 'first':
         closing = TourStep('第一份字幕做好啦！接下来在「==新手教学==」里挑下一章', next_label='完成',
-                           note='改错字、工作台、编辑器、术语库、问问兔白，想学哪章点哪章')
+                           note='看懂时间轴、改错字、工作台、AI 工具、剪视频……想学哪章点哪章')
         closing.chapter = '做字幕'
         return home_steps + [closing]
     if part == 'fix':

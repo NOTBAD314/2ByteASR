@@ -15,6 +15,7 @@ from .grouping_syntax import (
     INDEPENDENT_RESPONSES, PERSONAL_PRONOUNS, repeated_units, syntax_boundary_evidence,
 )
 from .text_rules import content_exact, display_length
+from .word_tags import pos_tags
 
 
 def _dictionary_identity():
@@ -254,8 +255,7 @@ class BoundaryQuality:
             # POS supplies productive dependencies and person names, including
             # words absent from the task's glossary. A stranded 又/已经/都 is
             # still bad when it happens to be a legal character/word index.
-            import jieba.posseg as posseg
-            tagged = list(posseg.cut(content))
+            tagged = list(pos_tags(content))
             token_cursor = start
             for token in tagged:
                 self.tagged_tokens.append(dict(start=token_cursor, end=token_cursor+len(token.word),
@@ -431,8 +431,7 @@ class BoundaryQuality:
         # A new explicit subject in an already complete clause is evidence of
         # an independent sentence. A connective alone is not such evidence.
         following = self.index.content[cut:end]
-        import jieba.posseg as posseg
-        tagged = list(posseg.cut(following))
+        tagged = list(pos_tags(following))
         if (tagged and tagged[0].flag.startswith('n')
                 and any(token.flag[0] in 'va' for token in tagged[1:4])
                 and cut not in self.forbidden | self.awkward):
@@ -447,7 +446,7 @@ class BoundaryQuality:
         if cut in self.forbidden | self.awkward | self.soft_dependencies:
             return True
         left_text = self.index.content[start:cut]
-        left_tokens = list(posseg.cut(left_text))
+        left_tokens = list(pos_tags(left_text))
         if not left_tokens or not tagged:
             return False
         tail, head = left_tokens[-1], tagged[0]
@@ -677,7 +676,6 @@ class BoundaryQuality:
 
     def complete_expressions(self, boundaries):
         """Protect a baseline only when its context supports completeness."""
-        import jieba.posseg as posseg
         confirmed = []
         edges = [0, *boundaries]
         for number, (start,end) in enumerate(zip(edges,edges[1:])):
@@ -696,7 +694,7 @@ class BoundaryQuality:
             if re.search(r'(?:的|得|地|把|被|能够|可以|必须|应该|需要|就是|也是|是|会|要)$',text):
                 continue
             if (self.independent_expression(start,end)
-                    or any(t.flag.startswith(('v','a')) for t in posseg.cut(text))):
+                    or any(t.flag.startswith(('v','a')) for t in pos_tags(text))):
                 confirmed.append((start,end))
         return confirmed
 
@@ -791,7 +789,9 @@ class BoundaryQuality:
 def quality_for_segments(segments, tokens=(), *, protected=()):
     from .segmentation_alignment import (segment_content_timeline,
         hard_break_character_offsets, protected_source_boundary_offsets,
-        firered_pause_character_gaps)
+        firered_pause_character_gaps, tokens_near_segments)
+    # Every use below looks only at tokens near these segments (same answer, 2026-11-27).
+    tokens = tokens_near_segments(segments, tokens)
     required = (set(protected) | hard_break_character_offsets(segments, tokens)
                 | protected_source_boundary_offsets(segments))
     cursor = 0
@@ -872,8 +872,7 @@ def quality_for_segments(segments, tokens=(), *, protected=()):
         # Inspect verb/object attachment within the actual source utterance.
         # Concatenating two utterances can otherwise mistake 信任 | 我跟你说
         # for a verb followed by its object.
-        import jieba.posseg as posseg
-        tagged=list(posseg.cut(content_exact(segment.text)))
+        tagged=list(pos_tags(content_exact(segment.text)))
         position=cursor
         for token,following in zip(tagged,tagged[1:]):
             position+=len(token.word)

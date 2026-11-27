@@ -240,6 +240,15 @@ QPushButton#filterChip {{
 QPushButton#filterChip:hover {{ background: {theme.selected}; color: {theme.text}; }}
 QPushButton#filterChip:checked {{ background: {theme.surface_elevated}; color: {theme.text}; border-color: {theme.border_strong}; font-weight: 700; }}
 QPushButton#filterChip:focus {{ border-color: {theme.focus}; }}
+QFrame#cueLayerTrack {{ background: {track}; border: 0; border-radius: 10px; }}
+QPushButton#cueLayerChip {{
+    background: transparent; color: {theme.text_secondary}; border: 1px solid transparent;
+    border-radius: 7px; min-height: 24px; max-height: 24px; padding: 0 8px;
+    font-family: {UI_FONT_STACK}; font-size: {t.caption_size}px; font-weight: 500;
+}}
+QPushButton#cueLayerChip:hover {{ background: {theme.selected}; color: {theme.text}; }}
+QPushButton#cueLayerChip:checked {{ background: {theme.surface_elevated}; color: {theme.text}; border-color: {theme.border_strong}; font-weight: 700; }}
+QPushButton#cueLayerChip:focus {{ border-color: {theme.focus}; }}
 QPushButton#reviewEntryButton {{
     background: {theme.accent}; color: {theme.text_on_accent}; border: 1px solid transparent;
     border-radius: 12px; min-height: 32px; padding: 0 14px;

@@ -481,6 +481,9 @@ def configure_runtime_llms(
         value = str(models.get(key, "") or "").strip()
         if value:
             updated["models"][key] = value
+    reasoning_profiles = models.get("reasoning_profiles")
+    if isinstance(reasoning_profiles, dict):
+        updated["models"].setdefault("reasoning_profiles", {}).update(reasoning_profiles)
     profiles = models.get("provider_profiles")
     for stage in ('polish', 'group'):
         for option in ('json_mode', 'structured_output'):

@@ -391,7 +391,7 @@ def start(window, out):
                        not dialog.chrome.maximized and dialog.chrome.margin() > 0 and dialog.chrome.mask.isVisible()
                        and dialog.width() < work.width(),
                        dialog.geometry().getRect())
-            buttons = [b for b in dialog.hero_tools.findChildren(type(dialog.parse_button)) if b.text()]
+            buttons = [b for b in dialog.url_field.findChildren(type(dialog.parse_button)) if b.text()]  # 2026-11-25: paste sits in the link field
             paste = next(b for b in buttons if b.text() in ("粘贴", "Paste", "貼り付け"))
             QTest.mouseClick(paste, Qt.MouseButton.LeftButton)
             self.check("粘贴 reads the clipboard link", dialog.url.text().endswith("jNQXAC9IVRw"), dialog.url.text())

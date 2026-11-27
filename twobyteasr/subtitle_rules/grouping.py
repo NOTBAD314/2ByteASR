@@ -116,7 +116,7 @@ def _texts_at(text, boundaries):
 
 def _retain_grouping_range(rows, error, batch_id=None):
     """A data rejection preserves exactly this range at source boundaries."""
-    from .grouping_contract import attach_grouping_spans
+    from .grouping_contract import attach_grouping_spans, GroupingContractError
     from ..providers.asr_provider_snapshot import GroupedBatchResult
     message = redact_runtime_secrets(error)
     ids = [row.segment_id for row in rows]
@@ -126,8 +126,20 @@ def _retain_grouping_range(rows, error, batch_id=None):
     cues = [SubtitleCue(index, row.start, row.end, row.text,
                         row.timing_locked, row.speaker or 'S00')
             for index, row in enumerate(rows, 1)]
-    cues = _locally_split_retained_japanese(rows, cues) or cues
-    attach_grouping_spans(rows, cues)
+    split = _locally_split_retained_japanese(rows, cues)
+    try:
+        if split is None:
+            raise GroupingContractError('no local split')
+        cues = attach_grouping_spans(rows, split)
+    except GroupingContractError as split_error:
+        # 2026-11-26: the fallback itself must not fail the task. When the
+        # local split does not pass the source contract, the source lines are
+        # kept exactly as they are (each one is its own valid cue).
+        if split is not None:
+            record_run_event('grouping_retained_range_split_dropped', batch_index=batch_id,
+                             source_segment_ids=ids, category=getattr(split_error, 'category', ''),
+                             reason=str(split_error)[:200])
+        attach_grouping_spans(rows, cues)
     for cue in cues:
         cue.grouping_origin = 'source_retained_after_local_rejection'
         cue.grouping_boundary_receipt = dict(receipt)
@@ -439,9 +451,11 @@ def cues_from_resegmented_texts(
         firered_tokens,
     )
 
+    from .segmentation_alignment import tokens_near_segments
+    nearby_tokens = tokens_near_segments(segment_batch, firered_tokens)   # same answer, far fewer tokens
     timeline = []
     for segment in segment_batch:
-        timeline.extend(segment_content_timeline(segment, firered_tokens))
+        timeline.extend(segment_content_timeline(segment, nearby_tokens))
     if len(timeline) != len(source_content):
         raise ValueError("校对文字与时间单元数量不一致。")
 
@@ -1552,7 +1566,7 @@ GROUPING_ESCALATION_CATEGORIES = frozenset({
 def _escalate_failed_grouping(jobs, results, fallback_reasons, ordered_segments, global_position, snapshot, *,
                               protect_all_source_boundaries, abort_event, quality_budget, source_offsets,
                               cache_context):
-    """Resend batches that fell back on format/truncation once: same model, thinking one level higher.
+    """Resend batches that fell back on format/truncation once: same model and thinking mode.
 
     Each batch is resent as two halves with no further retry or split. A half that validates
     replaces that part of the local fallback; a half that fails again keeps the same
@@ -1595,7 +1609,7 @@ def _escalate_failed_grouping(jobs, results, fallback_reasons, ordered_segments,
         work.append((job, [batch] if len(batch) == 1 else [batch[:middle], batch[middle:]]))
     requests = sum(len(halves) for _, halves in work)
     budget = RetryBudget(0, total_seconds=float(snapshot.timeout_policy.total) * requests)
-    print(f"   [提高思考重试] {len(candidates)} 个断句批次格式或截断仍失败，用同一模型、思考等级 {level}、"
+    print(f"   [保留思考设置重试] {len(candidates)} 个断句批次格式或截断仍失败，用同一模型与思考设置，"
           f"输出上限 {escalated.max_output_tokens} 再请求一轮（{requests} 个请求）。")
     record_run_event('ai_escalation_round', state='started', thinking=level, requests=requests, **event)
     owner = get_runtime_context()
@@ -1657,7 +1671,7 @@ def _escalate_failed_grouping(jobs, results, fallback_reasons, ordered_segments,
         succeeded_cues=sum(len(job[2]) for job in candidates if job[0] in resolved),
         failed_cues=sum(len(job[2]) for job in candidates if job[0] not in resolved),
         remaining_fallback_batches=sum(index not in resolved for index in fallback_reasons), **event)
-    print(f"   [提高思考重试] 救回 {len(resolved)} 个断句批次，仍保留本地断句 {len(set(still_failed))} 个。")
+    print(f"   [保留思考设置重试] 救回 {len(resolved)} 个断句批次，仍保留本地断句 {len(set(still_failed))} 个。")
     return resolved, extra_reviews
 
 

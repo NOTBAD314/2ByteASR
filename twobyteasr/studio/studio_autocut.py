@@ -142,3 +142,82 @@ def auto_cut_silence_command(project, timeline_ranges: Iterable[tuple[int, int]]
         applied += 1
     label = f"自动剪口播气口（{applied} 段，共 {removed_total / 1000:.1f} 秒）"
     return EditSequenceCommand(project, sequence, None, label, changed)
+
+
+def rough_cut_apply_command(
+    project,
+    timeline_ranges: Iterable[tuple[int, int]],
+    *,
+    cue_ids: Iterable[str] | None = None,
+    label: str | None = None,
+    changed=None,
+):
+    """Apply rough-cut ranges via one undoable ``EditSequenceCommand`` and clear marks.
+
+    On ``redo()``: ripples ``EditSequence`` (and timeline-domain captions when
+    independent captions are enabled) and clears executed ``rough_cut_marks``.
+    On ``undo()``: restores the original ``EditSequence``, captions, and marks.
+    """
+    import copy
+    from ..timeline.studio_edit_commands import EditSequenceCommand
+    from ..timeline.studio_edit_sequence import delete_timeline_range, sequence_of
+    from .ai_rough_cut import ROUGH_CUT_MARKS_KEY, clear_rough_cut_marks, get_rough_cut_marks
+
+    ordered = sorted((int(a), int(b)) for a, b in timeline_ranges if int(b) > int(a))
+    sequence = sequence_of(project)
+    applied = 0
+    removed_total = 0
+    shift = 0
+    for raw_start, raw_end in ordered:
+        start = raw_start - shift
+        end = raw_end - shift
+        if end - start <= 0:
+            continue
+        candidate = delete_timeline_range(sequence, start, end)
+        removed = sequence.timeline_duration_ms - candidate.timeline_duration_ms
+        if removed <= 0:
+            continue
+        sequence = candidate
+        shift += removed
+        removed_total += removed
+        applied += 1
+
+    after_cues = None
+    if project.render_settings.get("_cue_domain") == "timeline" and ordered:
+        from ..timeline.studio_caption_timeline import ripple_caption_range
+
+        working = copy.copy(project)
+        working.cues = copy.deepcopy(project.cues)
+        working.studio_state = copy.deepcopy(project.studio_state)
+        for a, b in reversed(ordered):
+            ripple_caption_range(working, a, b, locked=())
+        after_cues = working.cues
+
+    command_label = label or f"文稿粗剪（{applied} 段，共 {removed_total / 1000:.1f} 秒）"
+    before_marks = copy.deepcopy(get_rough_cut_marks(project))
+    executed_ids = list(cue_ids) if cue_ids is not None else None
+
+    class RoughCutApplyCommand(EditSequenceCommand):
+        def redo(self) -> None:
+            clear_rough_cut_marks(self.project, cue_ids=executed_ids)
+            try:
+                super().redo()
+            except Exception:
+                if before_marks:
+                    self.project.studio_state[ROUGH_CUT_MARKS_KEY] = copy.deepcopy(before_marks)
+                else:
+                    self.project.studio_state.pop(ROUGH_CUT_MARKS_KEY, None)
+                raise
+
+        def undo(self) -> None:
+            if before_marks:
+                self.project.studio_state[ROUGH_CUT_MARKS_KEY] = copy.deepcopy(before_marks)
+            else:
+                self.project.studio_state.pop(ROUGH_CUT_MARKS_KEY, None)
+            try:
+                super().undo()
+            except Exception:
+                clear_rough_cut_marks(self.project, cue_ids=executed_ids)
+                raise
+
+    return RoughCutApplyCommand(project, sequence, after_cues, command_label, changed)

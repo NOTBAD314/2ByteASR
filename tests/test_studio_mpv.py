@@ -291,6 +291,50 @@ def test_interactive_posts_are_latest_wins_actor_messages(tmp_path):
     assert controller.observed_properties()["pause"] is True
 
 
+def test_pause_after_clear_media_skips_alignment_seek(tmp_path):
+    # 2026-11-26 report-6c1e4e26195b413e: leaving the workbench sent stop,
+    # then the hidden canvas paused with position 0.0; the seek hit an idle
+    # mpv (command_rejected) and the whole pause task was logged as failed.
+    executable = tmp_path / "mpv.exe"
+    executable.write_bytes(b"mpv")
+    controller = MpvController(executable)
+    controller._process = _RunningProcess()
+    actor = _RecordingActor()
+    controller._actor = actor
+    commands = []
+    controller._send = lambda command, timeout=2.0: commands.append(list(command)) or {}
+
+    assert controller.post_clear_media()
+    assert controller.post_set_paused(True, position_seconds=0.0)
+    for callback, _key in actor.posts:
+        callback()
+
+    assert ["seek", 0.0, "absolute+exact"] not in commands
+    assert commands[-1] == ["set_property", "pause", True]
+    assert controller._last_async_failure is None
+
+
+def test_pause_with_loaded_media_keeps_alignment_seek(tmp_path):
+    executable = tmp_path / "mpv.exe"
+    executable.write_bytes(b"mpv")
+    controller = MpvController(executable)
+    controller._process = _RunningProcess()
+    actor = _RecordingActor()
+    controller._actor = actor
+    commands = []
+    controller._send = lambda command, timeout=2.0: commands.append(list(command)) or {}
+
+    assert controller.post_load(tmp_path / "clip.mp4")
+    assert controller.post_set_paused(True, position_seconds=3.25)
+    for callback, _key in actor.posts:
+        callback()
+
+    assert commands[-2:] == [
+        ["set_property", "pause", True],
+        ["seek", 3.25, "absolute+exact"],
+    ]
+
+
 def test_command_rejection_does_not_reconnect_valid_actor_pipe():
     actor = object.__new__(_MpvCommandActor)
     actor.controller = type("Controller", (), {"running": True})()

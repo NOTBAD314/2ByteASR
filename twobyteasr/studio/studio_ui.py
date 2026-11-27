@@ -883,14 +883,21 @@ class SubtitleStudioPage(
         from ..diagnostics.navigation_timing import phase
         if self._workspace_ready or self._workspace_steps is None:
             return
-        started = perf_counter()
+        from ..design.gui_slices import GUI_YIELD
+        turn = perf_counter()
         try:
-            with phase('studio.construct.section'):
-                stage = next(self._workspace_steps)
-            from ..design.gui_slices import GUI_YIELD
-            self._workspace_build_profile.append(dict(completed=stage if stage is not GUI_YIELD else 'GUI slice', ms=round((perf_counter()-started)*1000, 3)))
-            if stage is not GUI_YIELD:
-                self.workspace_build_progress.emit(stage)
+            # 2026-11-27 (user: entering the project library is slow): the build yields every 4 ms;
+            # one slice per timer turn spent more time between slices (timer, loading card and
+            # 兔白 paints) than building. Several slices per turn, about 12 ms, then a paint.
+            while True:
+                started = perf_counter()
+                with phase('studio.construct.section'):
+                    stage = next(self._workspace_steps)
+                self._workspace_build_profile.append(dict(completed=stage if stage is not GUI_YIELD else 'GUI slice', ms=round((perf_counter()-started)*1000, 3)))
+                if stage is not GUI_YIELD:
+                    self.workspace_build_progress.emit(stage)
+                if perf_counter() - turn >= 0.012 or self._workspace_steps is None or self._close_requested:
+                    break
             self._workspace_build_timer.start(1)
         except StopIteration:
             try:
@@ -2183,11 +2190,58 @@ class SubtitleStudioPage(
         (bind_text(self.studio_maximize_button, '还原窗口', property='toolTip') if maximized else bind_text(self.studio_maximize_button, '最大化', property='toolTip'))
 
     def _begin_list_inline_edit(self, index: QModelIndex) -> None:
-        if index.isValid() and index.column() == 3:
-            cue_id = str(self.cue_model.data(index, Qt.ItemDataRole.UserRole) or "")
-            if cue_id:
-                self.select_cue(cue_id)
-                self._begin_canvas_inline_edit()
+        if not (index.isValid() and index.column() == 3):
+            return
+        cue_id = str(self.cue_model.data(index, Qt.ItemDataRole.UserRole) or "")
+        if not cue_id:
+            return
+        layer = None
+        table = getattr(self, "cue_table", None)
+        delegate = getattr(self, "cue_reading_delegate", None)
+        pos = getattr(table, "_last_double_click_pos", None)
+        if table is not None:
+            table._last_double_click_pos = None
+        if table is not None and getattr(table, "reading", False) and delegate is not None and pos is not None:
+            from PySide6.QtWidgets import QStyleOptionViewItem
+            option = QStyleOptionViewItem()
+            option.rect = table.visualRect(index)
+            option.font = table.font()
+            if delegate.hit_action_button(option, self.cue_model, index.row(), pos):
+                return
+            layer = delegate.hit_edit_layer(option, index, pos)
+        elif self.cue_model.project is not None and 0 <= index.row() < self.cue_model.rowCount():
+            cue = self.cue_model.cue_at(index.row())
+            layer = "translation" if self.cue_model.editing_translation(cue) else "original"
+        self.select_cue(cue_id)
+        if layer in {"original", "translation"}:
+            self._syncing_layer_from_table = True
+            try:
+                self.timeline.set_subtitle_layer(layer)
+            finally:
+                self._syncing_layer_from_table = False
+            self._open_caption_editor(cue_id, layer)
+        else:
+            self._begin_canvas_inline_edit()
+
+    def _begin_list_enter_edit(self) -> None:
+        if getattr(self, "_review_mode", False) or not self.project:
+            return
+        index = self.cue_table.currentIndex()
+        if not index.isValid() or not (0 <= index.row() < self.cue_model.rowCount()):
+            return
+        cue = self.cue_model.cue_at(index.row())
+        layer = "translation" if self.cue_model.editing_translation(cue) else "original"
+        self.select_cue(cue.id)
+        self._syncing_layer_from_table = True
+        try:
+            self.timeline.set_subtitle_layer(layer)
+        finally:
+            self._syncing_layer_from_table = False
+        self._open_caption_editor(cue.id, layer)
+
+    def _retranslate_single_cue(self, cue_id: str) -> None:
+        from .translation_actions import translate_selected
+        translate_selected(self, cue_id=cue_id)
 
     def _context_card(self, title: str) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
@@ -3399,6 +3453,8 @@ class SubtitleStudioPage(
         sync_zero = getattr(self, "_sync_recognition_zero_state", None)
         if callable(sync_zero):
             sync_zero()
+        from .studio_bilingual import sync_cue_list_layer_controls
+        sync_cue_list_layer_controls(self)
 
     def _show_cue_more_menu(self) -> None:
         menu = create_studio_menu(self)

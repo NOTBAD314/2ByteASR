@@ -54,6 +54,36 @@ def test_haas_variant_identity_is_frozen_in_primary_and_review_caches():
     assert configuration({}).model_key == 'haas_ja_q8_0'
 
 
+def test_workshop_requires_current_inference_for_selected_precision_and_device(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from twobyteasr.local_models import haas_preparation as setup
+    from twobyteasr.local_models import haas_runtime
+
+    model_root = tmp_path / 'Models'
+    monkeypatch.setattr(setup, 'get_runtime_paths', lambda: SimpleNamespace(
+        model_root=model_root, user_data_root=tmp_path))
+    cpu = tmp_path / 'cpu' / 'crispasr.exe'
+    cpu.parent.mkdir()
+    monkeypatch.setattr(setup, 'runtime_executable', lambda device: cpu if device == 'cpu' else None)
+    for name in haas_runtime.runtime_files('cpu'):
+        cpu.with_name(name).write_bytes(b'fixture')
+    config = configuration({})
+    weight = setup._model_path(config)
+    weight.parent.mkdir(parents=True)
+    weight.write_bytes(b'fixture')
+    assert setup.readiness(config) == 'inference_pending'
+    receipt = setup._receipt(config)
+    receipt.parent.mkdir()
+    receipt.write_text(json.dumps(dict(inference_verified=True, identity=setup._identity(config))), 'utf-8')
+    assert setup.readiness(config) == 'installed'
+    assert setup.readiness(configuration({'models': {'haas_device': 'cuda'}})) == 'runtime_missing'
+    weight.write_bytes(b'changed size')
+    assert setup.readiness(config) == 'inference_pending'
+    cpu.with_name('openblas.dll').unlink()
+    assert setup.readiness(config) == 'runtime_missing'
+
+
 def test_workshop_has_one_haas_card_with_three_pinned_downloads():
     from twobyteasr.local_models.model_workshop import CANONICAL_MODEL_ORDER, MODELS
     from twobyteasr.model_integrity import load_dependency_lock

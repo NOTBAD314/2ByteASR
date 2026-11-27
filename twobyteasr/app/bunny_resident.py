@@ -15,6 +15,10 @@ She keeps quiet while the user types, a dialog or menu is open, the tutorial run
 or the app is not in front; what could not be said waits a little and is then dropped. She hides
 with the window and while the chat (which has its own 兔白) is open.
 
+2026-11-26: while the big 兔白 stands on the page with her dialog box folded (``bunny_chat.show_bunny``),
+the small one stays hidden and hands her hints to the big one (``BunnyChat.hint``): a short line
+shows over her head, a longer one waits in the box with a dot on her bubble.
+
 What she notices by herself: a finished or failed recognition (the results page opening, read from
 the newest report when 「让兔白读诊断和识别记录」 is on), a warning or error box that was closed, a
 long quiet moment on a page (a tip from ``bunny_tips``), a late night.
@@ -53,6 +57,18 @@ FORCE_ENV = 'TWOBYTEASR_BUNNY_RESIDENT'   # "1" shows her under test isolation t
 # What she reads from the whole application (via design.app_events), not every event.
 _APP_EVENT_TYPES = (QEvent.Type.KeyPress, QEvent.Type.MouseButtonPress, QEvent.Type.Wheel,
                     QEvent.Type.Show, QEvent.Type.Hide)
+
+
+def tour_open(window) -> bool:
+    """The tutorial (``home_tour.GuidedTour``) is showing over ``window``."""
+    import sys
+    module = sys.modules.get('twobyteasr.app.home_tour')
+    tour_type = getattr(module, 'GuidedTour', None) if module is not None else None
+    try:
+        tour = window.findChild(tour_type) if tour_type is not None else None
+        return tour is not None and tour.isVisible()
+    except RuntimeError:
+        return False
 
 
 def auto_start_allowed() -> bool:
@@ -285,19 +301,13 @@ class BunnyResident(QWidget):
     def _chat_open(self) -> bool:
         chat = getattr(self.window_, '_bunny_chat', None)
         try:
-            return chat is not None and chat.isVisible()
+            # 2026-11-26: a card folded away while she is played with is still an open chat.
+            return chat is not None and (chat.isVisible() or bool(getattr(chat, 'collapsed', False)))
         except RuntimeError:
             return False
 
     def _tour_open(self) -> bool:
-        import sys
-        module = sys.modules.get('twobyteasr.app.home_tour')
-        tour_type = getattr(module, 'GuidedTour', None) if module is not None else None
-        try:
-            tour = self.window_.findChild(tour_type) if tour_type is not None else None
-            return tour is not None and tour.isVisible()
-        except RuntimeError:
-            return False
+        return tour_open(self.window_)
 
     def sync(self):
         """Show or hide her for the user's choice, the window and the chat."""
@@ -312,10 +322,21 @@ class BunnyResident(QWidget):
             self._hide_hint()
             self.hide()
 
+    def _folded_chat(self):
+        """The big 兔白's chat while it stands folded on the page (she takes the hints then)."""
+        chat = getattr(self.window_, '_bunny_chat', None)
+        try:
+            if (chat is not None and getattr(chat, 'collapsed', False) and getattr(chat, 'puck', None) is not None
+                    and getattr(chat, 'fold_reason', '') in ('user', 'start')):
+                return chat
+        except RuntimeError:
+            pass
+        return None
+
     def busy(self) -> bool:
         """The user is in the middle of something her bubble must not cut into."""
         app = QApplication.instance()
-        if not self.isVisible() or not self._app_in_front():
+        if not (self.isVisible() or self._folded_chat() is not None) or not self._app_in_front():
             return True
         if app.activeModalWidget() is not None or app.activePopupWidget() is not None:
             return True
@@ -357,6 +378,17 @@ class BunnyResident(QWidget):
         line, buttons = bunny_events.wording(hint, facts)
         if not line:
             return False
+        chat = self._folded_chat()
+        if chat is not None:
+            if hint.key == 'error_dialog':
+                from . import bunny_permissions
+                if not bunny_permissions.load().get('read_diagnostics'):
+                    buttons = ()
+            if not chat.hint(line, buttons, hint.mood, hint.act):
+                return False
+            bunny_events.shown(hint.key, self.session)
+            self.values = bunny_events.load()
+            return True
         self.hint_key = hint.key
         self.bubble.set_hint(line, buttons, self._button)
         self.bubble.show()

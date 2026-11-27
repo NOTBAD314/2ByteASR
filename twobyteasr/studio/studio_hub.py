@@ -132,12 +132,21 @@ def _library_display_signature(records: list[dict[str, object]]) -> tuple:
     the informational ``status`` string are excluded, so the background scan
     of an unchanged library compares equal to the first paint from the index
     and does not rebuild every card a second time.
+
+    2026-11-27 (user: the project library keeps flickering): the cover file's stamp
+    (``cover_mtime_ns``/``cover_size``) is not shown either. The scan adds it to records the
+    index lacked, which made every card look new: all of them were destroyed and rebuilt, once
+    per partial scan result. A changed cover is reloaded in place (``_refresh_card_covers``).
     """
     return tuple(
         tuple(sorted((str(key), repr(value)) for key, value in record.items()
-                     if not str(key).startswith("_") and key not in {"status", "summary_version", "last_opened", "modified"}))
+                     if not str(key).startswith("_") and key not in _SIGNATURE_IGNORED))
         for record in records
     )
+
+
+_SIGNATURE_IGNORED = frozenset({"status", "summary_version", "last_opened", "modified",
+                                "cover_mtime_ns", "cover_size"})
 
 
 class _ProjectCard(QToolButton):
@@ -271,7 +280,13 @@ class StudioHubMixin:
             layout = widget.layout()
             if layout is not None:
                 layout.activate()
-        return max(0, scroll.width() - 2 * scroll.frameWidth())
+        width = max(0, scroll.width() - 2 * scroll.frameWidth())
+        if width < 200 and not scroll.isVisible():
+            # 2026-11-27 (user: entering the library flashes): the first build ran while the page
+            # was still hidden at Qt's default 100 px, so one narrow column was built and replaced
+            # by the real grid a moment later. The grid spans the window: take its width.
+            width = max(width, chain[-1].width() - 2 * scroll.frameWidth())
+        return width
 
     def _library_visible_content_width(self) -> int:
         scroll = getattr(self, "project_library_scroll", None)
@@ -573,6 +588,7 @@ class StudioHubMixin:
                 record=by_path.get(getattr(row,'_library_item_path',''))
                 meta=row.findChild(QLabel,'projectListMeta')
                 if record is not None and meta is not None:bind_text(meta,self._library_row_meta(record))
+            self._refresh_card_covers(by_path)
             self._sync_resume_hero_geometry()
             return
         if (current is not None and getattr(self, "_hub_card_widgets", None)
@@ -654,6 +670,17 @@ class StudioHubMixin:
         self._set_project_library_view(mode, refresh=False)
         self._hub_viewport_width = self.project_library_scroll.viewport().width()
         self._library_update_manage_bar()
+
+    def _refresh_card_covers(self, by_path: dict) -> None:
+        """Kept cards whose cover file changed (or was only now stamped) load it again in place."""
+        for card in getattr(self, '_hub_card_widgets', ()):
+            record = by_path.get(getattr(card, '_library_item_path', ''))
+            cover = card.findChild(QLabel, 'projectCardCover') if record is not None else None
+            if cover is None:
+                continue
+            stamp = (record.get('cover_mtime_ns'), record.get('cover_size'))
+            if getattr(cover, '_library_cover_stamp', None) != stamp:
+                self._enqueue_library_cover(record, cover.width(), cover.height(), cover)
 
     def _build_library_view(self, view: str, *, saved_scroll=None) -> None:
         """Create one view's widgets for the displayed records in batches.
@@ -806,7 +833,10 @@ class StudioHubMixin:
                 self._library_trace('view_failed',traceback=traceback.format_exc())
         batch_timer.timeout.connect(guarded_batch)
         slots[view] = guarded_batch
-        batch_timer.start(0)
+        # 2026-11-27: the first batch now, in this turn. Through the timer the old cards were
+        # already gone and the grid was painted empty for a frame (or longer while the GUI
+        # thread was busy) before the first new row arrived: a flash on every rebuild.
+        guarded_batch()
 
     def _library_scrolled(self, _value=None) -> None:
         """Near the end of the built cards: build the next rows."""
@@ -1127,7 +1157,7 @@ class StudioHubMixin:
         painter = QPainter(pixmap)
         painter.setPen(QColor(active.accent))
         from ..design.typography import heavy_font
-        painter.setFont(heavy_font(QFont("Microsoft YaHei UI", max(15, min(28, width // 12)))))
+        painter.setFont(heavy_font(QFont("Source Han Sans SC Heavy", max(15, min(28, width // 12)))))
         painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "CC")
         painter.end()
         return pixmap

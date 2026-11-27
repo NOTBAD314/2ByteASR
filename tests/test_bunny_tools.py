@@ -314,7 +314,7 @@ def test_reasoning_depth_goes_on_the_wire_the_way_deepseek_takes_it():
     assert thinking_control('deepseek', url, True)[0] == {'thinking': {'type': 'enabled'}}          # unchanged
     assert thinking_control('deepseek', url, False)[0] == {'thinking': {'type': 'disabled'}}
     assert thinking_control('x', 'https://relay.example/v1', 'max', 'reasoning_effort')[0] == {'reasoning_effort': 'max'}
-    body = {'model': 'm', 'messages': [], 'max_tokens': 8000}
+    body = {'model': 'deepseek-flash', 'messages': [], 'max_tokens': 8000}
     apply_thinking(body, provider='deepseek', base_url=url, enabled='max')
     assert body['reasoning_effort'] == 'max' and body['thinking'] == {'type': 'enabled'}
 
@@ -413,7 +413,7 @@ def test_hard_questions_get_the_deepest_thinking_and_the_choice_is_remembered(ap
     chat.set_reasoning('high')
 
 
-def test_an_answer_lost_in_thinking_is_asked_again_then_without_thinking(app, chat_env, monkeypatch):
+def test_an_answer_lost_in_thinking_retries_with_same_mode(app, chat_env, monkeypatch):
     from twobyteasr.providers import ai_providers
     bunny_chat, window, _calls = chat_env
     efforts = []
@@ -427,7 +427,7 @@ def test_an_answer_lost_in_thinking_is_asked_again_then_without_thinking(app, ch
             if messages[-1].get('content') == bunny_persona.SUGGEST_ONLY:   # 2026-11-17: the choices request
                 return '{"suggest": ["好的", "再说说"]}'
             efforts.append(kwargs['enable_thinking'])
-            if len(efforts) < 3:
+            if len(efforts) < 2:
                 raise Empty('模型没有返回可用正文（content 为空）。')
             return json.dumps({'lines': ['好啦～']}, ensure_ascii=False)
     monkeypatch.setattr(ai_providers, 'provider_for_stage', lambda settings, stage: Fake())
@@ -437,7 +437,7 @@ def test_an_answer_lost_in_thinking_is_asked_again_then_without_thinking(app, ch
     chat.send()
     assert _until(app, lambda: not chat.busy, 10)
     chat.reveal_all()
-    assert efforts == ['high', 'high', False] and '好啦' in ''.join(chat.last_reply_html())
+    assert efforts == ['high', 'high'] and '好啦' in ''.join(chat.last_reply_html())
 
 
 def test_deepseeks_own_tool_markup_still_means_her_tools():

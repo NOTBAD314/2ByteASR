@@ -4,6 +4,7 @@ import os
 import re
 from collections import Counter
 from difflib import SequenceMatcher
+from functools import lru_cache
 
 from subtitle_core import *  # noqa: F401,F403
 from twobyteasr.recognition.run_context import get_runtime_context
@@ -799,8 +800,21 @@ def content_only(text):
     return "".join(_CONTENT_RE.findall(str(text))).lower()
 
 
+# 2026-11-27（fast-anything 扫描断句重放）：断句规则逐字、逐词条反复调用
+# content_exact，190 段的一次重排约 73 万次，绝大多数是同一批边界词条和单字。
+# 结果只取决于输入文字，短字符串走缓存；长文本不缓存，免得常驻内存。
+_CONTENT_EXACT_CACHED_LENGTH = 256
+
+
+@lru_cache(maxsize=16384)
+def _content_exact_cached(text):
+    return "".join(_CONTENT_RE.findall(text))
+
+
 def content_exact(text):
     """断句验证用：忽略标点和空格，但保留英文大小写。"""
+    if type(text) is str and len(text) <= _CONTENT_EXACT_CACHED_LENGTH:
+        return _content_exact_cached(text)
     return "".join(_CONTENT_RE.findall(str(text)))
 
 

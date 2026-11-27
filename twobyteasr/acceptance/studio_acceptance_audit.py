@@ -606,7 +606,10 @@ def start_acceptance(window) -> None:
         if output is not None: start(window, output)
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'bunny-chat':
-        from .bunny_chat_audit import start
+        if os.environ.get('TWOBYTEASR_BUNNY_SCENES_AUDIT') == '1':
+            from .bunny_scenes_audit import start
+        else:
+            from .bunny_chat_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return

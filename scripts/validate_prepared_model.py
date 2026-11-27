@@ -69,27 +69,9 @@ def failure_category(text):
 
 
 def validate_haas(root, model):
-    import numpy as np
-    from twobyteasr.local_models.haas_runtime import prepare
-    from twobyteasr.recognition.haas_backend import VARIANTS, configuration, transcribe
-    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
-    quantization = next(variant for variant, key in VARIANTS.items() if model == key)
-    device = os.environ.get('TWOBYTEASR_HAAS_DEVICE', 'cpu')
-    settings = {'models': {'haas_quantization': quantization, 'haas_device': device}}
-    config = configuration(settings)
-    prepare(config.device)
-    with wave.open(str(root / 'assets/diagnostics/speech_ja.wav'), 'rb') as stream:
-        assert stream.getframerate() == 16000 and stream.getnchannels() == 1
-        pcm = np.frombuffer(stream.readframes(stream.getnframes()), dtype='<i2').astype(np.float32) / 32768
-    context = RuntimeContext(asr_settings_snapshot=settings, requested_language='ja', task_language='ja')
-    with activate_runtime_context(context):
-        rows = transcribe(pcm, [{'start': 0., 'end': len(pcm) / 16000}], context)
-    text = ''.join(row['text'] for row in rows)
-    if not any(word in text for word in ('モルドバ', 'キリスト教')):
-        raise RuntimeError('Haas 真實日語樣本的輸出沒有通過檢查。')
-    print('[2BYTEASR_PHASE] ' + json.dumps(dict(phase='ready', model=model, device=device,
-                                             real_inference=True, segments=len(rows))), flush=True)
-    return 0
+    from twobyteasr.local_models.haas_preparation import main as prepare_haas
+    return prepare_haas(['--model', model, '--verify', '--device',
+                         os.environ.get('TWOBYTEASR_HAAS_DEVICE', 'cpu')])
 
 
 def main():

@@ -20,7 +20,7 @@ from .usage_ledger import tracked_diagnostics, dispatch
 def complete(messages, *, model, api_key, url, max_tokens, temperature=0,
              timeout=(10, 120), provider="custom", base_url="", enable_thinking=False,
              response_format=None, request_diagnostics=None, cancel_check=None,
-             _total_deadline=None, protocol="chat", json_schema=None, extra_body=None, thinking_protocol="auto", **ignored):
+             _total_deadline=None, protocol="chat", json_schema=None, extra_body=None, thinking_protocol="auto", reasoning_profile="", **ignored):
     import requests
     from .llm_adapter import LLMRequestError, extract_chat_message_text, llm_provider_capabilities
     from .asr_provider_snapshot import classify_request_error
@@ -36,7 +36,24 @@ def complete(messages, *, model, api_key, url, max_tokens, temperature=0,
     from .llm_config import endpoint_requires_key, auth_headers
     if not api_key and endpoint_requires_key(dict(provider=provider, base_url=base_url or url)):
         raise LLMRequestError("HTTP Provider缺少凭据。", category="auth_config")
-    if protocol == "responses":
+    if protocol == "gemini":
+        from urllib.parse import urlsplit
+        if urlsplit(url).hostname != "generativelanguage.googleapis.com":
+            raise LLMRequestError("Gemini 原生协议需要 Google 官方端点。", category="configuration_error")
+        contents, system = [], []
+        for message in messages:
+            text = message.get("content")
+            if not isinstance(text, str):
+                raise LLMRequestError("Gemini 原生字幕请求需要文本消息。", category="configuration_error")
+            if message.get("role") in {"system", "developer"}:
+                system.append({"text": text})
+            else:
+                contents.append({"role": "model" if message.get("role") == "assistant" else "user",
+                                 "parts": [{"text": text}]})
+        body = {"model": model, "max_tokens": max_tokens, "contents": contents}
+        if system:
+            body["systemInstruction"] = {"parts": system}
+    elif protocol == "responses":
         body = {"model": model, "input": list(messages), "max_output_tokens": max_tokens}
         if json_schema:
             body["text"] = {"format": {"type": "json_schema", "name": "asr", "schema": json_schema, "strict": True}}
@@ -45,15 +62,21 @@ def complete(messages, *, model, api_key, url, max_tokens, temperature=0,
         if response_format is not None:
             body["response_format"] = response_format
     from .subtitle_request_policy import apply_thinking
-    diag.update(apply_thinking(body, provider=provider, base_url=base_url or url,
-        enabled=enable_thinking, protocol=thinking_protocol, extra_body=extra_body, api=protocol))
-    if protocol != 'responses' and thinking_protocol == 'auto':
-        from .llm_adapter import _gemini_fast_reasoning
-        gemini = _gemini_fast_reasoning(provider, base_url or url, model, enable_thinking)
-        if gemini:
-            body.update(gemini)
-            diag.update(reasoning_parameters_sent=gemini,thinking_mode='low',
-                        thinking_compatibility='disable_not_supported_low_requested')
+    try:
+        diag.update(apply_thinking(body, provider=provider, base_url=base_url or url,
+            enabled=enable_thinking, protocol=thinking_protocol, extra_body=extra_body, api=protocol,
+            reasoning_profile=reasoning_profile))
+    except LLMRequestError as exc:
+        diag.update(exc.diagnostics)
+        raise
+    headers = {**auth_headers(api_key), "Content-Type": "application/json"}
+    if protocol == "gemini":
+        del body["model"], body["max_tokens"]
+        generation = body.setdefault("generationConfig", {})
+        generation.update(maxOutputTokens=max_tokens, temperature=temperature)
+        if response_format is not None or json_schema is not None:
+            generation["responseMimeType"] = "application/json"
+        headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
     diag["parse_status"] = "not_run"
     dashscope_search=bool(provider=='bailian' and (extra_body or {}).get('enable_search'))
     if dashscope_search:
@@ -73,11 +96,6 @@ def complete(messages, *, model, api_key, url, max_tokens, temperature=0,
             'forced_search':True,'search_strategy':'turbo','enable_source':True})
         body={'model':model,'input':{'messages':list(messages)},'parameters':parameters}
         diag['search_protocol']='dashscope_with_sources'
-    elif extra_body:
-        # Preserve supported caller options without allowing an extra-body
-        # object to replace the immutable model or target text.
-        body.update({k:v for k,v in extra_body.items() if k not in body})
-
     done = threading.Event()
     stop = threading.Event()
     state = {}
@@ -89,13 +107,13 @@ def complete(messages, *, model, api_key, url, max_tokens, temperature=0,
                 return
             observe(diag, 'request_started', {})
             dispatch(diag)
-            response = requests.post(url, headers={**auth_headers(api_key), "Content-Type": "application/json"},
-                                     json=body, timeout=timeout, stream=True)
+            response = requests.post(url, headers=headers,
+                                     json=body, timeout=timeout, stream=True, allow_redirects=False)
             state["response"] = response
             diag["http_status"] = response.status_code
-            headers = response.headers
+            response_headers = response.headers
             # Request IDs are metadata; do not accept arbitrary server content.
-            request_id = headers.get("x-request-id") or headers.get("request-id")
+            request_id = response_headers.get("x-request-id") or response_headers.get("request-id")
             if request_id:
                 import re
                 diag["http_request_id"] = request_id[:160] if re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", request_id) else "[redacted]"
@@ -187,8 +205,10 @@ def complete(messages, *, model, api_key, url, max_tokens, temperature=0,
             if parameter in {'thinking','enable_thinking','reasoning','reasoning_effort','max_tokens','max_output_tokens','max_completion_tokens'}:
                 diag['rejected_parameter'] = parameter
                 if parameter.startswith('max_'):diag['output_budget_compatibility'] = 'request_rejected'
-        if status in (400, 422) and (diag.get("reasoning_parameters_sent") or b"max_tokens" in raw):
+        from .reasoning_adapter import rejected_reasoning
+        if rejected_reasoning(status, error, diag):
             diag["thinking_compatibility"] = "request_rejected"
+            category = "reasoning_parameter_incompatible"
         diag["parse_status"] = "http_rejected"
         raise LLMRequestError(f"HTTP {status}：{category}", category=category, response=state.get("response"), diagnostics=diag)
 
@@ -198,6 +218,27 @@ def complete(messages, *, model, api_key, url, max_tokens, temperature=0,
         payload=json.loads(raw)
     except (ValueError, UnicodeError) as exc:
         raise LLMRequestError("HTTP响应不是合法JSON。", category="parse_failure") from exc
+    if protocol == "gemini":
+        from .api_usage import normalize_usage
+        from .reasoning_adapter import observe_reasoning
+        usage = payload.get("usageMetadata")
+        diag["raw_usage"] = usage
+        reported = normalize_usage(usage) or {}
+        candidates = payload.get("candidates") or [{}]
+        candidate = candidates[0]
+        parts = candidate.get("content", {}).get("parts", [])
+        finish = candidate.get("finishReason")
+        diag.update(usage=reported, reasoning_tokens=reported.get("reasoning_tokens"),
+                    prompt_tokens=reported.get("input_tokens"), completion_tokens=reported.get("output_tokens"),
+                    reasoning_content_present=any(part.get("thought") is True for part in parts),
+                    finish_reason=finish)
+        observe_reasoning(diag)
+        if finish == "MAX_TOKENS":
+            raise LLMRequestError("Gemini 正文达到输出上限。", category="structured_output_truncated", diagnostics=diag)
+        answer = "".join(part.get("text", "") for part in parts if part.get("thought") is not True)
+        if not answer.strip():
+            raise LLMRequestError("Gemini 没有返回可用正文。", category="empty_content", diagnostics=diag)
+        return answer
     if isinstance(payload.get('model'), str):
         diag['response_model'] = payload['model'][:160]
     if isinstance(payload.get('usage'),dict):
@@ -222,13 +263,17 @@ def complete(messages, *, model, api_key, url, max_tokens, temperature=0,
             try:content = responses_final(payload, diag)
             except StreamProtocolError as exc:
                 raise LLMRequestError(str(exc), category=exc.category, diagnostics=diag) from exc
+            finally:
+                from .reasoning_adapter import observe_reasoning
+                observe_reasoning(diag)
         else:
             choice=payload["choices"][0]
             message_evidence(payload, diag, api_key=api_key)
             message = choice.get("message") or {}
+            from .reasoning_adapter import has_reasoning
             diag.update(finish_reason=choice.get("finish_reason"),
                 body_empty=not bool(str(message.get("content") or "").strip()),
-                reasoning_content_present=bool(message.get("reasoning_content") or message.get("reasoning")),
+                reasoning_content_present=has_reasoning(message),
                 reasoning_tokens_status="provided" if diag.get("reasoning_tokens") is not None else "unknown")
             from .subtitle_request_policy import observe_response_policy
             observe_response_policy(diag)

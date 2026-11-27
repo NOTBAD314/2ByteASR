@@ -37,6 +37,23 @@ def availability_identity(result):
             result.get('signature'), result.get('identity'))
 
 
+def playback_identity_changed(previous, current):
+    """Whether a new availability result must rebuild decoder/render state.
+
+    Opening a project only stats its files (no stream identity). The first
+    periodic decode probe ~15 s later then adds the identity of the very same
+    file. That is a verification, not a change: treating it as one reset the
+    active preview binding and re-seeked the player mid-piece once per open
+    (2026-11-27). A file that was usable and keeps its signature is unchanged
+    when its identity was simply not known before.
+    """
+    before, after = availability_identity(previous), availability_identity(current)
+    if before == after:
+        return False
+    return not (before[0] and after[0] and before[1] is not None and before[1] == after[1]
+                and before[2] is None)
+
+
 def stat_sources_in_reader(sources, *, cancel_check=lambda:False):
     """First-open checks from the project reader, with a killable IO owner."""
     # A kernel read on a sleeping external volume can outlive a Python

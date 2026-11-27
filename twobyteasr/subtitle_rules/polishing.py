@@ -34,7 +34,11 @@ JAPANESE_POLISH_RULE = (
     "【语言】本批字幕是日语语音的日文转写（content_scene.language=ja-JP）。primary_text 必须保持日语："
     "汉字、平假名、片假名、长音与英文照原样书写；不得翻译成中文，不得把日文汉字改成简体或繁体中文字形，"
     "不得套用中文同音字、中文语气词、中文数字或抽卡/电竞中文规则。只在 ASR 来源支持时修正明显的日语识别错误"
-    "（同音异字、助词误识、漏字），否则不改。下面的通用规则若与本段冲突，以本段为准。")
+    "（同音异字、助词误识、漏字），否则不改。"
+    "日语改字只在两种情况下提出：①改后的文字逐字出现在至少两个不同家族的独立 ASR 来源里（同一模型的多份副本、"
+    "强制对齐与派生文本都只算一个或不算）；②词库中已确认、无歧义的别名改为它的 canonical。"
+    "只有一个来源支持、只是假名/汉字写法不同、或只凭语境推断的修改一律不提，本地也不会采纳；没有可提的就输出空 edits。"
+    "下面的通用规则若与本段冲突，以本段为准。")
 # 2026-10-14: English proofreading rules (also listed in docs/architecture/recognition.md).
 ENGLISH_POLISH_RULE = (
     "【语言】本批字幕是英语语音的英文转写（content_scene.language=en-US）。primary_text 必须保持英文："
@@ -286,6 +290,39 @@ def _review_listening_suggestions(segment, rejected_edits, batch_index=None, bat
                                     'independent_families': families})
         added += 1
     return added
+
+
+def _withhold_unacceptable_japanese_edits(edits, independent_sources, terms):
+    """Japanese edits the local rules could only reject are withheld, not counted.
+
+    2026-11-26 (比利犬 13/16/17, user's choice): of 37/76/62 Japanese AI proposals
+    none was accepted; nearly all were single-source rewrites that
+    japanese_semantic_needs_listening must reject. The user chose that such
+    edits are no longer proposed or counted (the prompt asks for none). An
+    edit is kept for the safety gate only when japanese_correction.assess_patch
+    would accept it (two independent families or a confirmed alias); anything
+    else goes to ``withheld_japanese_edits`` as a diagnostic. This supersedes the
+    2026-11-18 listening review items for these edits. Text is never changed here.
+    """
+    from .japanese_correction import assess_patch
+    kept, withheld = [], []
+    for edit in edits if isinstance(edits, list) else []:
+        if not isinstance(edit, dict):
+            kept.append(edit)
+            continue
+        source = clean_subtitle_text(edit.get('from', ''))
+        target = clean_subtitle_text(edit.get('to', ''))
+        canonical = {row['canonical'] for row in terms if row.get('status') == 'confirmed'
+                     and not row.get('ambiguous') and row.get('canonical', '').casefold() == target.casefold()}
+        if len(canonical) == 1:
+            target = next(iter(canonical))
+        disposition, reason = (assess_patch(source, target, independent_sources, terms)
+                               if source and target and source != target else ('withhold', 'invalid_or_no_effect'))
+        if disposition == 'accept':
+            kept.append(edit)
+        else:
+            withheld.append({**edit, 'withheld_at': 'japanese_acceptance_precheck', 'rule_id': reason})
+    return kept, withheld
 
 
 def _normalize_verified_keep_edits(value, segments):
@@ -1382,6 +1419,8 @@ def call_correction_api(
                 )
 
             validated = {}
+            from .language_rules import active_task_language
+            japanese_task = (active_task_language() or '').split('-')[0] == 'ja'
             returned_by_id = {
                 int(item["id"]): item for item in returned_items
             }
@@ -1416,6 +1455,16 @@ def call_correction_api(
                     )
                 )
                 edit_decisions = []
+                independent_sources = _independent_asr_sources(segment, first_independent_reference)
+                returned_edits = item.get("edits", [])
+                withheld_edits = []
+                protected = getattr(quarantined, 'protected', {}).get(segment.segment_id, [])
+                if japanese_task:
+                    returned_edits, withheld_edits = _withhold_unacceptable_japanese_edits(
+                        returned_edits, independent_sources, request_body['terminology_candidates'])
+                    # A quote that does not exist in the line can never apply.
+                    withheld_edits += [{**row, 'withheld_at': 'japanese_acceptance_precheck'} for row in protected]
+                    protected = []
                 corrected, applied = apply_correction_edits(
                     segment.text,
                     [
@@ -1423,7 +1472,7 @@ def call_correction_api(
                         segment.qwen_asr_text,
                         segment.firered_llm_text,
                     ],
-                    item.get("edits", []),
+                    returned_edits,
                     allow_broad_consensus=allow_broad_consensus,
                     consensus_alternates=[
                         first_independent_reference,
@@ -1433,9 +1482,7 @@ def call_correction_api(
                     # 归一化（_independent_asr_sources）。alternate_text（AED
                     # 派生副本）与 firered_llm_text（派生佐证）保留在
                     # alternates 供相似度判断，但不投票。
-                    independent_sources=_independent_asr_sources(
-                        segment, first_independent_reference
-                    ),
+                    independent_sources=independent_sources,
                     gacha_quantity_hints=build_gacha_quantity_hints(
                         segment.text,
                         f"{context_before}{context_after}",
@@ -1473,7 +1520,8 @@ def call_correction_api(
                 receipt.update(input_text=segment.text, retrieved_candidates=[x for x in retrieved_candidates
                     if any(m['cue_id'] == segment.segment_id for m in x['matches'])],
                     sent_candidates=sent_for_cue,
-                    returned_edits=item.get('edits', []), accepted_edits=applied, validated_text=corrected,
+                    returned_edits=returned_edits, withheld_japanese_edits=withheld_edits,
+                    accepted_edits=applied, validated_text=corrected,
                     completed_no_change_edits=[x for x in edit_decisions if x.get('state') in ('completed_no_change','already_applied')]
                         + getattr(quarantined, 'completed', {}).get(segment.segment_id, []),
                     rejected_patches=getattr(quarantined, 'rejected_patches', {}).get(segment.segment_id, []),
@@ -1481,7 +1529,7 @@ def call_correction_api(
                         **next(({'rule_id': x['rule_id'], 'evidence': x.get('evidence', {})}
                             for x in edit_decisions if x.get('from') == edit.get('from')
                             and x.get('to') == edit.get('to')), {'rule_id': 'invalid_or_no_effect'})}
-                        for edit in item.get('edits', []) if isinstance(edit, dict)
+                        for edit in returned_edits if isinstance(edit, dict)
                         and not any(x.get('from') == edit.get('from') and x.get('to') == edit.get('to')
                             and x.get('state') in ('completed_no_change','already_applied') for x in edit_decisions)
                         and not any(x.get('from') == edit.get('from') and
@@ -1505,7 +1553,6 @@ def call_correction_api(
                     receipt['quality_state'] = 'pending_suspect_adjudication'
                 receipt['rejected_edit_count'] = len(receipt['rejected_edits'])
                 _review_listening_suggestions(segment, receipt['rejected_edits'], batch_index, batch_total)
-                protected = getattr(quarantined, 'protected', {}).get(segment.segment_id, [])
                 if protected:
                     receipt['rejected_edits'].extend(protected)
                     receipt['rejected_edit_count'] = len(receipt['rejected_edits'])
@@ -2178,7 +2225,7 @@ def _escalate_failed_polish(jobs, results, segments, *, glossary, media_title, p
     escalated = dataclasses.replace(snapshot, enable_thinking=level,
                                     max_output_tokens=escalated_output_tokens(snapshot))
     budget = RetryBudget(0, total_seconds=float(snapshot.timeout_policy.total) * len(chunks))
-    print(f"   [提高思考重试] {count} 条字幕格式或截断仍失败，用同一模型、思考等级 {level}、"
+    print(f"   [保留思考设置重试] {count} 条字幕格式或截断仍失败，用同一模型与思考设置，"
           f"输出上限 {escalated.max_output_tokens} 再请求一轮（{len(chunks)} 个请求）。")
     record_run_event('ai_escalation_round', state='started', thinking=level, requests=len(chunks), **event)
     owner = get_runtime_context()
@@ -2243,7 +2290,7 @@ def _escalate_failed_polish(jobs, results, segments, *, glossary, media_title, p
     record_run_event('ai_escalation_round', state='completed', thinking=level, requests=len(chunks),
         succeeded_cues=len(succeeded_all), failed_cues=len(failed_all), succeeded_ids=sorted(succeeded_all),
         failed_ids=sorted(failed_all), resolved_batches=sorted(resolved), **event)
-    print(f"   [提高思考重试] 救回 {len(succeeded_all)} 条，仍失败 {len(failed_all)} 条（保留原文）。")
+    print(f"   [保留思考设置重试] 救回 {len(succeeded_all)} 条，仍失败 {len(failed_all)} 条（保留原文）。")
     return resolved, extra_reviews
 
 

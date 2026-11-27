@@ -336,8 +336,16 @@ class OpenAICompatibleProvider(AIProvider):
             and scope.get('kind') in {'one_candidate','render_repair','implementation_completion'})
         if implementation_only:
             design_thinking=False
-        if operation in {"group", "polish", "translate", "translation", "subtitle_translation"}:
-            kwargs.setdefault("enable_thinking", self.endpoint.get("enable_thinking", False))
+        if self.endpoint.get("reasoning_profile"):
+            kwargs.setdefault("reasoning_profile", self.endpoint["reasoning_profile"])
+        kwargs.setdefault("enable_thinking", self.endpoint.get("enable_thinking", False))
+        if kwargs.pop("reasoning_user_override", False) and kwargs.get("reasoning_profile"):
+            from .reasoning_adapter import encode_profile, requested_mode
+            selected = json.loads(kwargs["reasoning_profile"])
+            mode = requested_mode(kwargs["enable_thinking"])
+            if mode != selected["mode"]:
+                kwargs["reasoning_profile"] = encode_profile(mode, selected["dialect"], {})
+
         kwargs.setdefault("thinking_protocol", self.endpoint.get("thinking_protocol", "auto"))
         crops=kwargs.pop('image_crops',None)
         comparison=kwargs.pop('image_comparison',False)
@@ -371,6 +379,24 @@ class OpenAICompatibleProvider(AIProvider):
                                             cancel_check=cancel_check, stage=stage, operation=operation,
                                             json_wanted=json_schema is not None or kwargs.get("response_format") is not None,
                                             on_stream_event=on_stream_event, **kwargs)
+        if protocol == "gemini_native":
+            from .llm_adapter import audited_bounded_request, get_last_llm_response_diagnostics
+            diagnostics = kwargs.get("request_diagnostics")
+            if diagnostics is None:
+                diagnostics = {}
+            try:
+                return audited_bounded_request(messages, stage=stage, request_mode="gemini.generateContent",
+                    key_source=self.endpoint.get("key_source", ""), model=self.model,
+                    api_key=self.endpoint["api_key"], provider=self.endpoint["provider"],
+                    url=self.endpoint["url"], base_url=self.endpoint["base_url"], max_tokens=max_tokens,
+                    temperature=temperature, timeout=timeout, protocol="gemini", json_schema=json_schema,
+                    response_format=kwargs.get("response_format"), cancel_check=cancel_check,
+                    enable_thinking=kwargs["enable_thinking"], thinking_protocol=kwargs["thinking_protocol"],
+                    reasoning_profile=kwargs.get("reasoning_profile", ""), request_diagnostics=diagnostics,
+                    _total_deadline=kwargs.get("_total_deadline"))
+            finally:
+                self.last_invocation_trace = dict(provider_id=self.provider_id, model=self.model,
+                    response_boundary=get_last_llm_response_diagnostics(), reported_usage=diagnostics.get("usage"))
         strict_tool = kwargs.pop("strict_tool", None)
         if strict_tool is not None and (on_stream_event is None or protocol == "responses"):
             raise AIProviderError("严格结构化输出只用于流式请求。", category="configuration_error")
@@ -400,6 +426,7 @@ class OpenAICompatibleProvider(AIProvider):
                     cancel_check=cancel_check,
                     enable_thinking=True if design_thinking else False if implementation_only else kwargs.get("enable_thinking"),
                     thinking_protocol=kwargs.get("thinking_protocol", "auto"),
+                    reasoning_profile=kwargs.get("reasoning_profile", ""),
                     extra_body=kwargs.get("extra_body"), batch_index=kwargs.get("batch_index"),
                     total_deadline=kwargs.get('_total_deadline'),
                     input_budget=getattr(self,'last_timings',{}).get('request_budget'),
@@ -469,34 +496,37 @@ class OpenAICompatibleProvider(AIProvider):
                                     if diagnostics.get(key) is not None} or None,
                     actual_cost_usd=None, timings=dict(getattr(self, 'last_timings', {})))
         response_format = kwargs.pop("response_format", None)
-        if design_thinking or implementation_only:kwargs['enable_thinking']=design_thinking
+        if (design_thinking or implementation_only) and not kwargs.get("reasoning_profile"):
+            kwargs["enable_thinking"] = design_thinking
         if json_schema is not None:
             response_format = {"type": "json_object"}
         if kwargs.get("request_diagnostics") is not None:
             kwargs["cancel_check"] = cancel_check
-        value = self._sender(
-            list(messages),
-            model=self.endpoint["model"],
-            api_key=self.endpoint["api_key"],
-            url=self.endpoint["url"],
-            max_tokens=max_tokens,
-            temperature=temperature,
-            timeout=timeout,
-            response_format=response_format,
-            provider=self.endpoint.get("provider", "custom"),
-            base_url=self.endpoint.get("base_url", ""),
-            stage=stage,
-            key_source=str(self.endpoint.get("key_source") or ""),
-            **kwargs,
-        )
-        from .llm_adapter import get_last_llm_response_diagnostics
-        diagnostics=get_last_llm_response_diagnostics()
-        self.last_invocation_trace=dict(provider_id=self.provider_id,model=self.model,
-            request_id=diagnostics.get('request_id'),http_status=diagnostics.get('http_status'),
-            response_boundary=diagnostics,
-            reported_usage={key:diagnostics[key] for key in ('prompt_tokens','completion_tokens','total_tokens','reasoning_tokens')
-                            if diagnostics.get(key) is not None} or None,
-            actual_cost_usd=None,timings=dict(getattr(self,'last_timings',{})))
+        try:
+            value = self._sender(
+                list(messages),
+                model=self.endpoint["model"],
+                api_key=self.endpoint["api_key"],
+                url=self.endpoint["url"],
+                max_tokens=max_tokens,
+                temperature=temperature,
+                timeout=timeout,
+                response_format=response_format,
+                provider=self.endpoint.get("provider", "custom"),
+                base_url=self.endpoint.get("base_url", ""),
+                stage=stage,
+                key_source=str(self.endpoint.get("key_source") or ""),
+                **kwargs,
+            )
+        finally:
+            from .llm_adapter import get_last_llm_response_diagnostics
+            diagnostics=get_last_llm_response_diagnostics()
+            self.last_invocation_trace=dict(provider_id=self.provider_id,model=self.model,
+                request_id=diagnostics.get('request_id'),http_status=diagnostics.get('http_status'),
+                response_boundary=diagnostics,
+                reported_usage={key:diagnostics[key] for key in ('prompt_tokens','completion_tokens','total_tokens','reasoning_tokens')
+                                if diagnostics.get(key) is not None} or None,
+                actual_cost_usd=None,timings=dict(getattr(self,'last_timings',{})))
         return value
 
 
@@ -510,13 +540,12 @@ class OpenAICompatibleProvider(AIProvider):
         from .anthropic_messages import complete
         from .llm_adapter import LLMRequestError, get_last_llm_response_diagnostics
         requested_thinking = kwargs.get("enable_thinking")
-        from .subtitle_request_policy import EFFORT_LEVELS
-        # A named depth (the failed-result retry asks for high / max) is sent as that effort.
-        effort = (requested_thinking if isinstance(requested_thinking, str) and requested_thinking in EFFORT_LEVELS
-                  else None if operation in self._DESIGN_OPERATIONS or requested_thinking is True else "low")
         try:
             return complete(self.endpoint, list(messages), max_tokens=max_tokens, timeout=timeout, stage=stage,
-                            cancel_check=cancel_check, json_wanted=json_wanted, effort=effort, enable_thinking=requested_thinking,
+                            cancel_check=cancel_check, json_wanted=json_wanted, enable_thinking=requested_thinking,
+                            thinking_protocol=kwargs.get("thinking_protocol", "auto"),
+                            reasoning_profile=kwargs.get("reasoning_profile", ""),
+                            extra_body=kwargs.get("extra_body"),
                             on_stream_event=on_stream_event, request_diagnostics=kwargs.get("request_diagnostics"),
                             total_deadline=kwargs.get("_total_deadline"),
                             input_budget=getattr(self, "last_timings", {}).get("request_budget"))
@@ -531,7 +560,7 @@ class OpenAICompatibleProvider(AIProvider):
             self.last_invocation_trace = dict(
                 provider_id=self.provider_id, model=self.model, request_id=diagnostics.get("request_id"),
                 http_status=diagnostics.get("http_status"), response_boundary=diagnostics,
-                reported_usage={key: diagnostics[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                reported_usage={key: diagnostics[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens", "reasoning_tokens")
                                 if diagnostics.get(key) is not None} or None,
                 actual_cost_usd=None, timings=dict(getattr(self, "last_timings", {})))
 

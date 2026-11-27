@@ -436,6 +436,25 @@ def _import_terms_file(window, args):
             + (f'；超过一次 {_mcp().MAX_CHANGES} 条的上限，还剩 {over} 条，再导一次' if over > 0 else ''), record)
 
 
+def _quick_capture_terms(window, args):
+    """Parse pasted messy text / term notes locally and apply safe entries via confirm/undo."""
+    from ..glossary import quick_term_capture as qtc
+    library_id, name = _library(window, args.get('library'))
+    raw_text = str(args.get('text') or '').strip()
+    if not raw_text:
+        raise ToolError('text 不能为空：请把要整理的文字或「错词 -> 正词」传进来')
+    rows = qtc.parse_freeform_terms(raw_text)
+    safe = [row for row in rows if row.checked]
+    blocked = [row for row in rows if not row.checked]
+    if not safe:
+        hint = f'（拦截了 {len(blocked)} 条高风险单字/冲突别名）' if blocked else ''
+        raise ToolError(f'这段文字里没有可直接安全写入的词条{hint}；可以用 change_terms 逐条指定')
+    changes = [row.to_mcp_change() for row in safe[:_mcp().MAX_CHANGES]]
+    receipt, record = apply_term_changes(window, library_id, changes)
+    extra = f'；自动跳过 {len(blocked)} 条危险单字或冲突别名' if blocked else ''
+    return f'快添词条到《{name}》：{receipt}{extra}', record
+
+
 # ------------------------------------------------------------------ long tasks
 def _start_task(_window, args):
     steps = [str(step).strip() for step in (args.get('steps') or ()) if str(step).strip()][:12]
@@ -487,6 +506,9 @@ def tools() -> list[Tool]:
         Tool('import_terms_file', '{"path": "原神术语.xlsx", "library": "原神"}',
              '【修改】授权文件夹：把术语表文件（csv/xlsx/json/txt，任意编码，列名任意顺序）导进一个术语库，'
              '重复和冲突的跳过；总要等「帮我做」，可撤销', _import_terms_file, edit=True, persistent=True),
+        Tool('quick_capture_terms', '{"library": "原神", "text": "杰风 -> 捷风\\n欧门（欧闷、偶门）"}',
+             '【修改】术语库快添：直接把小兔纸贴来的一段资料、错词对照表或括号别名拆成标准词条并拦截危险单字别名，等「帮我做」后批量写入，可撤销',
+             _quick_capture_terms, edit=True, persistent=True),
         Tool('start_task', '{"goal": "把原神词库补完并体检", "steps": ["看现有词库", "上网查新角色", "提出要加的词"]}',
              f'接到要好几步才能做完的大事时先叫它：这一题的轮数放宽到 {TASK_ROUNDS} 轮，并把步骤告诉小兔纸', _start_task),
     ]

@@ -92,10 +92,16 @@ class StudioModulePreloader(QObject):
     ready = Signal()
     failed = Signal(str)
 
-    def __init__(self, parent=None, *, importer=None, modules=None, allowed=None):
+    # 2026-11-27 (user: entering the project library takes a while): while someone waits for
+    # Studio (``urgent``), modules are loaded back to back for up to this long per turn, then one
+    # 0 ms turn lets the loading card paint; idle warm-up keeps its 16 ms pause after each module.
+    URGENT_SLICE_S = 0.030
+
+    def __init__(self, parent=None, *, importer=None, modules=None, allowed=None, urgent=None):
         super().__init__(parent)
         self.importer = importer or import_module
         self.allowed = allowed or (lambda: True)
+        self.urgent = urgent or (lambda: False)
         self.pending = deque(modules if modules is not None else ('twobyteasr.'+name for name in MODULES))
         self.completed = False
         self.timings = []
@@ -128,14 +134,19 @@ class StudioModulePreloader(QObject):
             self.completed = True
             self.ready.emit()
             return
-        name = self.pending[0]
-        began = time.perf_counter()
-        try:
-            self.importer(name)
-        except Exception as error:
-            self.failed.emit(f'{name}: {type(error).__name__}: {error}')
-            return
-        self.pending.popleft()
-        self.timings.append(dict(module=name,ms=(time.perf_counter()-began)*1000))
+        urgent = bool(self.urgent())
+        turn = time.perf_counter()
+        while self.pending:
+            name = self.pending[0]
+            began = time.perf_counter()
+            try:
+                self.importer(name)
+            except Exception as error:
+                self.failed.emit(f'{name}: {type(error).__name__}: {error}')
+                return
+            self.pending.popleft()
+            self.timings.append(dict(module=name,ms=(time.perf_counter()-began)*1000))
+            if not urgent or time.perf_counter() - turn >= self.URGENT_SLICE_S:
+                break
         # Give posted paints and input a real turn between dependency groups.
-        self.timer.start(16)
+        self.timer.start(0 if urgent else 16)

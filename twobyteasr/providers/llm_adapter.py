@@ -62,20 +62,6 @@ def llm_provider_capabilities(provider, base_url=""):
     }
 
 
-def _gemini_fast_reasoning(provider, base_url, model, enable_thinking):
-    """Gemini 3 cannot disable thinking; request its documented low level.
-
-    Scope to Google's endpoint and the known 3.x family. Never send a guessed
-    reasoning option to older models, unknown future models or relays.
-    https://ai.google.dev/gemini-api/docs/openai#thinking
-    """
-    if (str(provider).casefold() == "gemini" and enable_thinking is False
-            and (urlsplit(str(base_url)).hostname or "").lower() == "generativelanguage.googleapis.com"
-            and re.match(r"^gemini-3(?:[.-])", str(model).lower())):
-        return {"reasoning_effort": "low"}
-    return {}
-
-
 def _redact(value, api_key=""):
     text = str(value or "")
     if api_key:
@@ -137,8 +123,8 @@ def record_llm_invocation(
         "stage": str(stage or "unknown"),
         "provider": str(provider or "custom"),
         "model": str(model or ""),
-        "base_url": str(base_url or ""),
-        "endpoint": str(url or ""),
+        "base_url": _safe_endpoint(base_url),
+        "endpoint": _safe_endpoint(url),
         "request_mode": str(request_mode or ""),
         "auth_source": str(key_source or ""),
         "auth_present": bool(key_present),
@@ -170,6 +156,32 @@ def record_llm_invocation(
         pass
 
 
+def _apply_reasoning(body, **kwargs):
+    from .reasoning_adapter import apply_thinking
+    _DIAGNOSTIC_LOCAL.value = {}
+    try:
+        return apply_thinking(body, **kwargs)
+    except LLMRequestError as exc:
+        _DIAGNOSTIC_LOCAL.value = dict(exc.diagnostics)
+        raise
+
+
+def _safe_endpoint(url):
+    parts = urlsplit(str(url or ""))
+    return f"{parts.scheme}://{parts.hostname}" if parts.hostname else ""
+
+
+def _safe_failure_fields(fields):
+    allowed = {
+        "stage", "provider", "model", "batch_index", "attempt", "category",
+        "http_status", "finish_reason", "response_body_empty", "message_content_length",
+        "reasoning_content_present", "thinking_compatibility", "reasoning_parameters_sent",
+        "thinking_requested", "thinking_mode", "reasoning_tokens", "reasoning_tokens_status",
+        "max_tokens", "prompt_tokens", "completion_tokens",
+    }
+    return {key: value for key, value in fields.items() if key in allowed}
+
+
 def _record_failure(*, api_key="", stage="", provider="custom", model="",
                     base_url="", url="", batch_index=None,
                     request_mode="chat.completions", response_format=None,
@@ -178,16 +190,15 @@ def _record_failure(*, api_key="", stage="", provider="custom", model="",
         "stage": stage or "unknown",
         "provider": str(provider or "custom"),
         "model": str(model or ""),
-        "normalized_base_url": str(base_url or ""),
-        "endpoint": str(url or ""),
+        "normalized_base_url": _safe_endpoint(base_url),
+        "endpoint": _safe_endpoint(url),
         "request_mode": request_mode,
         "response_format": response_format,
         "category": str(category),
-        "error": _redact(error, api_key),
-        "raw_response_preview": llm_response_preview(_redact(content, api_key)),
+        "error": str(category),
         "batch_index": batch_index,
     }
-    payload.update(extra)
+    payload.update(_safe_failure_fields(extra))
     _record_event("llm_request_failed", **payload)
 
 
@@ -232,7 +243,7 @@ def _message_field_text(message, key):
         if isinstance(item, str):
             parts.append(item)
         elif isinstance(item, dict):
-            if key == "content" and item.get("type") in {"reasoning", "thinking", "reasoning_content", "reasoning_summary"}:
+            if key == "content" and (item.get("thought") is True or item.get("type") in {"reasoning", "thinking", "redacted_thinking", "reasoning_content", "reasoning_summary"}):
                 continue
             text = item.get("text") or item.get("content") or ""
             if text:
@@ -306,7 +317,7 @@ def record_structured_output_failure(
         ),
         raw_response_preview=llm_response_preview(_redact(content, api_key)),
     )
-    _record_event("llm_structured_output_failed", **payload)
+    _record_event("llm_structured_output_failed", **_safe_failure_fields(payload))
     return category
 
 
@@ -384,7 +395,7 @@ def _rejects_stream_usage_option(exc, diagnostics):
     text = " ".join(str(value) for value in (diagnostics.get("provider_error_message"), error.get("param"),
                                              error.get("code"), exc)).lower()
     return ("stream_options" in text or "include_usage" in text
-            or diagnostics.get("http_status") == 422)
+)
 
 
 def post_chat_completion(
@@ -405,6 +416,7 @@ def post_chat_completion(
     request_mode="chat.completions",
     extra_body=None,
     thinking_protocol="auto",
+    reasoning_profile="",
     structured_retry_system_prompt=None,
     structured_retry_max_tokens=None,
     key_source="",
@@ -421,7 +433,7 @@ def post_chat_completion(
             enable_thinking=enable_thinking, response_format=response_format,
             provider=provider, base_url=base_url, request_diagnostics=request_diagnostics,
             cancel_check=cancel_check, _total_deadline=_total_deadline,
-            extra_body=extra_body, thinking_protocol=thinking_protocol)
+            extra_body=extra_body, thinking_protocol=thinking_protocol, reasoning_profile=reasoning_profile)
     import requests
 
     from .llm_config import endpoint_requires_key, auth_headers
@@ -448,18 +460,10 @@ def post_chat_completion(
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
-    from .subtitle_request_policy import apply_thinking
-    policy_diag = apply_thinking(body, provider=provider, base_url=base_url or url,
-        enabled=enable_thinking, protocol=thinking_protocol, extra_body=extra_body)
+    policy_diag = _apply_reasoning(body, provider=provider, base_url=base_url or url,
+        enabled=enable_thinking, protocol=thinking_protocol, extra_body=extra_body, reasoning_profile=reasoning_profile)
     thinking_mode = policy_diag["thinking_mode"]
     reasoning_parameters_sent = policy_diag["reasoning_parameters_sent"]
-    gemini = _gemini_fast_reasoning(provider, base_url or url, model, enable_thinking) if thinking_protocol == 'auto' else {}
-    if gemini:
-        body.update(gemini)
-        policy_diag.update(reasoning_parameters_sent=gemini, thinking_mode='low',
-                           thinking_compatibility='disable_not_supported_low_requested')
-    thinking_mode = policy_diag['thinking_mode']
-    reasoning_parameters_sent = policy_diag['reasoning_parameters_sent']
     if response_format is not None:
         body["response_format"] = response_format
 
@@ -475,7 +479,7 @@ def post_chat_completion(
     else:
         structured_retry_steps = ()
 
-    def send(current_body):
+    def send(current_body, retry_reason=None):
         from .usage_ledger import tracked_post
         return tracked_post(lambda: network_policy.post(
             url,
@@ -485,14 +489,16 @@ def post_chat_completion(
             },
             json=current_body,
             timeout=timeout if timeout is not None else (10, 120),
-        ), endpoint=url, model=model, provider=provider, stage=stage, mode=request_mode)
+        ),
+            endpoint=url, model=model, provider=provider, stage=stage, mode=request_mode,
+            request_policy={**policy_diag, "retry_reason": retry_reason or ("structured_answer_retry" if _structured_empty_retry else None)})
 
     effective_body = body
     _invocation_started = time.perf_counter()
     from .public_api_response import timestamp
     request_sent_at = timestamp()
     _record_event('ai_request_dispatched', stage=stage or 'unknown', provider=provider,
-        model=model, endpoint=url, thinking_mode=thinking_mode, request_sent_at=request_sent_at)
+        model=model, endpoint=_safe_endpoint(url), thinking_mode=thinking_mode, request_sent_at=request_sent_at)
     response = send(effective_body)
     response_format_fallback = False
     if response_format is not None and getattr(response, "status_code", 0) == 400:
@@ -501,7 +507,7 @@ def post_chat_completion(
         except Exception:
             error_text = ""
         lowered = error_text.lower()
-        if any(token in lowered for token in ("response_format", "json_object", "structured output", "unsupported")):
+        if any(token in lowered for token in ("response_format", "json_object", "structured output")):
             fallback_body = dict(body)
             fallback_body.pop("response_format", None)
             effective_body = fallback_body
@@ -514,9 +520,9 @@ def post_chat_completion(
                 normalized_base_url=str(base_url or ""),
                 endpoint=str(url or ""),
                 batch_index=batch_index,
-                reason=llm_response_preview(_redact(error_text, api_key), head=240, tail=0),
+                reason="response_format_rejected",
             )
-            response = send(fallback_body)
+            response = send(fallback_body, "response_format_rejected")
 
     record_llm_invocation(
         stage=stage, provider=provider, model=model, base_url=base_url,
@@ -540,6 +546,7 @@ def post_chat_completion(
             error_body = response.text or ""
         except Exception:
             error_body = ""
+        error_data = {}
         try:
             error_data = response.json().get('error', {})
             error_code = str(error_data.get('code') or error_data.get('type') or '')
@@ -568,9 +575,13 @@ def post_chat_completion(
             "max_tokens": effective_body.get("max_tokens"),
             "structured_empty_retry": bool(_structured_empty_retry),
         }
+        from .reasoning_adapter import rejected_reasoning
+        if rejected_reasoning(status, error_data, diagnostics):
+            diagnostics["thinking_compatibility"] = "request_rejected"
+            category = "reasoning_parameter_incompatible"
         _DIAGNOSTIC_LOCAL.value = diagnostics
         error = LLMRequestError(
-            f"HTTP {status or 'unknown'}：{llm_response_preview(_redact(error_body, api_key), head=240, tail=0)}",
+            f"HTTP {status or 'unknown'}：{category}",
             category=category,
             response=response,
             diagnostics=diagnostics,
@@ -674,6 +685,8 @@ def post_chat_completion(
     from .public_api_response import message_evidence
     diagnostics.update(request_sent=True, request_sent_at=request_sent_at)
     message_evidence(payload, diagnostics, api_key=api_key)
+    from .reasoning_adapter import has_reasoning
+    diagnostics["reasoning_content_present"] |= has_reasoning(message)
     content = extract_chat_message_text(message, prefer_structured=bool(response_format))
     diagnostics["final_content_preview"] = llm_response_preview(_redact(content, api_key))
     diagnostics["selected_content_length"] = len(str(content or ""))
@@ -703,7 +716,7 @@ def post_chat_completion(
         )
     )
     if retryable_structured:
-        retry_event = dict(diagnostics)
+        retry_event = _safe_failure_fields(diagnostics)
         retry_event.update(stage=stage or "unknown", batch_index=batch_index)
         truncated_before_answer = (
             diagnostics.get("finish_reason") in {"length", "max_tokens"}
@@ -719,7 +732,7 @@ def post_chat_completion(
         retry_event["retry_max_tokens"] = next_max_tokens
         _record_event("llm_structured_output_retry", **retry_event)
         if not truncated_before_answer:
-            _record_event("llm_structured_empty_retry", **retry_event)
+            _record_event("llm_structured_empty_retry", **_safe_failure_fields(retry_event))
         retry_messages = [
             {"role": "system", "content": str(structured_retry_system_prompt)},
             *[item for item in messages if item.get("role") != "system"],
@@ -739,7 +752,7 @@ def post_chat_completion(
             stage=stage,
             batch_index=batch_index,
             request_mode=request_mode,
-            extra_body=extra_body, thinking_protocol=thinking_protocol,
+            extra_body=extra_body, thinking_protocol=thinking_protocol, reasoning_profile=reasoning_profile,
             structured_retry_system_prompt=structured_retry_system_prompt,
             structured_retry_max_tokens=(structured_retry_steps[1:] if structured_retry_steps else ()),
             key_source=key_source,
@@ -813,10 +826,11 @@ def post_chat_completion_stream(
     key_source="",
     on_stream_event=None,
     cancel_check=None,
-    enable_thinking=None,
+    enable_thinking=False,
     total_deadline=None,
     input_budget=None,
     thinking_protocol="auto",
+    reasoning_profile="",
     extra_body=None,
     batch_index=None,
     strict_tool=None,
@@ -848,15 +862,8 @@ def post_chat_completion_stream(
             'description': strict_tool.get('description', ''), 'parameters': strict_tool['schema']}}]
         body['tool_choice'] = {'type': 'function', 'function': {'name': tool_name}}
         url = strict_tool['url']
-    from .subtitle_request_policy import apply_thinking
-    policy_diag = apply_thinking(body, provider=provider, base_url=base_url or url,
-        enabled=enable_thinking, protocol=thinking_protocol, extra_body=extra_body)
-    gemini = _gemini_fast_reasoning(provider, base_url or url, model, enable_thinking) if thinking_protocol == 'auto' else {}
-    if gemini:
-        body.update(gemini)
-        policy_diag.update(reasoning_parameters_sent=gemini, thinking_mode='low',
-                           thinking_compatibility='disable_not_supported_low_requested')
-    policy_diag['structured_output_mode'] = 'strict_tool' if tool_name else 'response_format'
+    policy_diag = _apply_reasoning(body, provider=provider, base_url=base_url or url,
+        enabled=enable_thinking, protocol=thinking_protocol, extra_body=extra_body, reasoning_profile=reasoning_profile)
     diagnostics = dict(provider=provider, model=model, endpoint=url, base_url=base_url, stream=True,
                        stage=stage, batch_id=batch_index, **policy_diag)
     _DIAGNOSTIC_LOCAL.value = diagnostics
@@ -892,6 +899,7 @@ def post_chat_completion_stream(
             for key in ('http_status', 'provider_error', 'provider_error_message', 'retry_after_seconds'):
                 diagnostics.pop(key, None)
             diagnostics['stream_usage_option'] = 'rejected_by_endpoint'
+            diagnostics['retry_reason'] = 'stream_options_rejected'
             value = request_chat(url, headers, body, timeout, diagnostics, public_event, cancel_check,
                 total_deadline=total_deadline,input_budget=input_budget,tool_name=tool_name)
         diagnostics.update(summary(diagnostics))
@@ -1000,9 +1008,9 @@ def post_responses(
                 "schema": dict(json_schema),
             }
         }
-    from .subtitle_request_policy import apply_thinking
-    policy_diag = apply_thinking(body, provider=provider, base_url=base_url or url,
-        enabled=_kwargs.get('enable_thinking'), protocol=_kwargs.get('thinking_protocol', 'auto'), api='responses')
+    policy_diag = _apply_reasoning(body, provider=provider, base_url=base_url or url,
+        enabled=_kwargs.get('enable_thinking', False), protocol=_kwargs.get('thinking_protocol', 'auto'),
+        extra_body=_kwargs.get('extra_body'), reasoning_profile=_kwargs.get('reasoning_profile', ''), api='responses')
     _invocation_started = time.perf_counter()
     _DIAGNOSTIC_LOCAL.value = dict(**policy_diag, provider=provider, model=model, request_mode='responses', stage=stage,
         output_delivery=body.get('text', {}).get('format', {}).get('type', 'text'))
@@ -1023,6 +1031,8 @@ def post_responses(
             if hasattr(exc,'retry_after_seconds'):error.retry_after_seconds=exc.retry_after_seconds
             raise error from exc
         finally:
+            from .reasoning_adapter import observe_reasoning
+            observe_reasoning(diagnostics)
             _DIAGNOSTIC_LOCAL.value = dict(diagnostics)
             record_llm_invocation(stage=stage, provider=provider, model=model, base_url=base_url,
                 url=url, request_mode='responses_stream', key_source=key_source,
@@ -1044,7 +1054,7 @@ def post_responses(
                 response = tracked_post(lambda: network_policy.post(url, headers={**auth_headers(api_key),
                     "Content-Type": "application/json"}, json=body,
                     timeout=timeout if timeout is not None else (10, 120)), endpoint=url,
-                    model=model, provider=provider, stage=stage, mode='responses')
+                    model=model, provider=provider, stage=stage, mode='responses', request_policy=policy_diag)
             state['response'] = response
         except Exception as exc:
             state['error'] = exc
@@ -1082,41 +1092,35 @@ def post_responses(
     except Exception as exc:
         status = getattr(response, "status_code", None)
         category = "auth_error" if status in {401, 403} else "configuration_error" if status in {400, 404} else "transport_error"
-        error = LLMRequestError(
-            f"Responses API HTTP {status or 'unknown'}：{llm_response_preview(_redact(getattr(response, 'text', ''), api_key), head=240, tail=0)}",
-            category=category,
-            response=response,
-        )
+        diagnostics = _DIAGNOSTIC_LOCAL.value
+        diagnostics["http_status"] = status
+        from .reasoning_adapter import rejected_reasoning
+        try:
+            rejected = rejected_reasoning(status, response.json().get("error"), diagnostics)
+        except (AttributeError, ValueError):
+            rejected = False
+        if rejected:
+            diagnostics["thinking_compatibility"] = "request_rejected"
+            category = "reasoning_parameter_incompatible"
+        error = LLMRequestError(f"Responses API HTTP {status or 'unknown'}：{category}",
+                                category=category, response=response, diagnostics=diagnostics)
         _record_failure(
             api_key=api_key, stage=stage, provider=provider, model=model,
             base_url=base_url, url=url, request_mode="responses",
             category=category, error=error, content=getattr(response, "text", ""),
         )
         raise error from exc
-    content = str(payload.get("output_text") or "").strip() if isinstance(payload, dict) else ""
-    if not content and isinstance(payload, dict):
-        parts = []
-        for item in payload.get("output", []) or []:
-            if not isinstance(item, dict):
-                continue
-            for block in item.get("content", []) or []:
-                if isinstance(block, dict) and block.get("type") in {"output_text", "text"}:
-                    parts.append(str(block.get("text") or ""))
-        content = "".join(parts).strip()
-    if not content:
-        raise LLMRequestError("Responses API 没有返回可用正文。", category="empty_content", response=response)
-    usage = payload.get('usage') or {}
-    _DIAGNOSTIC_LOCAL.value = {
-        **policy_diag, "provider": provider, "model": model, "endpoint": url,
-        "request_mode": "responses", "request_id": payload.get("id") if isinstance(payload, dict) else None,
-        "selected_content_length": len(content), "stream": False,
-        "output_delivery": body.get('text', {}).get('format', {}).get('type', 'text'),
-        "prompt_tokens": usage.get('input_tokens'), "completion_tokens": usage.get('output_tokens'),
-        "total_tokens": usage.get('total_tokens'),
-        "reasoning_tokens": (usage.get('output_tokens_details') or {}).get('reasoning_tokens'),
-    }
-    response.close()
-    return content
+    from .provider_stream import responses_final, StreamProtocolError
+    from .reasoning_adapter import observe_reasoning
+    diagnostics = _DIAGNOSTIC_LOCAL.value
+    diagnostics.update(http_status=response.status_code, stream=False)
+    try:
+        return responses_final(payload, diagnostics)
+    except StreamProtocolError as exc:
+        raise LLMRequestError(str(exc), category=exc.category, diagnostics=diagnostics) from exc
+    finally:
+        observe_reasoning(diagnostics)
+        response.close()
 
 
 def run_llm_json_self_test(endpoint):

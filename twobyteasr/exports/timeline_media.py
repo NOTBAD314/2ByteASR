@@ -66,7 +66,9 @@ def resolve_frame_graph(graph, milliseconds, ffmpeg, *, cache=None):
     return resolve_video_graph(graph, ffmpeg, cache=cache)
 
 
-def resolve_audio_layers(layers, ffmpeg, *, cancelled=None, cache=None):
+def resolve_audio_layers(layers, ffmpeg, *, cancelled=None, cache=None, waiting=None, note=None):
+    """``waiting(source, seconds)``: another process still prepares that source;
+    ``note(text)``: a long step on one source starts."""
     if cache is None:
         from ..media.indexed_media import GLOBAL_INDEXED_MEDIA
         cache = GLOBAL_INDEXED_MEDIA
@@ -78,7 +80,11 @@ def resolve_audio_layers(layers, ffmpeg, *, cancelled=None, cache=None):
             continue
         source = layer['source_path']
         if source not in receipts:
-            receipts[source] = cache.prepare_timeline_source(source, ffmpeg=ffmpeg, cancelled=cancelled)
+            extra = {} if waiting is None else {
+                'waiting': lambda seconds, source=source: waiting(source, seconds)}
+            if note is not None:
+                extra['note'] = note
+            receipts[source] = cache.prepare_timeline_source(source, ffmpeg=ffmpeg, cancelled=cancelled, **extra)
         layer.update(source_path=receipts[source]['path'], original_source_path=source,
                      media_time_contract=TIME_CONTRACT)
         resolved.append(layer)

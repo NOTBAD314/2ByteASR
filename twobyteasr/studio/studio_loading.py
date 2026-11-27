@@ -131,6 +131,7 @@ class StudioLoadingView(QFrame):
         from ..design.bunny_mascot import BunnyMascot
         self.perch = BunnyMascot(self, height=150, motion='bob')
         self.perch.setVisible(self.perch.available)
+        self.live_bunny = False      # 2026-11-27: the real 兔白 sits on the card; its own bunny steps aside
         self.card.installEventFilter(self)
         self._seat_shared(library=False)
         host.installEventFilter(self)
@@ -302,7 +303,7 @@ class StudioLoadingView(QFrame):
         self.library_mode = bool(library)
         self.faces.setCurrentWidget(self.library_face if library else self.project_face)
         self._seat_shared(library=library)
-        self.perch.setVisible(self.perch.available and not library)
+        self._show_perch()
         self.bar.reset_progress()
         self.cover.set_failed(False)
         self._line_key = ''
@@ -432,6 +433,15 @@ class StudioLoadingView(QFrame):
                 self.native_cover_changed.emit()
         return False
 
+    def _show_perch(self):
+        self.perch.setVisible(self.perch.available and not self.library_mode and not self.live_bunny)
+
+    def set_live_bunny(self, seated: bool) -> None:
+        """The living 兔白 sits on this card (bunny_scenes 'loading'): its own picture of her hides."""
+        if bool(seated) != self.live_bunny:
+            self.live_bunny = bool(seated)
+            self._show_perch()
+
     def _place_perch(self):
         card = self.card.geometry()
         self.perch.move(card.right() - 64 - self.perch.width(), card.top() - self.perch.height() + 26)
@@ -482,18 +492,18 @@ class StudioLoadingView(QFrame):
             complete_paint=complete, opaque_background=self._surface_background.alpha() == 255)
 
     def _ambient_pixmap(self):
-        """The poster's cover, blurred, as a soft glow behind the card."""
+        """The poster's cover, blurred, as a soft glow behind the card.
+
+        2026-11-27 (user: the cover behind the card looked very blurry and low-resolution): it was
+        a 32×18 thumbnail stretched over the window. Now a real Gaussian blur (design.soft_blur)."""
         pixmap = getattr(self, 'cover_pixmap', None)
         if self.library_mode or pixmap is None or pixmap.isNull() or self.width() <= 0:
             return None
         key = (pixmap.cacheKey(), self.width(), self.height())
         if self._ambient is None or self._ambient[0] != key:
-            from PySide6.QtGui import QPixmap
-            tiny = pixmap.scaled(32, 18, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                                 Qt.TransformationMode.SmoothTransformation)
-            glow = tiny.scaled(self.width(), self.height(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                               Qt.TransformationMode.SmoothTransformation)
-            self._ambient = (key, QPixmap(glow))
+            from ..design.soft_blur import gaussian_backdrop
+            glow = gaussian_backdrop(pixmap, self.size())
+            self._ambient = (key, glow)
         return self._ambient[1]
 
     def paintEvent(self, event):

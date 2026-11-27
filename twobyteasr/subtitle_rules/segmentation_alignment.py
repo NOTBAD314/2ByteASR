@@ -16,6 +16,7 @@ from twobyteasr.subtitle_rules.segmentation import (
 __all__ = [
     "individual_cue",
     "segment_content_timeline",
+    "tokens_near_segments",
     "firered_pause_character_boundaries",
     "firered_pause_character_gaps",
     "_vad_silence_ratio",
@@ -342,6 +343,34 @@ def segment_content_timeline(segment, firered_tokens=()):
     return spread_collapsed_runs(result, segment)
 
 
+def tokens_near_segments(segments, firered_tokens):
+    """The FireRed tokens any of these segments can align with, in their own order.
+
+    2026-11-27 (fast-anything scan of the 45-minute luoke task): each segment
+    scanned every token of the whole recording (7,801, two float() each) once
+    per segment, about 40 % of regrouping. A token outside the batch's
+    padded time range is outside every segment's padded range. Use the
+    timeline's rejection comparisons so unordered values such as NaN
+    are still handled by the individual alignment and pause readers.
+    Fall back to the original list when the range cannot be determined.
+    """
+    if not segments or not firered_tokens:
+        return firered_tokens
+    starts = [segment.start for segment in segments]
+    ends = [segment.end for segment in segments]
+    if not all(math.isfinite(value) for value in (*starts, *ends)):
+        return firered_tokens
+    low = min(starts) - FIRERED_TEXT_ALIGNMENT_PAD_SECONDS
+    high = max(ends) + FIRERED_TEXT_ALIGNMENT_PAD_SECONDS
+    try:
+        return [
+            token for token in firered_tokens
+            if not (float(token["end"]) < low or float(token["start"]) > high)
+        ]
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return firered_tokens
+
+
 def firered_pause_character_boundaries(
     segment_batch,
     firered_tokens=(),
@@ -350,6 +379,7 @@ def firered_pause_character_boundaries(
     """把 FireRed 的真实字间停顿映射为字符偏移及精确左右时间。"""
     if not segment_batch or not firered_tokens:
         return {}
+    firered_tokens = tokens_near_segments(segment_batch, firered_tokens)
 
     result = {}
     batch_offset = 0

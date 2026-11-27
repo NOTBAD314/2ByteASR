@@ -184,6 +184,11 @@ def test_closing_stops_everything_and_frees_the_window(app, chat_env, monkeypatc
     from PySide6.QtCore import QEvent, Qt
     from PySide6.QtGui import QKeyEvent
     app.sendEvent(chat, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
+    if chat.puck is not None:
+        # 2026-11-26 (user): Esc folds the dialog box away; 兔白 stays. × closes the chat.
+        assert window._bunny_chat is chat and chat.collapsed and not chat.isVisible()
+        assert chat.puck.carrier.isVisible() and chat.fold_reason == 'user'
+        chat.close_button.click()
     assert window._bunny_chat is None
     assert not chat.isVisible()
 
@@ -257,13 +262,20 @@ def test_the_dialog_box_goes_on_by_itself_and_keeps_the_answer_together(app, cha
     chat.reveal_all()
     chat.say(bunny_persona.BunnyReply(lines=['第一句。', '第二句。', '第三句。'],
                                       detail=('1. 点 **模型工坊**', '· 下载 ==不花钱=='), suggest=('好', '然后呢')))
-    assert chat._detail_card is None                                   # the card waits for her words
+    assert chat._detail_card is None                                   # the memo waits for her first sentence
+    reserved = chat._reserve_h
     chat.typer.finish()
     assert not chat.box.more and chat.box.count.text() == ''           # nothing asks for a click
+    # 2026-11-26 draft D: after her first sentence the memo is in her box and she writes on it while
+    # she goes on speaking; its height was reserved before she began, so the box does not grow again.
+    memo = chat._detail_card
+    assert isinstance(memo, bunny_chat.MemoCard) and memo.parent() is chat.box and chat._pending
+    assert reserved >= memo.height() and chat.box.height() >= reserved
     deadline = time.monotonic() + 3
-    while (chat._pending or chat.typer.running) and time.monotonic() < deadline:
+    while (chat._pending or chat.typer.running or chat._memo_writing()) and time.monotonic() < deadline:
         app.processEvents()
         chat.typer.finish()
+        chat.memo_typer.finish()
     shown = _plain(chat.box.label.source_html)
     assert '第一句' in shown and '第二句' in shown and '第三句' in shown  # together, not one replacing the other
     card = chat._detail_card
@@ -373,7 +385,10 @@ def test_the_dialog_box_says_one_sentence_at_a_time_when_asked_to(app, chat_env,
     chat.send()                                                        # Enter with nothing typed goes on too
     chat.typer.finish()
     assert '第三句' in _plain(chat.box.label.source_html) and not chat.box.more
+    # 2026-11-26 (user, later the same day): what she says reads in 猫啃什锦黑 again, a size up;
+    # the input stays in 思源黑体.
     assert chat.box.label.font().family() == bunny_chat.chat_font_family()
+    assert chat.input.font().family() == 'Source Han Sans SC Medium'
 
 
 def test_cancelled_lookup_does_not_start_an_ai_request(app, monkeypatch):
@@ -523,11 +538,47 @@ def test_a_click_without_moving_is_still_a_poke(app, chat_env, monkeypatch):
     pokes = []
     monkeypatch.setattr(chat, 'poke', lambda: pokes.append(1))
     mascot = chat.mascot
-    at = QPointF(40, 60)
+    at = mascot.rig_to_widget(458, 330)          # the top of her head (2026-11-26: ears, cheeks... react on their own)
     origin = QPointF(mascot.mapToGlobal(at.toPoint()))
     assert chat.eventFilter(mascot, _mouse(QEvent.Type.MouseButtonPress, mascot, at, origin))
     assert chat.eventFilter(mascot, _mouse(QEvent.Type.MouseButtonRelease, mascot, at, origin))
     assert pokes == [1] and chat.puck.docked
+
+
+def test_her_parts_answer_taps_and_pulls_on_their_own(app, chat_env, monkeypatch):
+    """2026-11-26: tapping a cheek squashes it, an ear pulled stretches and springs back, the ring spins."""
+    bunny_chat, window, _calls = chat_env
+    _ready(monkeypatch, bunny_chat)
+    from PySide6.QtCore import QEvent, QPointF
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.reveal_all()
+    if chat.puck is None:
+        pytest.skip('no mascot pictures in this build')
+    pokes = []
+    monkeypatch.setattr(chat, 'poke', lambda: pokes.append(1))
+    mascot, life = chat.mascot, chat.mascot.life
+
+    def tap(x, y):
+        at = mascot.rig_to_widget(x, y)
+        origin = QPointF(mascot.mapToGlobal(at.toPoint()))
+        chat.eventFilter(mascot, _mouse(QEvent.Type.MouseButtonPress, mascot, at, origin))
+        chat.eventFilter(mascot, _mouse(QEvent.Type.MouseButtonRelease, mascot, at, origin))
+
+    tap(548, 578)                                # right cheek
+    assert life.squash.v < 0 and life.blush > 0
+    tap(452, 100)                                # the key ring
+    assert abs(life.part('ring').spin) > 10
+    # Pull the left ear well away from her: it bends and stretches toward the pointer, she winces.
+    root = mascot.rig_to_widget(346, 256)
+    start = mascot.rig_to_widget(316, 150)
+    chat.eventFilter(mascot, _mouse(QEvent.Type.MouseButtonPress, mascot, start, QPointF(mascot.mapToGlobal(start.toPoint()))))
+    pull = root + QPointF(-60, -10)
+    chat.eventFilter(mascot, _mouse(QEvent.Type.MouseMove, mascot, pull, QPointF(mascot.mapToGlobal(pull.toPoint()))))
+    ear = life.part('earL')
+    assert life.tugging and ear.stretch_target > 0.1 and ear.target < -0.5
+    chat.eventFilter(mascot, _mouse(QEvent.Type.MouseButtonRelease, mascot, pull, QPointF(mascot.mapToGlobal(pull.toPoint()))))
+    assert not life.tugging and ear.target == 0 and ear.stretch_target == 0
+    assert pokes == [] and chat.puck.docked
 
 
 def test_she_drifts_beside_the_place_and_does_only_what_is_pressed(app, chat_env, monkeypatch):

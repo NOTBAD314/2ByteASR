@@ -214,7 +214,7 @@ class StudioPlaybackFlowMixin:
             elif point < end:
                 self._review_seeking = True
                 try:
-                    self._seek(point / 1000.0)
+                    self._seek(point / 1000.0, cut_jump=True)
                     self.video.set_paused(False)
                 finally:
                     self._review_seeking = False
@@ -222,7 +222,7 @@ class StudioPlaybackFlowMixin:
             self._seek(self._loop_region_ms[0] / 1000.0)
             self.video.set_paused(False)
         elif point < end:
-            self._seek(point / 1000.0)
+            self._seek(point / 1000.0, cut_jump=True)
             self.video.set_paused(False)
         else:
             self._finish_project_playback()
@@ -247,6 +247,82 @@ class StudioPlaybackFlowMixin:
         boundary = clip.timeline_out_ms if clip else timeline_duration_ms(self.project)
         self._advance_project_boundary(boundary)
         return True
+
+    def _continue_into_contiguous_segment(self, sequence, current, source_ms):
+        """Hand playback to the next piece of a razor cut without seeking mpv.
+
+        The decoder is already presenting the next piece's first frames, so
+        only the active piece changes. A real jump (deleted range, other file,
+        other speed) returns None and keeps the boundary seek.
+        """
+        from ..timeline.studio_sequence_mapper import contiguous_successor
+        segment = current
+        while source_ms >= segment.source_out_ms:
+            following = contiguous_successor(sequence, segment)
+            if following is None:
+                return None
+            segment = following
+        mapped = source_to_timeline(sequence, source_ms, segment=segment)
+        if mapped is None:
+            return None
+        self._active_video_preview_clip_id = segment.id
+        self._active_video_preview_source_in_ms = int(segment.source_in_ms)
+        self._active_video_preview_timeline_in_ms = int(segment.timeline_in_ms)
+        self._contiguous_cut_handoffs = getattr(self, '_contiguous_cut_handoffs', 0) + 1
+        self._studio_trace('PLAYBACK_CUT_CONTINUED', from_segment=current.id, to_segment=segment.id,
+                           source_ms=int(source_ms), project_ms=int(mapped.timeline_ms))
+        # Same file, same "primary" route: this updates compositor layers and
+        # track volume for the new piece and posts no seek.
+        self._sync_multitrack_preview_at(int(mapped.timeline_ms))
+        return mapped
+
+    # The visual tick reports every 16 ms. Arm the jump when the piece ends
+    # within the next few ticks and fire it about one frame early, so the
+    # pause reaches mpv while the piece's own last frame is on screen (that
+    # frame then stays up during the seek; only ~20 ms of tail audio is cut).
+    PREDICTED_CUT_WINDOW_MS = 50
+    PREDICTED_CUT_LEAD_MS = 20
+
+    def _arm_predicted_cut_jump(self, sequence, mapped, source_ms):
+        """Start a real-jump cut at the predicted out point, not one tick late.
+
+        Without this the jump starts only once the clock has passed the out
+        point, i.e. after mpv presented the first frame of the deleted range;
+        that deleted frame then stayed frozen on screen for the whole seek.
+        Razor cuts (contiguous successor) and the last piece keep their paths.
+        """
+        from ..timeline.studio_sequence_mapper import contiguous_successor
+        segment = next((s for s in sequence.segments if s.id == mapped.segment_id), None)
+        clock = self.video._playback_clock
+        if (segment is None or clock.exact_seek_pending or not self.video.controller
+                or getattr(clock.snapshot(), 'source', '') == 'frame_step'
+                or segment.timeline_out_ms >= sequence.timeline_duration_ms
+                or contiguous_successor(sequence, segment) is not None):
+            return
+        rate = max(.01, float(self.video._playback_rate) * float(getattr(self.video, '_source_rate_multiplier', 1.)))
+        remaining = (int(segment.source_out_ms) - int(source_ms)) / rate  # wall-clock ms
+        if remaining <= 0 or remaining > self.PREDICTED_CUT_WINDOW_MS:
+            return
+        token = (id(self.project), clock.generation, segment.id)
+        if getattr(self, '_predicted_cut_jump', None) == token:
+            return
+        self._predicted_cut_jump = token
+        delay = max(0, round(remaining) - self.PREDICTED_CUT_LEAD_MS)
+        QTimer.singleShot(delay, self, lambda: self._fire_predicted_cut_jump(token, segment.timeline_out_ms))
+
+    def _fire_predicted_cut_jump(self, token, boundary_ms):
+        if getattr(self, '_predicted_cut_jump', None) != token:
+            return
+        self._predicted_cut_jump = None
+        video = self.video
+        clock = video._playback_clock
+        if (self.project is None or getattr(self, '_close_requested', False) or video._paused
+                or not video.controller or clock.exact_seek_pending
+                or token != (id(self.project), clock.generation, getattr(self, '_active_video_preview_clip_id', ''))
+                or getattr(getattr(self, '_caption_seek_preparation', None), 'pending', None) is not None):
+            return
+        self._studio_trace('PLAYBACK_CUT_PREDICTED', boundary_ms=int(boundary_ms))
+        self._advance_project_boundary(boundary_ms)
 
     def _mapped_sequence_segment(self):
         from ..timeline.studio_edit_sequence import segment_at
@@ -339,14 +415,22 @@ class StudioPlaybackFlowMixin:
                     and self._step_across_mapped_boundary(sequence, current_segment, milliseconds)):
                 return
             mapped = source_to_timeline(sequence, milliseconds, segment=current_segment)
+            if (mapped is None and current_segment is not None
+                    and milliseconds >= current_segment.source_out_ms):
+                mapped = self._continue_into_contiguous_segment(sequence, current_segment, milliseconds)
             if mapped is None:
                 if current_segment is not None and milliseconds < current_segment.source_in_ms:
-                    if self.video.controller:
+                    # A seek that is pausing for its hold reports the old
+                    # position against the piece it is about to seek into;
+                    # that seek follows at once, so do not post a second one.
+                    if self.video.controller and not getattr(self.video, '_seek_hold_entering', False):
                         self.video.seek(current_segment.source_in_ms / 1000.0, accurate=True)
                     return
                 if current_segment is not None and self.video.controller and not self.video._paused:
                     self._advance_project_boundary(current_segment.timeline_out_ms)
                 return
+            if clock is not None and not self.video._paused:
+                self._arm_predicted_cut_jump(sequence, mapped, milliseconds)
             milliseconds = mapped.timeline_ms
         self._apply_project_playhead(milliseconds, defer_follow=defer_follow)
 
@@ -420,6 +504,9 @@ class StudioPlaybackFlowMixin:
             tick(self, milliseconds)
         if getattr(self, '_review_playback', None) is not None:
             self._review_playback_tick(milliseconds)
+        rough_cut_tick = getattr(self, '_rough_cut_playback_tick', None)
+        if callable(rough_cut_tick) and rough_cut_tick(milliseconds):
+            return
         from ..playback.playback_plan import playback_plan
         duration = playback_plan(self.project).duration_ms if self.project else 0
         if duration and milliseconds >= duration and not self.video._paused and not self._loop_enabled:
@@ -683,7 +770,18 @@ class StudioPlaybackFlowMixin:
 
     @measured('seek_request')
     @observed('player.seek')
-    def _seek(self, seconds: float, *, accurate: bool = True, preserve_subtitle_target: bool = False) -> None:
+    def _seek(self, seconds: float, *, accurate: bool = True, preserve_subtitle_target: bool = False,
+              cut_jump: bool = False) -> None:
+        """Seek the project playhead.
+
+        ``cut_jump`` marks playback crossing into the next piece of the edit
+        (a deleted range lies between them). The timeline time does not move,
+        only the decoder's source position does, so the user-seek cover (a
+        screenshot of the last frame plus caption preparation, ~75 ms before
+        mpv even starts seeking) is skipped. The seek hold that keeps audio
+        and picture on one anchor still applies.
+        """
+        self._predicted_cut_jump = None
         seconds = self.timeline._bounded_time_ms(round(seconds * 1000)) / 1000.0
         if getattr(self, '_review_playback', None) is not None and not getattr(self, '_review_seeking', False):
             self._release_review_playback()
@@ -695,6 +793,11 @@ class StudioPlaybackFlowMixin:
             self._subtitle_navigation_requested_ms = None
         if self._playhead_centered():
             self.timeline.center_playhead(round(seconds * 1000), force=True)
+        preparing = getattr(getattr(self, '_caption_seek_preparation', None), 'pending', None)
+        if cut_jump and preparing is None and not self.video._paused:
+            self._studio_trace('PLAYBACK_CUT_JUMP', target_ms=round(seconds * 1000))
+            StudioPlaybackFlowMixin._seek_immediate(self, seconds, accurate=accurate)
+            return
         from .caption_seek_preparation import coordinate_caption_seek
         if coordinate_caption_seek(self,seconds,accurate):return
         StudioPlaybackFlowMixin._seek_immediate(self,seconds,accurate=accurate)

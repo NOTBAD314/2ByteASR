@@ -6,13 +6,13 @@ from pathlib import Path
 import threading
 import time
 
-from PySide6.QtCore import QEvent, QObject, QRect, QSettings, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence, QPixmap
+from PySide6.QtCore import QEvent, QObject, QRect, QRectF, QSettings, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QColorDialog,
     QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
     QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter, QStackedWidget,
-    QToolBar, QToolButton, QMenu, QGridLayout, QStyledItemDelegate, QVBoxLayout, QWidget, QSizePolicy)
+    QToolBar, QToolButton, QMenu, QGridLayout, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget, QSizePolicy, QFrame)
 
 from .cover_canvas import CoverSession, CoverView
 from .cover_document import CoverDocument, valid_size
@@ -42,22 +42,75 @@ class CoverJob(QObject):
 
 
 class CoverLayerDelegate(QStyledItemDelegate):
+    """A layer row (2026-11-27): rounded highlight, thumbnail, name, then an eye and a lock that
+    toggle the layer's visibility and lock with one click each."""
+    ROW = 40
+
     def __init__(self,editor):
         super().__init__(editor.layers);self.editor=editor
-        import qtawesome as qta
-        self.icons=[qta.icon('fa5s.lock-open',color='#849a8c'),qta.icon('fa5s.lock',color='#dfc482')]
+
+    def sizeHint(self,option,index):
+        return QSize(option.rect.width(),self.ROW)
+
+    def _rects(self,rect):
+        cy=rect.center().y()
+        return QRect(rect.right()-58,cy-12,24,24),QRect(rect.right()-30,cy-12,24,24)
 
     def paint(self,painter,option,index):
-        super().paint(painter,option,index)
+        from ..design.themed_icons import cached_icon_pixmap
+        from ..design.ui_theme import blend_hex
+        t=self.editor.theme
         layer=self.editor.session.document.layer(index.data(Qt.UserRole))
-        if layer:self.icons[int(layer.locked)].paint(painter,QRect(option.rect.right()-23,option.rect.center().y()-7,14,14))
+        rect=option.rect.adjusted(1,1,-1,-1)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        selected=bool(option.state&QStyle.State_Selected);hover=bool(option.state&QStyle.State_MouseOver)
+        if selected or hover:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(t.accent_soft if selected else blend_hex(t.surface_elevated,t.text,.07)))
+            painter.drawRoundedRect(QRectF(rect),11,11)
+        visible=layer.visible if layer else True
+        plate=QRectF(rect.left()+8,rect.center().y()-13,40,26)
+        painter.setPen(Qt.NoPen);painter.setBrush(QColor(blend_hex(t.surface,t.app_background,.6)))
+        painter.drawRoundedRect(plate,6,6)
+        icon=index.data(Qt.DecorationRole)
+        if icon is not None and not icon.isNull():
+            painter.setOpacity(1 if visible else .45)
+            icon.paint(painter,plate.toRect().adjusted(1,1,-1,-1))
+            painter.setOpacity(1)
+        eye,lock=self._rects(rect)
+        font=QFont(option.font);font.setPixelSize(13)
+        if selected:
+            from ..design.typography import heavy_font
+            heavy_font(font)
+        painter.setFont(font)
+        painter.setPen(QColor(t.text if visible else t.text_muted))
+        text_rect=QRect(int(plate.right())+10,rect.top(),eye.left()-int(plate.right())-14,rect.height())
+        painter.drawText(text_rect,Qt.AlignVCenter|Qt.AlignLeft,painter.fontMetrics().elidedText(index.data(Qt.DisplayRole) or '',Qt.ElideRight,text_rect.width()))
+        ratio=painter.device().devicePixelRatioF() if painter.device() else 1
+        if layer:
+            eye_icon=cached_icon_pixmap('fa5s.eye' if layer.visible else 'fa5s.eye-slash',t.text_muted,QSize(14,14),device_pixel_ratio=ratio)
+            lock_icon=cached_icon_pixmap('fa5s.lock' if layer.locked else 'fa5s.lock-open',t.accent if layer.locked else blend_hex(t.text_muted,t.surface,.35),QSize(13,13),device_pixel_ratio=ratio)
+            painter.drawPixmap(eye.left()+5,eye.top()+5,eye_icon)
+            painter.drawPixmap(lock.left()+5,lock.top()+5,lock_icon)
+        painter.restore()
+
+    def updateEditorGeometry(self,editor,option,index):
+        rect=option.rect
+        editor.setGeometry(QRect(rect.left()+56,rect.top()+6,max(60,rect.width()-56-64),rect.height()-12))
 
     def editorEvent(self,event,model,option,index):
-        if event.type()==QEvent.MouseButtonRelease and event.button()==Qt.LeftButton and event.position().x()>option.rect.right()-28:
+        if event.type()==QEvent.MouseButtonRelease and event.button()==Qt.LeftButton:
+            eye,lock=self._rects(option.rect.adjusted(1,1,-1,-1))
+            point=event.position().toPoint()
             key=index.data(Qt.UserRole)
             layer=self.editor.session.document.layer(key)
-            if layer:self.editor.session.edit('图层锁定',lambda doc:setattr(doc.layer(key),'locked',not layer.locked))
-            return True
+            if layer and lock.contains(point):
+                self.editor.session.edit('图层锁定',lambda doc:setattr(doc.layer(key),'locked',not layer.locked))
+                return True
+            if layer and eye.contains(point):
+                self.editor.session.edit('图层名称 / 显示',lambda doc:setattr(doc.layer(key),'visible',not layer.visible))
+                return True
         return super().editorEvent(event,model,option,index)
 
 
@@ -97,6 +150,7 @@ class CoverEditor(QDialog):
         from .cover_local_library import LocalCoverLibrary
         self.library = LocalCoverLibrary()
         self._build()
+        self.refresh_theme_palette()
         self._autosave = QTimer(self)
         self._autosave.setSingleShot(True)
         self._autosave.setInterval(2500)
@@ -114,33 +168,34 @@ class CoverEditor(QDialog):
         QTimer.singleShot(0, self.view.fit_canvas)
 
     def _build(self):
-        # The sheet first: each control is styled once as it is shown, not built and then
-        # restyled as a finished subtree (2026-11-19, user: windows stutter when they open).
-        self.refresh_theme_palette()
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(4)
-        self.toolbar = QToolBar()
-        self.toolbar.setMovable(False)
-        layout.addWidget(self.toolbar)
+        # 2026-11-27 (user picked draft 「A 圓角工具箱」): the same layout as before, in the app's
+        # rounded frame. Top: 檔案 / 模板 menus and undo / redo in rounded groups, then on the
+        # right only 換一幀畫面, 儲存 PSD and the primary 匯出圖片. Left: a rail of round tool
+        # buttons. Middle: the canvas on a soft mat with a floating zoom pill and the 「在首頁
+        # 看起來」 preview. Right: the layer list (thumbnail, eye, lock) and the properties as
+        # sliders, colour dots and segmented choices. 開啟圖片 / 開啟資料夾 appear after an export.
+        from ..app.candy_chrome import CandyChrome
+        from .cover_widgets import FeedPreview, ZoomPill, icon_button, text_button
+        self.chrome = CandyChrome(self, '未命名封面 · 2ByteASR 封面', 'fa5s.image')
+        self.restyle()
+        layout = self.chrome.layout
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         self.cover_actions = {}
         def action(key, label, slot, shortcut=None):
             item = QAction(label, self)
             if shortcut:
                 item.setShortcut(shortcut)
             item.triggered.connect(slot)
-            self.toolbar.addAction(item)
+            self.addAction(item)
             self.cover_actions[key] = item
             return item
         action('new', '新建', self.new_document, QKeySequence.New)
         action('open', '打开', self.open_dialog, QKeySequence.Open)
-        self.toolbar.addSeparator()
         action('image', '添加图片', lambda: self.add_images())
         action('text', '添加文字', self.add_text)
-        self.toolbar.addSeparator()
         action('undo', '撤销', self.undo, QKeySequence.Undo)
         action('redo', '重做', self.redo, QKeySequence.Redo)
-        self.toolbar.addSeparator()
         action('save', '保存 PSD', self.save_dialog, QKeySequence.Save)
         action('save_as', '另存为', lambda: self.save_dialog(save_as=True), QKeySequence.SaveAs)
         action('export', '导出图片', self.export_dialog, 'Ctrl+E')
@@ -149,104 +204,239 @@ class CoverEditor(QDialog):
         draft = self.library.draft()
         if draft and draft.get('kind') == '2bytecover':
             action('restore', '恢复草稿', lambda:self.open_document(self.library.root/draft['file'],draft=True))
-        file_menu = QMenu(self)
-        for key in ('new', 'open', 'save_as'):
-            self.toolbar.removeAction(self.cover_actions[key])
-            file_menu.addAction(self.cover_actions[key])
-        file_button = QToolButton()
-        bind_text(file_button, '文件')
-        file_button.setMenu(file_menu)
-        file_button.setPopupMode(QToolButton.InstantPopup)
-        self.toolbar.insertWidget(self.toolbar.actions()[0], file_button)
         action('lock', '锁定 / 解锁', self.toggle_lock)
         action('sidebar', '图层 / 属性', lambda: self.sidebar.setVisible(not self.sidebar.isVisible()))
-        toolrow = QHBoxLayout()
-        self.tools = QToolBar()
-        self.tools.setOrientation(Qt.Vertical)
-        import qtawesome as qta
-        for key, icon in [('image', 'fa5s.image'), ('text', 'fa5s.font'), ('undo', 'fa5s.undo'), ('redo', 'fa5s.redo')]:
-            self.toolbar.removeAction(self.cover_actions[key])
-            self.cover_actions[key].setIcon(qta.icon(icon, color='#b9c6c0'))
-            self.cover_actions[key].setToolTip(self.cover_actions[key].text())
-            self.tools.addAction(self.cover_actions[key])
-        self.tools.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        toolrow.addWidget(self.tools)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(14, 2, 14, 10)
+        self.toolbar = QToolBar()
+        self.toolbar.setObjectName('coverToolbar')
+        self.toolbar.setMovable(False)
+        top.addWidget(self.toolbar)
+        layout.addLayout(top)
+        def group(*widgets):
+            frame = QFrame()
+            frame.setObjectName('coverToolGroup')
+            row = QHBoxLayout(frame)
+            row.setContentsMargins(3, 3, 3, 3)
+            row.setSpacing(2)
+            for widget in widgets:
+                row.addWidget(widget)
+            return frame
+        def menu_button(text, icon, keys):
+            from ..design.themed_icons import install_themed_icon
+            button = QToolButton()
+            bind_text(button, '{name} ▾', name=tr(text))
+            install_themed_icon(button, icon, 'secondary')
+            button.setIconSize(QSize(14, 14))
+            button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            button.setPopupMode(QToolButton.InstantPopup)
+            button.setCursor(Qt.PointingHandCursor)
+            menu = QMenu(button)
+            for key in keys:
+                if key in self.cover_actions:
+                    menu.addAction(self.cover_actions[key])
+            button.setMenu(menu)
+            return button
+        self.file_button = menu_button('文件', 'fa5s.file', ('new', 'open', 'save_as'))
+        self.template_button = menu_button('模板', 'fa5s.th-large', ('templates', 'save_template', 'restore'))
+        self.toolbar.addWidget(group(self.file_button, self.template_button))
+        self.undo_button = icon_button('fa5s.undo', '撤销 Ctrl+Z', size=30, icon_size=14)
+        self.undo_button.clicked.connect(self.undo)
+        self.redo_button = icon_button('fa5s.redo', '重做 Ctrl+Y', size=30, icon_size=14)
+        self.redo_button.clicked.connect(self.redo)
+        self.toolbar.addWidget(group(self.undo_button, self.redo_button))
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.toolbar.addWidget(spacer)
+        self.frame_slot = QHBoxLayout()
+        self.frame_slot.setContentsMargins(0, 0, 0, 0)
+        frame_host = QWidget()
+        frame_host.setLayout(self.frame_slot)
+        self.toolbar.addWidget(frame_host)
+        self.save_button = text_button('保存 PSD', icon='fa5s.save')
+        self.save_button.clicked.connect(self.cover_actions['save'].trigger)
+        self.toolbar.addWidget(self.save_button)
+        self.export_button = text_button('导出图片', icon='fa5s.download', kind='primary')
+        self.export_button.clicked.connect(self.cover_actions['export'].trigger)
+        self.toolbar.addWidget(self.export_button)
+
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        layout.addLayout(body, 1)
+        self.tools = QFrame()
+        self.tools.setObjectName('coverRail')
+        rail = QVBoxLayout(self.tools)
+        rail.setContentsMargins(8, 2, 8, 8)
+        rail.setSpacing(4)
+        self.rail_buttons = {}
+        for key, icon, tip, slot in [('text', 'fa5s.font', '添加文字', self.cover_actions['text'].trigger),
+                                     ('image', 'fa5s.image', '添加图片', self.cover_actions['image'].trigger),
+                                     ('background', 'fa5s.exchange-alt', '更换底图（保留标题和贴图）', lambda: self.add_images(background=True)),
+                                     (None, None, None, None),
+                                     ('lock', 'fa5s.lock', '锁定 / 解锁选中的图层', self.toggle_lock)]:
+            if key is None:
+                line = QFrame()
+                line.setObjectName('coverRailSeparator')
+                line.setFixedSize(24, 1)
+                rail.addWidget(line, 0, Qt.AlignHCenter)
+                continue
+            button = icon_button(icon, tip, size=42, icon_size=17)
+            button.clicked.connect(slot)
+            self.rail_buttons[key] = button
+            rail.addWidget(button, 0, Qt.AlignHCenter)
+        rail.addStretch(1)
+        body.addWidget(self.tools)
         self.splitter = QSplitter(Qt.Horizontal)
-        toolrow.addWidget(self.splitter, 1)
-        layout.addLayout(toolrow, 1)
-        canvas_host = QWidget()
-        center = QVBoxLayout(canvas_host)
-        center.setContentsMargins(0, 0, 0, 0)
+        self.splitter.setChildrenCollapsible(False)
+        body.addWidget(self.splitter, 1)
+
+        canvas_host = QFrame()
+        canvas_host.setObjectName('coverMat')
+        stack = QGridLayout(canvas_host)
+        stack.setContentsMargins(0, 0, 0, 0)
         self.view = CoverView(self.session)
-        center.addWidget(self.view, 1)
-        zoom_row = QHBoxLayout()
-        fit = QPushButton('适应窗口')
-        fit.clicked.connect(self.view.fit_canvas)
-        zoom_row.addWidget(fit)
-        actual = QPushButton('100%')
-        actual.clicked.connect(lambda: self.view.set_zoom(1))
-        zoom_row.addWidget(actual)
-        self.zoom_label = QLabel()
-        self.view.zoom_changed.connect(lambda value: bind_text(self.zoom_label, '查看 {value0:.0f}%', value0=value * 100))
-        zoom_row.addWidget(self.zoom_label)
+        self.view.fit_padding = (30, 26, 30, 168)
+        # Room to centre the canvas in the free area above the floating bar; no scroll bars
+        # (pan with Space + drag or the middle button, zoom with the wheel or the pill).
+        self.view.scene_margin = 1.0
+        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.view.sync_document()
+        stack.addWidget(self.view, 0, 0)
+        def floating(widget, alignment):
+            holder = QWidget()
+            holder.setAttribute(Qt.WA_TranslucentBackground)
+            row = QHBoxLayout(holder)
+            row.setContentsMargins(14, 12, 14, 12)
+            row.addWidget(widget)
+            holder.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
+            stack.addWidget(holder, 0, 0, alignment)
+            return holder
+        self.zoom_pill = ZoomPill(self.view)
+        floating(self.zoom_pill, Qt.AlignLeft | Qt.AlignBottom)
         try:
             from .cover_snap.qt import install
         except ModuleNotFoundError as exc:
             if exc.name not in (f'{__package__}.cover_snap', f'{__package__}.cover_snap.qt'):
                 raise
         else:
-            self._cover_snap = install(self.view, zoom_row)
-        help_label = QLabel('等比开关控制缩放 · 滚轮查看')
-        help_label.setWordWrap(True)
-        zoom_row.addWidget(help_label, 1, Qt.AlignRight)
-        center.addLayout(zoom_row)
+            self._cover_snap = install(self.view, self.zoom_pill.tail)
+        self.feed_preview = FeedPreview(self.session)
+        floating(self.feed_preview, Qt.AlignRight | Qt.AlignBottom)
         self.splitter.addWidget(canvas_host)
+
         sidebar = self.sidebar = QWidget()
-        sidebar.setMinimumWidth(248)
+        sidebar.setMinimumWidth(300)
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(6, 0, 0, 0)
-        side.setSpacing(4)
-        side.addWidget(QLabel('图层 · 拖动排序'))
+        side.setContentsMargins(10, 0, 14, 10)
+        side.setSpacing(10)
+        layers_card = QFrame()
+        layers_card.setObjectName('coverCard')
+        layers_box = QVBoxLayout(layers_card)
+        layers_box.setContentsMargins(10, 10, 10, 10)
+        layers_box.setSpacing(6)
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        layers_title = QLabel()
+        layers_title.setObjectName('coverSectionTitle')
+        bind_text(layers_title, '图层')
+        head.addWidget(layers_title)
+        head.addStretch(1)
+        hint = QLabel()
+        hint.setObjectName('coverHint')
+        bind_text(hint, '拖动排序')
+        head.addWidget(hint)
+        layers_box.addLayout(head)
         self.layers = QListWidget()
+        self.layers.setObjectName('coverLayers')
         self.layers.setItemDelegate(CoverLayerDelegate(self))
         self.layers.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.layers.setEditTriggers(QAbstractItemView.EditKeyPressed | QAbstractItemView.DoubleClicked)
-        self.layers.setMinimumHeight(82)
-        self.layers.setMaximumHeight(140)
-        self.layers.setIconSize(QSize(40, 28))
+        self.layers.setMinimumHeight(120)
+        self.layers.setMaximumHeight(212)
+        self.layers.setIconSize(QSize(40, 26))
+        self.layers.setMouseTracking(True)
+        self.layers.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.layers.setDragDropMode(QAbstractItemView.InternalMove)
         self.layers.setDefaultDropAction(Qt.MoveAction)
         self.layers.model().rowsMoved.connect(lambda: QTimer.singleShot(0, self.reorder_from_list))
         self.layers.itemSelectionChanged.connect(self.layer_selection)
         self.layers.itemChanged.connect(self.layer_item_changed)
         self.layers.installEventFilter(self)
-        side.addWidget(self.layers)
+        layers_box.addWidget(self.layers)
         layer_buttons = QHBoxLayout()
-        for text, slot in [('锁定 / 解锁', self.toggle_lock), ('复制', self.session.duplicate_selected), ('删除', self.session.delete_selected)]:
-            button = QPushButton(text)
+        layer_buttons.setSpacing(6)
+        for text, icon, slot in [('复制', 'fa5s.copy', self.session.duplicate_selected), ('删除', 'fa5s.trash-alt', self.session.delete_selected)]:
+            button = text_button(text, icon=icon)
+            button.setMinimumHeight(30)
             button.clicked.connect(slot)
             layer_buttons.addWidget(button)
-        side.addLayout(layer_buttons)
+        layers_box.addLayout(layer_buttons)
+        side.addWidget(layers_card)
+
+        properties_card = QFrame()
+        properties_card.setObjectName('coverCard')
+        properties_box = QVBoxLayout(properties_card)
+        properties_box.setContentsMargins(12, 10, 4, 6)
+        properties_box.setSpacing(4)
         self.property_title = QLabel('画布')
-        side.addWidget(self.property_title)
+        self.property_title.setObjectName('coverSectionTitle')
+        properties_box.addWidget(self.property_title)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QScrollArea.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         property_host = QWidget()
+        property_host.setMinimumWidth(0)
         properties = QVBoxLayout(property_host)
-        properties.setContentsMargins(0, 2, 8, 6)
+        properties.setContentsMargins(0, 4, 6, 6)
+        properties.setSpacing(6)
+        self._build_properties(properties)
+        properties.addStretch()
+        self.scroll.setWidget(property_host)
+        properties_box.addWidget(self.scroll, 1)
+        side.addWidget(properties_card, 1)
+        self.splitter.addWidget(sidebar)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setSizes([930, 320])
+
+        status_bar = QFrame()
+        status_bar.setObjectName('coverStatusBar')
+        bottom = QHBoxLayout(status_bar)
+        bottom.setContentsMargins(16, 5, 14, 7)
+        bottom.setSpacing(8)
+        self.status = QLabel('封面编辑只影响独立封面工程。')
+        self.status.setObjectName('coverStatus')
+        self.status.setWordWrap(True)
+        bottom.addWidget(self.status, 1)
+        self.open_image = text_button('打开图片', icon='fa5s.image', kind='ghost')
+        self.open_image.setMinimumHeight(28)
+        self.open_image.clicked.connect(lambda: self.open_result())
+        bottom.addWidget(self.open_image)
+        self.open_folder = text_button('打开文件夹', icon='fa5s.folder-open', kind='ghost')
+        self.open_folder.setMinimumHeight(28)
+        self.open_folder.clicked.connect(lambda: self.open_result(folder=True))
+        bottom.addWidget(self.open_folder)
+        layout.addWidget(status_bar)
+
+    def _build_properties(self, properties):
+        from .cover_widgets import Segmented, SliderRow, SwatchRow, form_row, icon_button, text_button
         self.common = QWidget()
-        common_form = QFormLayout(self.common)
-        common_form.setContentsMargins(0, 0, 0, 6)
-        common_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        common = QVBoxLayout(self.common)
+        common.setContentsMargins(0, 0, 0, 6)
+        common.setSpacing(6)
         self.name_edit = QLineEdit()
         self.name_edit.editingFinished.connect(lambda: self.change_layer('name', self.name_edit.text(), '重命名'))
-        common_form.addRow('名称', self.name_edit)
+        common.addWidget(form_row('名称', self.name_edit))
         self.geometry = {}
         geometry_host = QWidget()
         geometry_grid = QGridLayout(geometry_host)
         geometry_grid.setContentsMargins(0, 0, 0, 0)
-        geometry_grid.setSpacing(4)
+        geometry_grid.setHorizontalSpacing(6)
+        geometry_grid.setVerticalSpacing(6)
         geometry_grid.setColumnStretch(1, 1)
         geometry_grid.setColumnStretch(3, 1)
         for index, (key, label) in enumerate([('x', 'X'), ('y', 'Y'), ('width', 'W'), ('height', 'H')]):
@@ -255,78 +445,112 @@ class CoverEditor(QDialog):
             box.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             box.editingFinished.connect(lambda field=key, widget=box: self.change_geometry(field, widget.value()))
             self.geometry[key] = box
-            geometry_grid.addWidget(QLabel(label), index//2, (index%2)*2)
+            title = QLabel(label)
+            title.setObjectName('coverRowLabel')
+            title.setFixedWidth(14 if index % 2 else 46)
+            geometry_grid.addWidget(title, index//2, (index%2)*2)
             geometry_grid.addWidget(box, index//2, (index%2)*2+1)
-        common_form.addRow(geometry_host)
+        common.addWidget(geometry_host)
         self.aspect = QCheckBox('等比缩放')
         bind_text(self.aspect, '勾选时：拖动角点、边柄或修改宽高都保持比例。取消后可单独拉宽或拉高。', property='toolTip')
         self.aspect.toggled.connect(lambda checked: self.change_layer('keep_aspect', checked, '保持比例'))
-        common_form.addRow('', self.aspect)
-        self.opacity = self.number(0, 100, ' %')
-        self.opacity.editingFinished.connect(lambda: self.change_layer('opacity', self.opacity.value()/100, '不透明度'))
-        common_form.addRow('不透明度', self.opacity)
         self.locked = QCheckBox('锁定图层')
         self.locked.toggled.connect(lambda checked: self.change_layer('locked', checked, '锁定图层'))
-        common_form.addRow('', self.locked)
+        checks = QWidget()
+        checks_row = QHBoxLayout(checks)
+        checks_row.setContentsMargins(54, 0, 0, 0)
+        checks_row.setSpacing(14)
+        checks_row.addWidget(self.aspect)
+        checks_row.addWidget(self.locked)
+        checks_row.addStretch(1)
+        common.addWidget(checks)
+        self.opacity = SliderRow(0, 100, suffix=' %')
+        self.opacity.moved.connect(lambda value: self.change_layer('opacity', value/100, '不透明度', 'opacity'))
+        self.opacity.committed.connect(lambda value: self.change_layer('opacity', value/100, '不透明度', 'opacity'))
+        common.addWidget(form_row('不透明', self.opacity))
         properties.addWidget(self.common)
         self.pages = CoverPropertyStack()
         properties.addWidget(self.pages)
-        properties.addStretch()
+
         self.canvas_page = QWidget()
-        canvas_form = QFormLayout(self.canvas_page)
-        canvas_form.setContentsMargins(0, 0, 0, 0)
-        self.preset = QComboBox()
-        for title, size in [('自定义', None), ('1920 × 1080', (1920, 1080)), ('2560 × 1440', (2560, 1440)),
-                             ('1280 × 720', (1280, 720)), ('1600 × 900', (1600, 900)), ('1080 × 1080', (1080, 1080))]:
-            self.preset.addItem(title, size)
-        self.preset.activated.connect(self.canvas_preset)
-        canvas_form.addRow('画布尺寸', self.preset)
+        canvas = QVBoxLayout(self.canvas_page)
+        canvas.setContentsMargins(0, 0, 0, 0)
+        canvas.setSpacing(8)
+        self.preset = Segmented([('16:9', (1920, 1080)), ('1:1', (1080, 1080)), ('9:16', (1080, 1920))])
+        bind_text(self.preset, '常用尺寸；其他尺寸直接改下面的宽高，再点“应用”', property='toolTip')
+        self.preset.changed.connect(lambda _value: self.canvas_preset())
+        canvas.addWidget(form_row('尺寸', self.preset))
         self.canvas_width = self.number(16, 16384, ' px')
         self.canvas_height = self.number(16, 16384, ' px')
-        canvas_form.addRow('宽度', self.canvas_width)
-        canvas_form.addRow('高度', self.canvas_height)
-        self.fit_mode = QComboBox()
-        for title, key in [('适应 · 完整显示底图', 'fit'), ('填充 · 居中裁切底图', 'fill'), ('原尺寸 · 居中不缩放', 'original')]:
-            self.fit_mode.addItem(title, key)
-        canvas_form.addRow('底图布局', self.fit_mode)
-        resize = QPushButton('应用画布尺寸与底图布局')
+        for box in (self.canvas_width, self.canvas_height):
+            box.setDecimals(0)
+            box.setMinimumWidth(70)
+            box.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        size_host = QWidget()
+        size_row = QHBoxLayout(size_host)
+        size_row.setContentsMargins(0, 0, 0, 0)
+        size_row.setSpacing(6)
+        size_row.addWidget(self.canvas_width, 1)
+        times = QLabel('×')
+        times.setObjectName('coverRowLabel')
+        size_row.addWidget(times)
+        size_row.addWidget(self.canvas_height, 1)
+        canvas.addWidget(form_row('', size_host))
+        self.fit_mode = Segmented([('适应', 'fit'), ('填满', 'fill'), ('原尺寸', 'original')])
+        self.fit_mode.changed.connect(lambda _value: self.resize_canvas())
+        bind_text(self.fit_mode, '适应：完整显示底图；填充：居中裁切铺满；原尺寸：居中不缩放', property='toolTip')
+        canvas.addWidget(form_row('底图', self.fit_mode))
+        resize = text_button('应用尺寸', kind='soft')
+        bind_text(resize, '应用画布尺寸与底图布局', property='toolTip')
         resize.clicked.connect(self.resize_canvas)
-        canvas_form.addRow(resize)
-        self.background_button = QPushButton('设置画布背景色 / 透明度')
-        self.background_button.clicked.connect(self.canvas_background)
-        canvas_form.addRow(self.background_button)
-        replace = QPushButton('更换底图…（保留标题和贴图）')
+        canvas.addWidget(resize)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
+        replace = text_button('换张底图…', icon='fa5s.image')
+        bind_text(replace, '更换底图，保留标题和贴图', property='toolTip')
         replace.clicked.connect(lambda: self.add_images(background=True))
-        canvas_form.addRow(replace)
+        buttons.addWidget(replace)
+        self.background_button = text_button('背景色', icon='fa5s.fill-drip')
+        bind_text(self.background_button, '设置画布背景色 / 透明度', property='toolTip')
+        self.background_button.clicked.connect(self.canvas_background)
+        buttons.addWidget(self.background_button)
+        canvas.addLayout(buttons)
         self.source_label = QLabel()
+        self.source_label.setObjectName('coverHint')
         self.source_label.setWordWrap(True)
-        canvas_form.addRow(self.source_label)
+        canvas.addWidget(self.source_label)
+        canvas.addStretch(1)
         self.pages.addWidget(self.canvas_page)
+
         self.image_page = QWidget()
         image_layout = QVBoxLayout(self.image_page)
         image_layout.setAlignment(Qt.AlignTop)
-        image_layout.setSpacing(4)
+        image_layout.setSpacing(8)
         image_layout.setContentsMargins(0, 0, 0, 0)
-        relink = QPushButton('替换 / 重新定位素材…')
+        relink = text_button('替换 / 重新定位素材…', icon='fa5s.image')
         relink.clicked.connect(self.relink_image)
         image_layout.addWidget(relink)
         image_tools = QHBoxLayout()
+        image_tools.setSpacing(6)
         for title, mode in [('适应', 'fit'), ('填满', 'fill'), ('恢复', 'original')]:
-            button = QPushButton(title)
+            button = text_button(title)
+            button.setMinimumHeight(30)
             button.clicked.connect(lambda checked=False, value=mode: self.fit_selected(value))
             image_tools.addWidget(button)
-        image_layout.addLayout(image_tools)
-        center_layer = QPushButton('移回画布中央')
+        center_layer = icon_button('fa5s.crosshairs', '移回画布中央', size=32, icon_size=14)
         center_layer.clicked.connect(lambda: self.fit_selected('center'))
-        image_layout.addWidget(center_layer)
+        image_tools.addWidget(center_layer)
+        image_layout.addLayout(image_tools)
         self.pages.addWidget(self.image_page)
+
         self.text_page = QWidget()
-        text_form = QFormLayout(self.text_page)
-        text_form.setContentsMargins(0, 0, 0, 0)
+        text_layout = QVBoxLayout(self.text_page)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(8)
         self.text_edit = QPlainTextEdit()
         bind_text(self.text_edit, '输入中文标题；Enter 换行', property='placeholderText')
-        self.text_edit.setMinimumHeight(56)
-        self.text_edit.setMaximumHeight(76)
+        self.text_edit.setMinimumHeight(58)
+        self.text_edit.setMaximumHeight(78)
         self.text_edit.setUndoRedoEnabled(False)
         self.text_edit.installEventFilter(self)
         self._text_commit_timer = QTimer(self)
@@ -334,85 +558,131 @@ class CoverEditor(QDialog):
         self._text_commit_timer.setInterval(0)
         self._text_commit_timer.timeout.connect(self.text_changed)
         self.text_edit.textChanged.connect(self._queue_text_change)
-        text_form.addRow(self.text_edit)
+        text_layout.addWidget(self.text_edit)
         from .cover_font_picker import FontFamilyCombo
         from ..caption_style.font_metadata import local_faces
         self.font_faces = local_faces()
         self.font_family = FontFamilyCombo(self.font_faces)
+        self.font_family.setMinimumContentsLength(6)
         self.font_family.activated.connect(self.choose_font)
         self.font_family.lineEdit().editingFinished.connect(self.choose_font)
         self.font_family.completer().activated[str].connect(self.choose_font_completion)
-        text_form.addRow('字体', self.font_family)
+        text_layout.addWidget(form_row('字体', self.font_family))
         self.font_weight = QComboBox()
+        self.font_weight.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.font_weight.setMinimumContentsLength(6)
         self.font_weight.activated.connect(self.choose_weight)
-        text_form.addRow('真实字重', self.font_weight)
+        text_layout.addWidget(form_row('字重', self.font_weight))
         self.font_warning = QLabel()
+        self.font_warning.setObjectName('coverHint')
         self.font_warning.setWordWrap(True)
-        text_form.addRow(self.font_warning)
+        text_layout.addWidget(self.font_warning)
         self.text_numbers = {}
-        for key, label, low, high in [('size', '字号', 8, 2048), ('stroke', '描边宽度', 0, 100),
-                                     ('shadow_blur', '阴影模糊', 0, 100), ('shadow_x', '阴影横移', -200, 200), ('shadow_y', '阴影纵移', -200, 200)]:
-            box = self.number(low, high, ' px')
-            box.editingFinished.connect(lambda field=key, widget=box: self.change_style(field, widget.value()))
-            self.text_numbers[key] = box
-            text_form.addRow(label, box)
+        def slider(key, low, high, zero=''):
+            row = SliderRow(low, high, zero_text=zero)
+            row.moved.connect(lambda value, field=key: self.change_style(field, value, merge=True))
+            row.committed.connect(lambda value, field=key: self.change_style(field, value, merge=True))
+            self.text_numbers[key] = row
+            return row
+        text_layout.addWidget(form_row('字号', slider('size', 8, 600)))
+        self.text_color = SwatchRow(title='文字颜色')
+        self.text_color.picked.connect(lambda value: self.change_style('color', value))
+        text_layout.addWidget(form_row('颜色', self.text_color))
+        stroke_host = QWidget()
+        stroke_row = QHBoxLayout(stroke_host)
+        stroke_row.setContentsMargins(0, 0, 0, 0)
+        stroke_row.setSpacing(6)
+        stroke_row.addWidget(slider('stroke', 0, 40, tr('无')), 1)
         self.color_buttons = {}
-        for key, title in [('color', '文字颜色'), ('stroke_color', '描边颜色'), ('shadow_color', '阴影颜色')]:
-            button = QPushButton(title)
-            button.clicked.connect(lambda checked=False, field=key: self.choose_text_color(field))
-            self.color_buttons[key] = button
-            text_form.addRow(button)
-        self.shadow_toggle = QCheckBox('显示基础阴影')
-        self.shadow_toggle.toggled.connect(lambda checked: self.change_style('shadow', checked))
-        text_form.addRow(self.shadow_toggle)
-        self.alignment = QComboBox()
-        for title, key in [('左对齐', 'left'), ('居中', 'center'), ('右对齐', 'right')]:
-            self.alignment.addItem(title, key)
-        self.alignment.activated.connect(lambda: self.change_style('alignment', self.alignment.currentData()))
-        text_form.addRow('多行对齐', self.alignment)
+        self.stroke_color = self._color_dot('stroke_color', '描边颜色')
+        stroke_row.addWidget(self.stroke_color)
+        text_layout.addWidget(form_row('描边', stroke_host))
+        shadow_host = QWidget()
+        shadow_row = QHBoxLayout(shadow_host)
+        shadow_row.setContentsMargins(0, 0, 0, 0)
+        shadow_row.setSpacing(6)
+        self.shadow_preset = Segmented([('无', 'none'), ('柔和', 'soft'), ('硬投影', 'hard'), ('发光', 'glow')])
+        self.shadow_preset.changed.connect(self.apply_shadow_preset)
+        shadow_row.addWidget(self.shadow_preset)
+        self.shadow_color = self._color_dot('shadow_color', '阴影颜色')
+        shadow_row.addWidget(self.shadow_color)
+        shadow_row.addStretch(1)
+        text_layout.addWidget(form_row('阴影', shadow_host))
+        self.shadow_more = QPushButton()
+        self.shadow_more.setObjectName('coverGhost')
+        self.shadow_more.setCheckable(True)
+        self.shadow_more.setCursor(Qt.PointingHandCursor)
+        bind_text(self.shadow_more, '阴影细调 ▾')
+        text_layout.addWidget(self.shadow_more, 0, Qt.AlignLeft)
+        self.shadow_details = QWidget()
+        details = QVBoxLayout(self.shadow_details)
+        details.setContentsMargins(0, 0, 0, 0)
+        details.setSpacing(6)
+        details.addWidget(form_row('模糊', slider('shadow_blur', 0, 100)))
+        details.addWidget(form_row('横移', slider('shadow_x', -200, 200)))
+        details.addWidget(form_row('纵移', slider('shadow_y', -200, 200)))
+        self.shadow_details.hide()
+        self.shadow_more.toggled.connect(self.shadow_details.setVisible)
+        text_layout.addWidget(self.shadow_details)
+        self.alignment = Segmented([('左对齐', 'left', 'fa5s.align-left'), ('居中', 'center', 'fa5s.align-center'),
+                                    ('右对齐', 'right', 'fa5s.align-right')], icon_only=True)
+        self.alignment.changed.connect(lambda value: self.change_style('alignment', value))
+        align_host = QWidget()
+        align_row = QHBoxLayout(align_host)
+        align_row.setContentsMargins(0, 0, 0, 0)
+        align_row.addWidget(self.alignment)
+        align_row.addStretch(1)
+        text_layout.addWidget(form_row('对齐', align_host))
         self.pages.addWidget(self.text_page)
         self.multi_page = QLabel('已选中多个图层。\n在画布中一起拖动，或复制 / 删除。\n锁定的图层不会移动或删除。')
+        self.multi_page.setObjectName('coverHint')
         self.multi_page.setWordWrap(True)
         self.pages.addWidget(self.multi_page)
-        self.scroll.setWidget(property_host)
-        side.addWidget(self.scroll, 1)
-        self.splitter.addWidget(sidebar)
-        self.splitter.setStretchFactor(0, 1)
-        self.splitter.setStretchFactor(1, 0)
-        self.splitter.setSizes([948, 312])
-        bottom = QHBoxLayout()
-        self.status = QLabel('封面编辑只影响独立封面工程。')
-        self.status.setWordWrap(True)
-        bottom.addWidget(self.status, 1)
-        self.open_image = QPushButton('打开图片')
-        self.open_image.clicked.connect(lambda: self.open_result())
-        bottom.addWidget(self.open_image)
-        self.open_folder = QPushButton('打开文件夹')
-        self.open_folder.clicked.connect(lambda: self.open_result(folder=True))
-        bottom.addWidget(self.open_folder)
-        layout.addLayout(bottom)
+        self.text_color.set_theme(self.theme.accent, self.theme.border_strong)
 
-    def refresh_theme_palette(self):
+    def _color_dot(self, field, title):
+        from .cover_widgets import Swatch
+        dot = Swatch('#000000')
+        bind_text(dot, title, property='toolTip')
+        dot.clicked.connect(lambda: self.choose_text_color(field))
+        dot.ring, dot.edge = QColor(self.theme.accent), QColor(self.theme.border_strong)
+        self.color_buttons[field] = dot
+        return dot
+
+    def add_frame_action(self, text, slot, tip=''):
+        """A 「換一幀畫面」 button left of 保存 PSD (Studio adds it; the editor alone has none)."""
+        from .cover_widgets import text_button
+        self.frame_action = QAction(text, self)
+        self.frame_action.triggered.connect(slot)
+        self.addAction(self.frame_action)
+        self.frame_button = text_button(text, icon='fa5s.camera', kind='soft')
+        if tip:
+            bind_text(self.frame_button, tip, property='toolTip')
+        self.frame_button.clicked.connect(self.frame_action.trigger)
+        self.frame_slot.addWidget(self.frame_button)
+        return self.frame_action
+
+    def restyle(self):
+        from ..design.candy_chrome_qss import build_candy_chrome_qss
+        from ..design.cover_qss import build_editor_qss
         from ..design.theme_manager import theme_key
         from ..design.ui_theme import theme_definition
-        theme = theme_definition(theme_key())
-        sheet = '''QDialog#coverEditor, QWidget { background:#202623; color:#d9e1dd; font-size:12px; }
-            QToolBar { border:0; spacing:3px; } QToolButton, QPushButton { min-height:22px; padding:2px 6px;
-                background:#303a34; border:1px solid #425048; border-radius:3px; }
-            QToolButton:hover, QPushButton:hover { background:#40594b; }
-            QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox { min-height:22px; padding:1px; background:#171d19; border:1px solid #47554c; }
-            QPlainTextEdit, QListWidget { background:#171d19; border:1px solid #3c4941; }
-            QListWidget::item { color:#d9e1dd; padding-right:26px; }
-            QListWidget::item:selected { background:#355341; color:#ffffff; } QLabel { border:0; padding:0; }
-            QGraphicsView#coverCanvas { background:#141917; border:1px solid #46544b; border-radius:0; }
-            QScrollArea { border:0; } QSplitter::handle { background:#46544b; width:4px; }'''
-        for source, target in {'#202623':theme.app_background, '#d9e1dd':theme.text,
-                '#303a34':theme.surface, '#425048':theme.border, '#40594b':theme.accent_soft,
-                '#171d19':theme.input_surface, '#47554c':theme.border_strong, '#3c4941':theme.border,
-                '#355341':theme.selected, '#ffffff':theme.text, '#141917':theme.media,
-                '#46544b':theme.border_strong}.items():
-            sheet = sheet.replace(source, target)
-        self.setStyleSheet(sheet)
+        self.theme = theme_definition(theme_key())
+        from ..design.typography import emphasis_qss
+        root = 'QDialog#coverEditor'
+        self.setStyleSheet(emphasis_qss(build_candy_chrome_qss(root, self.theme)) + build_editor_qss(root, self.theme))
+
+    def refresh_theme_palette(self):
+        self.restyle()
+        if hasattr(self, 'text_color'):
+            self.text_color.set_theme(self.theme.accent, self.theme.border_strong)
+            for dot in self.color_buttons.values():
+                dot.ring, dot.edge = QColor(self.theme.accent), QColor(self.theme.border_strong)
+            from ..design.ui_theme import blend_hex
+            self.feed_preview.set_line_color(blend_hex(self.theme.surface_elevated, self.theme.text, .14))
+            self.view.mat_color = QColor(blend_hex(self.theme.surface, self.theme.app_background, .55))
+            self.view.viewport().update()
+            self.layers.viewport().update()
 
     @staticmethod
     def number(low, high, suffix):
@@ -431,10 +701,15 @@ class CoverEditor(QDialog):
         doc = self.session.document
         name = Path(self.session.filename).name if self.session.filename else '未命名封面'
         bind_text(self, '{value0}{name} · 2ByteASR 封面', property='windowTitle', value0='● ' if self.session.dirty else '', name=name)
+        bind_text(self.chrome.title, '{value0}{name} · 2ByteASR 封面', value0='● ' if self.session.dirty else '', name=name)
         self.cover_actions['undo'].setEnabled(self.session.undo.canUndo())
         self.cover_actions['redo'].setEnabled(self.session.undo.canRedo())
+        self.undo_button.setEnabled(self.session.undo.canUndo())
+        self.redo_button.setEnabled(self.session.undo.canRedo())
         self.open_image.setEnabled(bool(self.last_export))
         self.open_folder.setEnabled(bool(self.last_export))
+        self.open_image.setVisible(bool(self.last_export))
+        self.open_folder.setVisible(bool(self.last_export))
         self.layers.blockSignals(True)
         self.layers.clear()
         for layer in reversed(doc.layers):
@@ -444,7 +719,7 @@ class CoverEditor(QDialog):
                 item.setIcon(QIcon(QPixmap.fromImage(preview.scaled(80, 56, Qt.KeepAspectRatio, Qt.SmoothTransformation))))
             except (ValueError, OSError):
                 pass
-            item.setSizeHint(QSize(120, 34))
+            item.setSizeHint(QSize(120, CoverLayerDelegate.ROW))
             item.setData(Qt.UserRole, layer.id)
             item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked if layer.visible else Qt.Unchecked)
@@ -454,6 +729,7 @@ class CoverEditor(QDialog):
         self.layers.blockSignals(False)
         layer = self.selected_layer()
         self.cover_actions['lock'].setEnabled(bool(self.session.selected))
+        self.rail_buttons['lock'].setEnabled(bool(self.session.selected))
         (bind_text(self.cover_actions['lock'], '解锁图层') if layer and layer.locked else bind_text(self.cover_actions['lock'], '锁定图层'))
         self.common.setVisible(layer is not None)
         if layer is None:
@@ -461,7 +737,8 @@ class CoverEditor(QDialog):
             self.pages.setCurrentIndex(3 if self.session.selected else 0)
             self.canvas_width.setValue(doc.width)
             self.canvas_height.setValue(doc.height)
-            self.fit_mode.setCurrentIndex(max(0, self.fit_mode.findData(doc.background_fit)))
+            self.fit_mode.set_value(doc.background_fit)
+            self.preset.set_value((doc.width, doc.height) if (doc.width, doc.height) in ((1920, 1080), (1080, 1080), (1080, 1920)) else None)
             source = doc.source
             bind_text(self.source_label, (f"来源时间：{source.get('milliseconds', 0) / 1000:.3f} 秒\n" if 'milliseconds' in source else '') + ('底图包含软件字幕；这些文字已成为图片像素。' if source.get('subtitles') else '标题以独立文字图层保存，可继续修改。'))
         else:
@@ -488,11 +765,12 @@ class CoverEditor(QDialog):
                 self.font_warning.setText(warning or f'{face.display_family or face.family} · {style_label(face.display_style or face.style)} · {face.weight}')
                 for key, box in self.text_numbers.items():
                     box.setValue(float(layer.style.get(key, 0)))
-                for key, button in self.color_buttons.items():
-                    value = layer.style.get(key, '#ffffff')
-                    bind_text(button, {'color': '文字', 'stroke_color': '描边', 'shadow_color': '阴影'}[key] + '  ' + value)
-                self.shadow_toggle.setChecked(bool(layer.style.get('shadow')))
-                self.alignment.setCurrentIndex(max(0, self.alignment.findData(layer.style.get('alignment'))))
+                self.text_color.set_current(layer.style.get('color', '#ffffff'))
+                for key, dot in self.color_buttons.items():
+                    dot.color = layer.style.get(key, '#000000')
+                    dot.update()
+                self.shadow_preset.set_value(self.shadow_kind(layer.style))
+                self.alignment.set_value(layer.style.get('alignment', 'left'))
         self._refreshing = False
 
     def toggle_lock(self):
@@ -549,12 +827,12 @@ class CoverEditor(QDialog):
             layer.name, layer.visible = name, visible
         self.session.edit('图层名称 / 显示', update)
 
-    def change_layer(self, field, value, label):
+    def change_layer(self, field, value, label, merge=''):
         layer = self.selected_layer()
         if self._refreshing or layer is None or (layer.locked and field not in ('locked', 'name')):
             return
         key = layer.id
-        self.session.edit(label, lambda doc: setattr(doc.layer(key), field, value))
+        self.session.edit(label, lambda doc: setattr(doc.layer(key), field, value), f'{merge}:{key}' if merge else '')
 
     def change_geometry(self, field, value):
         layer = self.selected_layer()
@@ -574,11 +852,39 @@ class CoverEditor(QDialog):
                 setattr(item, field, value)
         self.session.edit('调整尺寸 / 位置', update)
 
-    def change_style(self, field, value):
+    def change_style(self, field, value, merge=False):
         layer = self.selected_layer()
         if self._refreshing or layer is None or layer.kind != 'text' or layer.locked:
             return
-        self.session.edit('文字样式', lambda doc: doc.layer(layer.id).style.update({field: value}))
+        if field in ('size', 'stroke', 'shadow_blur', 'shadow_x', 'shadow_y'):
+            value = float(value)
+        self.session.edit('文字样式', lambda doc: doc.layer(layer.id).style.update({field: value}),
+                          f'style:{layer.id}:{field}' if merge else '')
+
+    @staticmethod
+    def shadow_kind(style):
+        if not style.get('shadow'):
+            return 'none'
+        if float(style.get('shadow_blur', 0)) == 0:
+            return 'hard'
+        if float(style.get('shadow_x', 0)) == 0 and float(style.get('shadow_y', 0)) == 0:
+            return 'glow'
+        return 'soft'
+
+    def apply_shadow_preset(self, kind):
+        """无 / 柔和 / 硬投影 / 发光, sized from the font size so a big title gets a big shadow."""
+        layer = self.selected_layer()
+        if self._refreshing or layer is None or layer.kind != 'text' or layer.locked:
+            return
+        size = float(layer.style.get('size', 96))
+        values = {'none': dict(shadow=False),
+                  'soft': dict(shadow=True, shadow_blur=float(min(100, round(size*.12))), shadow_x=0.0,
+                               shadow_y=float(min(200, round(size*.05))), shadow_color='#a0000000'),
+                  'hard': dict(shadow=True, shadow_blur=0.0, shadow_x=float(min(200, round(size*.04))),
+                               shadow_y=float(min(200, round(size*.05))), shadow_color='#ff141414'),
+                  'glow': dict(shadow=True, shadow_blur=float(min(100, round(size*.2))), shadow_x=0.0, shadow_y=0.0,
+                               shadow_color='#e04fe3a5')}[kind]
+        self.session.edit('阴影样式', lambda doc: doc.layer(layer.id).style.update(values))
 
     def text_changed(self):
         layer = self.selected_layer()
@@ -631,25 +937,39 @@ class CoverEditor(QDialog):
         layer = self.selected_layer()
         if not layer:
             return
-        color = QColorDialog.getColor(QColor(layer.style.get(field, '#ffffff')), self, '颜色与透明度', QColorDialog.ShowAlphaChannel)
-        if color.isValid():
+        color = self.pick_color(QColor(layer.style.get(field, '#ffffff')), '颜色与透明度')
+        if color is not None:
             self.change_style(field, color.name(QColor.HexArgb))
 
     def canvas_background(self):
-        color = QColorDialog.getColor(QColor(self.session.document.background), self, '画布背景 · Alpha 0 为透明', QColorDialog.ShowAlphaChannel)
-        if color.isValid():
+        color = self.pick_color(QColor(self.session.document.background), '画布背景 · Alpha 0 为透明')
+        if color is not None:
             self.session.edit('画布背景', lambda doc: setattr(doc, 'background', color.name(QColor.HexArgb)))
 
+    def pick_color(self, initial, title):
+        from ..design.color_picker import SimpleColorDialog
+        from ..design.studio_theme import apply_secondary_surface_theme
+        from .cover_widgets import SwatchRow
+        dialog = SimpleColorDialog(initial, self, title=tr(title), common_colors=SwatchRow.COLORS)
+        apply_secondary_surface_theme(dialog)
+        if dialog.exec() == QDialog.Accepted and dialog.selected_color().isValid():
+            return dialog.selected_color()
+        return None
+
     def canvas_preset(self):
-        size = self.preset.currentData()
+        size = self.preset.value()
         if size:
             self.canvas_width.setValue(size[0])
             self.canvas_height.setValue(size[1])
+            self.resize_canvas()
+        else:
+            self.canvas_width.setFocus()
+            self.canvas_width.selectAll()
 
     def resize_canvas(self):
         try:
             width, height = valid_size(self.canvas_width.value(), self.canvas_height.value())
-            mode = self.fit_mode.currentData()
+            mode = self.fit_mode.value() or self.session.document.background_fit
             def update(doc):
                 doc.width, doc.height, doc.background_fit = width, height, mode
                 background = doc.layer(doc.background_id)
@@ -896,7 +1216,8 @@ class CoverEditor(QDialog):
         if self.busy:
             return
         from .cover_templates_ui import TemplatePicker
-        picker = TemplatePicker(self.library, self.settings, self, local=True, has_frame=self.frame_document is not None)
+        picker = TemplatePicker(self.library, self.settings, self, local=True, has_frame=self.frame_document is not None,
+                                frame=self.frame_document)
         if picker.exec() != QDialog.Accepted:
             return
         if picker.selected.get('blank'):
@@ -905,14 +1226,20 @@ class CoverEditor(QDialog):
             self.session.commit(before,'应用空白模板')
             self.view.fit_canvas()
         else:
-            self.apply_template(picker.selected, replace=picker.replace.isChecked())
+            self.apply_template(picker.selected, replace=picker.replace.isChecked(), texts=picker.selected_texts)
 
-    def apply_template(self, entry, *, replace=False):
+    def apply_template(self, entry, *, replace=False, texts=None):
+        """Open a copy of ``entry``; ``texts`` maps text-layer ids to titles typed in the picker."""
         frame = self.frame_document.snapshot() if replace and self.frame_document is not None else None
+        texts = dict(texts or {})
         def load():
             document = self.library.load_copy(entry)
             if frame is not None:
                 self.library.replace_frame(document, frame)
+            for key, text in texts.items():
+                layer = document.layer(key)
+                if layer is not None and layer.kind == 'text':
+                    layer.text = text
             return document
         def finish(document):
             # Template application is one reversible document transaction.
@@ -942,17 +1269,59 @@ class CoverEditor(QDialog):
         if self.busy:
             return
         self.flush_text()
-        dialog=QDialog(self);bind_text(dialog, '保存为模板', property='windowTitle');layout=QVBoxLayout(dialog)
-        layout.addWidget(QLabel('模板名称（保留标题、贴图和位置）'))
+        dialog,layout=self._small_dialog('保存为模板',(420,180))
+        hint=QLabel();hint.setObjectName('coverHint');bind_text(hint, '模板名称（保留标题、贴图和位置）');layout.addWidget(hint)
         name=QLineEdit(Path(self.session.filename).stem if self.session.filename else '我的封面模板')
         layout.addWidget(name)
         include=QCheckBox('同时把本次视频截图存入模板底图')
         include.setVisible(bool(self.session.document.source.get('project_id')))
         layout.addWidget(include)
-        buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel)
-        buttons.accepted.connect(dialog.accept);buttons.rejected.connect(dialog.reject);layout.addWidget(buttons)
+        self._dialog_buttons(dialog,layout,'保存')
+        self.fit_small(dialog)
         if dialog.exec()==QDialog.Accepted and name.text().strip():
             self.save_template(name.text(),include_frame=include.isChecked())
+
+    def _small_dialog(self, title, size):
+        """A small question window in the app's rounded shell (2026-11-27: no Windows frame).
+
+        User (2026-11-27, round 2): the first version wasted space and its title was in 猫啃. The
+        title is 思源黑体 Heavy now and the window is only as tall as what it shows (``fit_small``).
+        """
+        from ..app.rounded_dialog import RoundedDialogShell
+        from ..design.cover_qss import build_cover_common_qss
+        from ..design.typography import TITLE_FONT_STACK
+        dialog = QDialog(self)
+        dialog.setObjectName('coverSmallDialog')
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 4, 4, 0)
+        layout.setSpacing(10)
+        dialog.shell = RoundedDialogShell(dialog, content, title=tr(title), size=size, margins=(22, 14, 16, 16))
+        dialog.shell.title_label.setStyleSheet(f'font-family: {TITLE_FONT_STACK}; font-size: 18px; font-weight: 800; '
+                                               f'color: {self.theme.text}; background: transparent;')
+        dialog.setStyleSheet(build_cover_common_qss('QDialog#coverSmallDialog', self.theme))
+        return dialog, layout
+
+    @staticmethod
+    def fit_small(dialog):
+        """Shrink a small dialog to its content's height (keeps its width)."""
+        dialog.setMinimumHeight(0)
+        dialog.layout().activate()
+        dialog.resize(dialog.width(), dialog.sizeHint().height())
+
+    @staticmethod
+    def _dialog_buttons(dialog, layout, accept_text):
+        from .cover_widgets import text_button
+        row = QHBoxLayout()
+        row.addStretch(1)
+        cancel = text_button('取消', kind='ghost')
+        cancel.clicked.connect(dialog.reject)
+        accept = text_button(accept_text, kind='primary')
+        accept.setDefault(True)
+        accept.clicked.connect(dialog.accept)
+        row.addWidget(cancel)
+        row.addWidget(accept)
+        layout.addLayout(row)
 
     def save_template(self, name, *, include_frame=False):
         self.flush_text()
@@ -976,34 +1345,44 @@ class CoverEditor(QDialog):
     def export_dialog(self):
         if self.busy:
             return
-        dialog = QDialog(self)
-        bind_text(dialog, '导出封面图片', property='windowTitle')
-        form = QFormLayout(dialog)
-        format_box = QComboBox()
-        format_box.addItems(['PNG · 保留透明区域', 'JPEG · 合成背景色'])
-        form.addRow('格式', format_box)
-        quality = QSpinBox()
-        quality.setRange(1, 100)
-        quality.setValue(int(self.settings.value('cover/jpeg_quality', 95)))
-        quality.setSuffix(' %')
-        form.addRow('JPEG 质量', quality)
+        from .cover_widgets import Segmented, SliderRow, Swatch, form_row
+        dialog, layout = self._small_dialog('导出封面图片', (430, 200))
+        format_box = Segmented([('PNG · 保留透明区域', 'png'), ('JPEG · 合成背景色', 'jpg')])
+        format_box.set_value(str(self.settings.value('cover/export_format', 'png')) if str(self.settings.value('cover/export_format', 'png')) in ('png', 'jpg') else 'png')
+        layout.addWidget(format_box)
+        quality = SliderRow(1, 100, suffix=' %')
+        quality.set_value(int(self.settings.value('cover/jpeg_quality', 95)))
+        quality_row = form_row('JPEG 质量', quality, label_width=64)
+        layout.addWidget(quality_row)
         color = QColor(self.session.document.jpeg_background)
-        color_button = QPushButton(color.name())
+        color_button = Swatch(color.name())
+        color_button.ring, color_button.edge = QColor(self.theme.accent), QColor(self.theme.border_strong)
         def choose():
             nonlocal color
-            value = QColorDialog.getColor(color, dialog, 'JPEG 背景色')
-            if value.isValid():
+            value = self.pick_color(color, 'JPEG 背景色')
+            if value is not None:
                 color = value
-                color_button.setText(color.name())
+                color_button.color = color.name()
+                color_button.update()
         color_button.clicked.connect(choose)
-        form.addRow('JPEG 背景', color_button)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        form.addRow(buttons)
+        color_host = QWidget()
+        color_row = QHBoxLayout(color_host)
+        color_row.setContentsMargins(0, 0, 0, 0)
+        color_row.addWidget(color_button)
+        color_row.addStretch(1)
+        background_row = form_row('JPEG 背景', color_host, label_width=64)
+        layout.addWidget(background_row)
+        def follow(value):
+            quality_row.setVisible(value == 'jpg')
+            background_row.setVisible(value == 'jpg')
+            self.fit_small(dialog)
+        format_box.changed.connect(follow)
+        self._dialog_buttons(dialog, layout, '导出')
+        follow(format_box.value())
         if dialog.exec() != QDialog.Accepted:
             return
-        suffix = '.jpg' if format_box.currentIndex() else '.png'
+        self.settings.setValue('cover/export_format', format_box.value())
+        suffix = '.jpg' if format_box.value() == 'jpg' else '.png'
         path, _ = QFileDialog.getSaveFileName(self, tr('导出封面图片'),
             str(Path(self.directory('export_directory'))/('我的封面'+suffix)), 'JPEG (*.jpg *.jpeg)' if suffix == '.jpg' else 'PNG (*.png)')
         if not path:
@@ -1011,7 +1390,7 @@ class CoverEditor(QDialog):
         if Path(path).suffix.lower() not in ('.png', '.jpg', '.jpeg'):
             path += suffix
         self.session.edit('JPEG 背景色', lambda doc: setattr(doc, 'jpeg_background', color.name()))
-        self.export_document(path, quality.value())
+        self.export_document(path, int(quality.value()))
 
     def export_document(self, path, quality=95):
         self.flush_text()

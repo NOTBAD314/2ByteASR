@@ -657,6 +657,11 @@ def _run_media_queue(
     except (TypeError, ValueError):
         process_media_supports_context = False
     normalized_paths = [os.path.abspath(os.fspath(path)) for path in media_paths]
+    # A Studio run replaces normalized_paths with its rendered inputs; a
+    # failure before that point still belongs to the requested media
+    # (2026-11-27: it returned no result at all, so Studio kept 「识别中」 and
+    # the window's clock stopped with the cloud-check lines as the last words).
+    requested_paths = list(normalized_paths)
     # Picked audio tracks of a Studio run (one snapshot each), 2026-10-24.
     lane_runs: list[dict[str, Any]] = []
     # Picked audio tracks of home-page files: one choice per queue entry
@@ -762,6 +767,13 @@ def _run_media_queue(
                     # each get their own input; otherwise one timeline mix.
                     lane_runs = lane_snapshots(snapshot) if snapshot.get("audio_lanes") else []
                     normalized_paths = []
+
+                    def preparing(text):
+                        # 2026-11-27: the steps between the cloud checks and
+                        # 「文件 1/1」 used to print nothing, so a slow disk or a
+                        # wait for Studio looked like a hang.
+                        print(f"   [准备识别] {text}", flush=True)
+                        legacy.record_run_event("timeline_input_progress", message=text)
                     for target in lane_runs or [snapshot]:
                         # Studio must validate the submitted scope even after
                         # the worker adds byte hashes for the execution cache.
@@ -769,7 +781,7 @@ def _run_media_queue(
                         # Source hashes are computed by this worker once per job;
                         # mapping/range/audio graph stay part of the input identity.
                         for source, source_identity in target["sources"].items():
-                            current = media_identity_for_task(source, runtime_context)
+                            current = media_identity_for_task(source, runtime_context, progress=preparing)
                             if (current["size"], current["mtime_ns"]) != (source_identity["size"], source_identity["mtime_ns"]):
                                 raise RuntimeError(f"识别启动后素材已改变：{source}")
                             source_identity["sha256"] = current["sha256"]
@@ -783,7 +795,8 @@ def _run_media_queue(
                                                 audio_stream_ordinal=lane.get("ordinal"),
                                                 audio_stream_index=lane.get("stream_index"))
                         try:
-                            prepared = prepare_recognition_input(target, legacy.CACHE_ROOT, GLOBAL_MEDIA_SERVICE.ffmpeg_path, token=token)
+                            prepared = prepare_recognition_input(target, legacy.CACHE_ROOT, GLOBAL_MEDIA_SERVICE.ffmpeg_path,
+                                                                 token=token, progress=preparing)
                         except CancelledError:
                             raise
                         except Exception as exc:
@@ -855,13 +868,14 @@ def _run_media_queue(
                             persistent=persistent_model_session,
                         )
             except CancelledError as exc:
-                for path in normalized_paths:
+                for path in normalized_paths or requested_paths:
                     results.append(MediaResult(path, "cancelled", error=str(exc)))
                 legacy.record_run_event("queue_cancelled", error=str(exc))
                 return QueueResult(tuple(replace(r, job_id=runtime_context.job_id) for r in results), time.perf_counter() - queue_started, log_path, runtime_context.job_id)
             except Exception as exc:
                 error = _exception_message(exc, "运行环境检查失败")
-                for index, path in enumerate(normalized_paths, 1):
+                print(f"\n[文件失败] {error}", flush=True)
+                for index, path in enumerate(normalized_paths or requested_paths, 1):
                     report_json = report_text = ''
                     begin_report = getattr(legacy, 'begin_media_report', None)
                     if callable(begin_report):

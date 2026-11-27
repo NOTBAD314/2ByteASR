@@ -199,29 +199,17 @@ def test_the_centre_lists_the_chapters_and_suggests_the_next_one(monkeypatch):
     window = QWidget()
     window._ai_unlocked = lambda: False
     centre = tutorial_centre.TutorialCentre(window)
-    assert centre.pick == 'how'                                            # the first one not learned yet
-    assert list(centre.rows) == [chapter.id for chapter in tutorial_chapters.CATALOG]
-    assert centre.start_button.isEnabled()
+    assert tutorial_centre.recommended(centre.learned) == 'how'           # the first one not learned yet
+    # 2026-11-27 (draft B 「我想…」): every chapter is one question, a card or a pill.
+    assert sorted([*centre.cards, *centre.pills]) == sorted(chapter.id for chapter in tutorial_chapters.CATALOG)
     assert not any(chapter.soon for chapter in tutorial_chapters.CATALOG)  # every listed chapter is built now
-    assert centre.tasks_done == {'export', 'first_subtitle'}
+    assert centre.tasks_done == {'export', 'first_subtitle'}               # still recorded, no longer listed
     assert tutorial_centre.chapter_status(tutorial_chapters.BY_ID['first'], centre.learned) == 'done'
     assert tutorial_centre.chapter_status(tutorial_chapters.BY_ID['editor'], centre.learned) == 'new'
-    centre.select('editor')
+    centre.open_detail('editor')
+    assert centre.start_button.isEnabled()
     centre.start_button.click()
     assert centre.chosen == 'editor' and centre.result() == 1
-    centre.deleteLater()
-
-
-def test_a_task_card_teaches_its_chapter(monkeypatch):
-    _app()
-    from twobyteasr.app import onboarding, tutorial_centre
-    monkeypatch.setattr(onboarding, 'load_state', lambda: {})
-    centre = tutorial_centre.TutorialCentre(QWidget(), tab='tasks')
-    assert centre.stack.currentIndex() == 1
-    card = centre.task_cards['add_term']
-    teach = next(button for button in card.findChildren(QPushButton) if button.objectName() == 'taskTeach')
-    teach.click()
-    assert centre.chosen == 'terms'
     centre.deleteLater()
 
 

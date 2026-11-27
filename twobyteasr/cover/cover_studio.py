@@ -38,8 +38,8 @@ class StudioCoverController(QObject):
         self.editor = editor
         self.local_editor = editor
         self.editors.append(editor)
-        update=editor.toolbar.addAction('使用 / 更新当前帧')
-        update.triggered.connect(lambda:self.begin_frame_update(editor))
+        editor.add_frame_action('换一帧画面', lambda:self.begin_frame_update(editor),
+                                '先收起封面窗口；在播放器里找好画面，再点“制作封面 → 当前截图”换上，标题和贴图保留。')
         editor.destroyed.connect(lambda:self._editor_closed(editor))
         editor.show()
         return editor
@@ -69,11 +69,11 @@ class StudioCoverController(QObject):
     def _pick_template(self, frame):
         from .cover_local_library import LocalCoverLibrary
         from .cover_templates_ui import TemplatePicker
-        picker=TemplatePicker(LocalCoverLibrary(),self.settings,self.page,local=True,has_frame=frame is not None)
+        picker=TemplatePicker(LocalCoverLibrary(),self.settings,self.page,local=True,has_frame=frame is not None,frame=frame)
         if picker.exec()!=QDialog.Accepted:return
         editor=self.show_editor(frame if frame is not None else CoverDocument())
         if not picker.selected.get('blank'):
-            editor.apply_template(picker.selected,replace=picker.replace.isChecked())
+            editor.apply_template(picker.selected,replace=picker.replace.isChecked(),texts=picker.selected_texts)
 
     def create(self, *, choose_template=False):
         if self.busy:

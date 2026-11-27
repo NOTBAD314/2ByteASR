@@ -15,9 +15,11 @@ class EdgeSnapController(QObject):
         self.active_id = None
         self.horizontal = self.vertical = None
         self.modifiers = Qt.NoModifier
+        # 2026-11-27: a short 「吸附」 pill in the editor's zoom bar; on / off shows as its checked state.
         self.button = QPushButton()
-        bind_text(self.button, '边框吸附：关闭')
-        bind_text(self.button, '拖动单张图片时吸附画布四边；按住 Alt 暂停，拖远可脱离', property='toolTip')
+        self.button.setObjectName('coverPillText')
+        bind_text(self.button, '吸附')
+        bind_text(self.button, '边框吸附：拖动单张图片时吸附画布四边；按住 Alt 暂停，拖远可脱离', property='toolTip')
         self.button.setCheckable(True)
         self.button.toggled.connect(self.set_enabled)
         controls.addWidget(self.button)
@@ -25,7 +27,7 @@ class EdgeSnapController(QObject):
 
     def set_enabled(self, enabled):
         self.enabled = enabled
-        bind_text(self.button, '边框吸附：开启' if enabled else '边框吸附：关闭')
+        bind_text(self.button, '边框吸附：开启' if enabled else '边框吸附：关闭', property='accessibleName')
         self.clear()
 
     def begin(self):

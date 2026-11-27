@@ -1,6 +1,8 @@
 """Syntactic evidence consumed by the shared boundary quality gate."""
 import re
 
+from .word_tags import pos_tags
+
 INDEPENDENT_RESPONSES = frozenset({
     "可以", "不行", "对的", "好的", "是的", "没错", "明白", "确实", "好吧",
     "没有", "有", "能", "不能", "行", "知道了", "可以的",
@@ -27,10 +29,9 @@ def repeated_units(content):
 
 def syntax_boundary_evidence(index, max_chars):
     """Return local phrase cohesion and clause edges in the immutable index."""
-    import jieba.posseg as posseg
     import jieba
     content = index.content
-    tokens = list(posseg.cut(content))
+    tokens = list(pos_tags(content))
     starts = []
     cursor = 0
     for token in tokens:
@@ -114,7 +115,7 @@ def syntax_boundary_evidence(index, max_chars):
     numeric_classifier = r'[一两三四五六七八九十几\d]+[只轮发]'
     quantifiers = f"(?:{demonstrative}|{possessive}|{numeric_classifier})"
     for match in re.finditer(quantifiers, content):
-        tail = list(posseg.cut(content[match.end():match.end()+max_chars]))
+        tail = list(pos_tags(content[match.end():match.end()+max_chars]))
         head_end = match.end()
         has_noun = False
         for tail_index, token in enumerate(tail):
@@ -138,7 +139,7 @@ def syntax_boundary_evidence(index, max_chars):
             continue
         # Event classifiers can introduce a nominalised action name.
         if match.group()[-1] in "发招记":
-            suffix = list(posseg.cut(content[head_end:head_end+max_chars]))
+            suffix = list(pos_tags(content[head_end:head_end+max_chars]))
             if suffix and suffix[0].flag.startswith("v") and len(suffix[0].word) >= 2:
                 head_end += len(suffix[0].word)
             elif (len(suffix) > 1 and suffix[0].word == '能' and suffix[1].flag.startswith('v')):

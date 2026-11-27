@@ -480,6 +480,20 @@ def _save_recipe(window, args) -> str:
         bunny_memory.add(name, 'recipe', source='bunny', data=data)
     except ValueError as exc:
         raise ToolError(str(exc)) from None
+    try:
+        from ..projects.series_store import SeriesStore
+        store = SeriesStore()
+        rec = store.find_by_name(name) or store.create(name)
+        delta = store.compute_delta(
+            rec.id,
+            speakers=[{'name': n} for n in (data.get('speakers') or ())],
+            break_rule=(data.get('language') or 'zh', data['break_rule']) if data.get('break_rule') else None,
+            visual={'style_overrides': data['style']} if data.get('style') else None,
+        )
+        if delta:
+            store.settle(rec.id, delta, episode_label='bunny_save_recipe')
+    except Exception:  # noqa: BLE001 - Series mirror must never break legacy recipe save
+        pass
     parts = []
     if 'style' in data:
         s = data['style']

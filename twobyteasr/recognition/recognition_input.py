@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 import uuid
 import wave
 from pathlib import Path
@@ -125,20 +126,49 @@ def project_content_revision(data):
     return _digest({k: v for k, v in data.items() if k != "updated_at"})
 
 
-def prepare_recognition_input(snapshot, cache_root, ffmpeg, *, token=None):
+# 2026-11-27: the timeline WAV must grow at least once in this window while
+# ffmpeg renders it; a render that writes nothing for this long is stopped.
+RENDER_STALL_SECONDS = 180.0
+# How often a long wait or render reports itself on screen.
+PROGRESS_EVERY_SECONDS = 10.0
+
+
+def _clock(seconds):
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60} 分 {seconds % 60:02d} 秒" if seconds >= 60 else f"{seconds} 秒"
+
+
+def prepare_recognition_input(snapshot, cache_root, ffmpeg, *, token=None, progress=None):
+    """Render the frozen timeline mix to the task WAV.
+
+    ``progress(text)`` receives a short line for the screen whenever this
+    step waits or renders for a while (2026-11-27: these waits used to be
+    silent, so the run looked stuck right after the cloud checks).
+    """
     from ..exports.audio_export import audio_mix_arguments
     from ..system.processes import popen_hidden_subprocess, stop_process_tree
     from ..exports.timeline_media import resolve_audio_layers, TIME_CONTRACT
+    from ..media.indexed_media import GenerationLockTimeout
+    report = progress or (lambda text: None)
 
     def cancelled():
         if token is not None:
             token.raise_if_cancelled()
         return False
 
+    def waiting(source, seconds):
+        if int(seconds) % int(PROGRESS_EVERY_SECONDS) == 0:
+            report(f"工作台正在为素材「{Path(source).name}」生成辅助文件，识别等它完成后继续（已等 {_clock(seconds)}）")
+
     # Resolve BEFORE accepting a cached task WAV. v1 cached timestamp-domain
     # seeks are not compatible even when path, edit list and duration match.
-    layers, timebases = resolve_audio_layers(snapshot['audio_graph']['segments'],
-                                            ffmpeg, cancelled=cancelled)
+    try:
+        layers, timebases = resolve_audio_layers(snapshot['audio_graph']['segments'],
+                                                ffmpeg, cancelled=cancelled, waiting=waiting, note=report)
+    except GenerationLockTimeout as exc:
+        raise RuntimeError(
+            f"工作台为这个素材生成辅助文件超过 {_clock(exc.waited)} 仍没有完成，识别已停止，原字幕没有改动。"
+            "请关闭工作台里的这个工程后重新打开，再开始识别。") from exc
     snapshot.update(version=2, media_time_contract=TIME_CONTRACT, media_timebases=timebases)
     snapshot['fingerprint'] = _digest({k: snapshot[k] for k in
         ('version', 'duration_ms', 'audio_graph', 'sequence', 'sources', 'media_time_contract', 'media_timebases')
@@ -180,10 +210,14 @@ def prepare_recognition_input(snapshot, cache_root, ffmpeg, *, token=None):
                f"anullsrc=r=16000:cl=mono:d={duration:.6f}", *args,
                "-t", f"{duration:.6f}", "-ac", "1", "-ar", "16000", str(temporary)]
     (root / "render-command.json").write_text(json.dumps(command, ensure_ascii=False), encoding="utf-8")
+    report(f"正在从时间轴提取识别用的音频（{_clock(duration)}）")
+    expected_bytes = expected_frames * 2
     try:
         # File stderr avoids a full pipe deadlock during long media decoding.
         with (root / "render.log").open("w", encoding="utf-8") as log:
             proc = popen_hidden_subprocess(command, purpose="timeline recognition audio", stdout=subprocess.DEVNULL, stderr=log)
+            started = last_growth = last_report = time.monotonic()
+            last_size = -1
             try:
                 while True:
                     if token is not None:
@@ -192,7 +226,22 @@ def prepare_recognition_input(snapshot, cache_root, ffmpeg, *, token=None):
                         code = proc.wait(timeout=.2)
                         break
                     except subprocess.TimeoutExpired:
-                        continue
+                        pass
+                    now = time.monotonic()
+                    try:
+                        size = temporary.stat().st_size
+                    except OSError:
+                        size = -1
+                    if size != last_size:
+                        last_size, last_growth = size, now
+                    if now - last_growth > RENDER_STALL_SECONDS:
+                        raise RuntimeError(
+                            f"提取识别音频时 {_clock(now - last_growth)} 没有任何进展（素材所在的硬盘可能休眠、断开或很忙），"
+                            f"识别已停止，原字幕没有改动。详情：{root / 'render.log'}")
+                    if now - last_report >= PROGRESS_EVERY_SECONDS:
+                        last_report = now
+                        share = min(99, int(100 * max(0, size) / expected_bytes)) if expected_bytes else 0
+                        report(f"正在提取识别用的音频 {share}%（已用 {_clock(now - started)}）")
             finally:
                 if proc.poll() is None:
                     stop_process_tree(proc)

@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import uuid
+import weakref
 from collections.abc import Mapping
 
 from PySide6.QtCore import Qt, QTimer, QSignalBlocker
@@ -78,6 +79,11 @@ from ..design.studio_theme import (
 )
 from ..studio.studio_widgets import ScrubDoubleSpinBox, ScrubSpinBox
 from .style_presets import BUILTIN_PRESETS, StylePresetStore
+from .preset_preview_delegate import (
+    PRESET_PREVIEW_ROLE,
+    PresetPreviewSpec,
+    install_preset_preview_delegate,
+)
 from .style_recipe import (
     FillSpec,
     MOTION_MODE_EXPLICIT,
@@ -265,7 +271,7 @@ def _refresh_appearance_summaries(page) -> None:
 class StudioStyleController:
     """Coordinate Style/Motion UI against canonical ``StudioSession`` state."""
 
-    __slots__ = ("page", "session", "_preset_apply_marker", "_edit_draft", "_motion_workflow", "_control_baseline", "_application", "_bulk_application", "_mixed_value_cache", "_color_editor", "_color_editor_warm_scheduled", "__weakref__")
+    __slots__ = ("page", "session", "_preset_apply_marker", "_edit_draft", "_motion_workflow", "_control_baseline", "_application", "_bulk_application", "_mixed_value_cache", "_color_editor", "_color_editor_warm_scheduled", "_scope_project_ref", "_scope_project_seen", "__weakref__")
 
     def __init__(self, page, session):
         self.page = page
@@ -278,6 +284,8 @@ class StudioStyleController:
         self._bulk_application = None
         self._color_editor = None
         self._color_editor_warm_scheduled = False
+        self._scope_project_ref = None
+        self._scope_project_seen = False
 
 
     def _apply_ai_style_draft(self) -> None:
@@ -320,7 +328,7 @@ class StudioStyleController:
         panel_header_title = QLabel("字幕样式")
         yield from _gui_slice.checkpoint()
         panel_header_title.setObjectName("stylePanelHeaderTitle")
-        panel_header_meta = QLabel("自动预览 · 默认应用到当前字幕")
+        panel_header_meta = QLabel("自动预览 · 默认应用到全片字幕")
         panel_header_meta.setObjectName("stylePanelHeaderMeta")
         panel_header_layout.addWidget(panel_header_title)
         yield from _gui_slice.checkpoint()
@@ -368,6 +376,9 @@ class StudioStyleController:
         scope_layout.setContentsMargins(6, 8, 6, 8)
         scope_layout.setSpacing(8)
         yield from _gui_slice.checkpoint()
+        scope_block = QVBoxLayout()
+        scope_block.setContentsMargins(0, 0, 0, 0)
+        scope_block.setSpacing(4)
         scope_row = QHBoxLayout()
         scope_row.setContentsMargins(0, 0, 0, 0)
         scope_row.setSpacing(STYLE_LABEL_GAP)
@@ -380,12 +391,29 @@ class StudioStyleController:
         yield from _gui_slice.checkpoint()
         page.style_scope.addItem("当前说话人", "speaker")
         page.style_scope.addItem("全部字幕", "all")
-        page.style_scope.set_single_row({"current": "当前", "selected": "已选", "speaker": "说话人", "all": "全部"})
-        page.style_scope.setCurrentIndex(max(0, page.style_scope.findData("selected")))
+        page.style_scope.set_single_row({"current": "当前", "selected": "已选", "speaker": "说话人", "all": "全片"})
+        page.style_scope.setCurrentIndex(max(0, page.style_scope.findData("all")))
         yield from _gui_slice.checkpoint()
         bind_text(page.style_scope, '选择后，后续样式调整会自动作用于该范围', property='toolTip')
         scope_row.addWidget(page.style_scope, 1)
-        scope_layout.addLayout(scope_row)
+        scope_block.addLayout(scope_row)
+        page._style_single_cue_hint_row = QWidget()
+        single_hint_layout = QHBoxLayout(page._style_single_cue_hint_row)
+        single_hint_layout.setContentsMargins(0, 0, 0, 0)
+        single_hint_layout.setSpacing(0)
+        single_hint_layout.addWidget(label_column.control_indent(extra=STYLE_ROW_INSET))
+        page.style_single_cue_hint = QLabel("仅改当前句")
+        page.style_single_cue_hint.setObjectName("styleSingleCueHint")
+        page.style_single_cue_hint.setProperty("softPill", "warn")
+        page.style_single_cue_hint.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        bind_text(page.style_single_cue_hint, "仅改当前句")
+        bind_text(page.style_single_cue_hint, "当前仅修改这一条字幕；如需统一全片请切回「全片」", property="toolTip")
+        page.style_single_cue_hint.hide()
+        single_hint_layout.addWidget(page.style_single_cue_hint)
+        single_hint_layout.addStretch(1)
+        page._style_single_cue_hint_row.hide()
+        scope_block.addWidget(page._style_single_cue_hint_row)
+        scope_layout.addLayout(scope_block)
         # 2026-11-11 (user): the lone checkbox became two buttons that say
         # what applying a preset does. ``style_apply_geometry`` stays the
         # checkable control the rest of the page reads and toggles.
@@ -689,6 +717,10 @@ class StudioStyleController:
         preset_layout.setSpacing(5)
         page.style_preset = ElidedComboBox()
         bind_text(page.style_preset, '选择或管理字幕样式预设', property='toolTip')
+        page._style_preset_delegate = install_preset_preview_delegate(
+            page.style_preset,
+            preset_resolver=self._resolve_preset_preview_spec,
+        )
         yield from _gui_slice.checkpoint()
         page._refresh_style_presets()
         page.style_preset.currentIndexChanged.connect(page._load_style_inspector)
@@ -2938,9 +2970,24 @@ class StudioStyleController:
         try:
             index = page.style_preset.findData(plan_style.id)
             if index < 0:
-                page.style_preset.addItem(f"AI · {recipe.name}", plan_style.id)
+                ai_label = f"AI · {recipe.name}"
+                page.style_preset.addItem(ai_label, plan_style.id)
                 index = page.style_preset.count() - 1
-                page._style_preset_base_labels[index] = f"AI · {recipe.name}"
+                page._style_preset_base_labels[index] = ai_label
+                page.style_preset.setItemData(
+                    index,
+                    PresetPreviewSpec(
+                        preset_id=plan_style.id,
+                        name=ai_label,
+                        style=copy.deepcopy(plan_style),
+                        recipe=recipe.to_dict(),
+                        is_ai=True,
+                    ),
+                    PRESET_PREVIEW_ROLE,
+                )
+                delegate = getattr(page, "_style_preset_delegate", None)
+                if delegate is not None:
+                    page.style_preset.view().setMinimumWidth(delegate.popup_width_for_combo(page.style_preset))
             page.style_preset.setCurrentIndex(index)
             self._refresh_motion_inspector(recipe)
             motion = recipe.motion if isinstance(recipe.motion, Mapping) else {}
@@ -3101,6 +3148,86 @@ class StudioStyleController:
         page._refresh_style_preview()
         page._refresh_ass_preview()
 
+    def _resolve_preset_preview_spec(self, preset_id: str) -> PresetPreviewSpec | None:
+        key = str(preset_id or "")
+        if not key:
+            return None
+        project = self.session.project
+        if project is not None:
+            style = next((item for item in project.styles if item.id == key), None)
+            if style is not None:
+                recipe = project.style_recipes.get(key)
+                return PresetPreviewSpec(
+                    preset_id=key,
+                    name=str(style.name or key),
+                    style=style,
+                    recipe=recipe if isinstance(recipe, Mapping) else None,
+                    is_custom=key not in BUILTIN_PRESETS,
+                    is_ai=key.startswith("ai-"),
+                )
+        builtin = BUILTIN_PRESETS.get(key)
+        if builtin is not None:
+            return PresetPreviewSpec(preset_id=key, name=builtin.name, style=builtin)
+        return None
+
+    def _sync_scope_for_project(self) -> None:
+        project = self.session.project
+        if project is None:
+            return
+        previous = None
+        if self._scope_project_ref is not None:
+            try:
+                previous = self._scope_project_ref()
+            except TypeError:
+                previous = self._scope_project_ref
+        if not self._scope_project_seen:
+            self._scope_project_seen = True
+            try:
+                self._scope_project_ref = weakref.ref(project)
+            except TypeError:
+                self._scope_project_ref = None
+            return
+        if previous is not project:
+            try:
+                self._scope_project_ref = weakref.ref(project)
+            except TypeError:
+                self._scope_project_ref = None
+            scope_widget = getattr(self.page, "style_scope", None)
+            if scope_widget is not None:
+                all_index = scope_widget.findData("all")
+                if all_index >= 0 and scope_widget.currentIndex() != all_index:
+                    with QSignalBlocker(scope_widget):
+                        scope_widget.setCurrentIndex(all_index)
+            self._update_single_cue_scope_hint()
+
+    def _is_single_cue_scope(self) -> bool:
+        page = self.page
+        scope_widget = getattr(page, "style_scope", None)
+        if scope_widget is None:
+            return False
+        scope_kind = str(scope_widget.currentData() or "")
+        if scope_kind == "current":
+            return True
+        if scope_kind == "selected":
+            selection_model = getattr(page, "selection_model", None)
+            if selection_model is not None and hasattr(selection_model, "selected_count"):
+                return int(selection_model.selected_count()) == 1
+            if self.session.project is not None:
+                return len(page._style_target_ids()) == 1
+            return bool(self.session.selected_cue_id)
+        return False
+
+    def _update_single_cue_scope_hint(self) -> None:
+        page = self.page
+        hint = getattr(page, "style_single_cue_hint", None)
+        if hint is None:
+            return
+        show = self._is_single_cue_scope()
+        hint.setVisible(show)
+        row = getattr(page, "_style_single_cue_hint_row", None)
+        if row is not None:
+            row.setVisible(show)
+
     def _refresh_style_presets(self, selected_id: str = "") -> None:
         page = self.page
         current = selected_id or str(page.style_preset.currentData() or "") if hasattr(page, "style_preset") else selected_id
@@ -3114,6 +3241,7 @@ class StudioStyleController:
             page._style_preset_base_labels = {}
             store = StylePresetStore()
             styles = store.all()
+            recipes = store.load_recipes()
             metadata = store.load_metadata()
             builtin_ids = [style_id for style_id in BUILTIN_PRESETS if style_id in styles]
             custom_ids = sorted(
@@ -3125,11 +3253,38 @@ class StudioStyleController:
                 key=lambda style_id: str(metadata.get(style_id, {}).get("created_at") or ""),
                 reverse=True,
             )
+            ai_set = set(ai_ids)
+            project_recipes = self.session.project.style_recipes if self.session.project is not None else {}
             for style_id in [*builtin_ids, *custom_ids, *ai_ids]:
                 style = styles[style_id]
-                label = f"AI · {style.name}" if style_id in ai_ids else style.name
+                is_ai = style_id in ai_set
+                label = f"AI · {style.name}" if is_ai else style.name
                 page.style_preset.addItem(label, style_id)
-                page._style_preset_base_labels[page.style_preset.count() - 1] = label
+                row = page.style_preset.count() - 1
+                page._style_preset_base_labels[row] = label
+                recipe = recipes.get(style_id)
+                if recipe is None and isinstance(project_recipes, Mapping):
+                    proj_recipe = project_recipes.get(style_id)
+                    if isinstance(proj_recipe, Mapping):
+                        recipe = proj_recipe
+                meta = metadata.get(style_id, {})
+                page.style_preset.setItemData(
+                    row,
+                    PresetPreviewSpec(
+                        preset_id=style_id,
+                        name=label,
+                        style=style,
+                        recipe=recipe if isinstance(recipe, Mapping) else None,
+                        favorite=bool(meta.get("favorite", False)),
+                        is_custom=style_id not in BUILTIN_PRESETS and not is_ai,
+                        is_ai=is_ai,
+                    ),
+                    PRESET_PREVIEW_ROLE,
+                )
+            delegate = getattr(page, "_style_preset_delegate", None)
+            if delegate is not None:
+                delegate.set_preset_catalog(styles, recipes, metadata)
+                page.style_preset.view().setMinimumWidth(delegate.popup_width_for_combo(page.style_preset))
             index = page.style_preset.findData(current)
             if index >= 0:
                 page.style_preset.setCurrentIndex(index)
@@ -3287,6 +3442,7 @@ class StudioStyleController:
             return
         if page._updating_style_ui:
             return
+        self._sync_scope_for_project()
         # The shared picker is created on explicit color editing. Rendering
         # the hidden dialog here interrupted otherwise asynchronous loading.
         self._current_application()
@@ -3320,6 +3476,7 @@ class StudioStyleController:
         if summary is not None:
             from ..studio.presentation_scope import capture_scope, describe_scope
             summary.setText(describe_scope(page, capture_scope(page)))
+        self._update_single_cue_scope_hint()
         if style is None:
             return
         page._updating_style_ui = True
@@ -3955,6 +4112,7 @@ class StudioStyleController:
         self._remember_application_result(scope,page.style_apply_geometry.isChecked())
 
     def _scope_changed(self, *_args) -> None:
+        self._update_single_cue_scope_hint()
         if not self.page._updating_style_ui:
             panel=getattr(self.page,'caption_transform_panel',None)
             if panel is not None:
@@ -4247,7 +4405,7 @@ class StudioStyleController:
         target_style_id = preset_id
         if preserve_advanced:
             preset.id = target_style_id
-        scope = str(page.style_scope.currentData() or "current")
+        scope = str(page.style_scope.currentData() or "all")
         base_preset = StylePresetStore().all().get(preset_id)
         project_base = next((s for s in self.session.project.styles if s.id == preset_id), None)
         # Manual edits cannot rewrite the appearance base of unselected peers.
@@ -4551,7 +4709,7 @@ class StudioStyleController:
                 stack_batch_presentation(command)
         self.session.undo_stack.push(command)
         self._trace_subtitle_preset(preset_id, cue_ids, cue_count_before,
-                                    scope=str(page.style_scope.currentData() or "current"))
+                                    scope=str(page.style_scope.currentData() or "all"))
         page._motion_contract_dirty = False
         page._background_edited = False
         selected_after = self.session._cue_lookup.get(self.session.selected_cue_id)

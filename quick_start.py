@@ -27,7 +27,8 @@ _native_browser_launch = len(sys.argv) >= 2 and (
     or sys.argv[1].lower().replace("\\", "/").endswith("/browser-helper-host-firefox.json"))
 
 if len(sys.argv) >= 2 and (_native_browser_launch or sys.argv[1] in {
-        '--mcp-stdio', '--playback-diagnostic', '--launch-motion', '--studio-audio-worker'}):
+        '--mcp-stdio', '--playback-diagnostic', '--launch-motion', '--studio-audio-worker', '--prepare-haas',
+        '--download-repository-artifact'}):
     # No ordinary startup log before these isolated/windowless entry points.
     # The diagnostic coordinator installs its temporary profile first; audited
     # GUI children then use normal startup logging inside their own profiles.
@@ -236,6 +237,17 @@ def main() -> int:
     if _native_browser_launch:
         from twobyteasr.app.browser_native_host import run
         return run(application_root(), sys.argv[1:])
+    if len(sys.argv) > 1 and sys.argv[1] == '--prepare-haas':
+        from twobyteasr.local_models.haas_preparation import main as prepare_haas
+        return prepare_haas(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == '--download-repository-artifact':
+        from pathlib import Path
+        import runpy
+        from twobyteasr.local_models.haas_preparation import bind_worker_output
+        bind_worker_output()
+        sys.argv = [str(Path(application_root()) / 'scripts' / 'download_file_fast.py'), *sys.argv[2:]]
+        runpy.run_path(sys.argv[0], run_name='__main__')
+        return 0
     browser_request = None
     if len(sys.argv) == 3 and sys.argv[1] == "--browser-link":
         from twobyteasr.app.browser_link_protocol import public_protocol
@@ -268,6 +280,9 @@ def main() -> int:
         return playback_diagnostic(sys.argv[2:])
     from twobyteasr.acceptance.offline_audit_io import install as install_offline_audit_io
     install_offline_audit_io()
+    if len(sys.argv) == 3 and sys.argv[1] == '--reasoning-settings-audit':
+        from twobyteasr.acceptance.reasoning_settings_audit import main as reasoning_settings_audit
+        return reasoning_settings_audit(sys.argv[2])
     if len(sys.argv)==3 and sys.argv[1]=='--export-reliability-audit':
         from twobyteasr.acceptance.export_reliability_audit import main as export_reliability_audit
         return export_reliability_audit(sys.argv[2])

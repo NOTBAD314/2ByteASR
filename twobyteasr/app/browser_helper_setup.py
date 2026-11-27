@@ -13,6 +13,105 @@ BROWSERS = {
     "Firefox": ("Mozilla", "firefox.exe", "Mozilla Firefox"),
 }
 SHARED_CHROMIUM_HOST = ("Chrome", "Brave")
+# Store listings of the helper, by browser. Empty until it is published; the
+# install window then offers a store button instead of the manual load.
+STORE_PAGES: dict[str, str] = {}
+# Where each Chromium browser keeps its profiles (under %LOCALAPPDATA%).
+PROFILE_ROOTS = {"Chrome": "Google/Chrome/User Data", "Edge": "Microsoft/Edge/User Data",
+                 "Brave": "BraveSoftware/Brave-Browser/User Data"}
+CONTACT_FILE = "browser-helper-contact.json"
+CONTACT_NAMES = ("Chrome", "Edge", "Brave", "Firefox", "Chromium")
+
+
+def extension_id(root) -> str:
+    """The helper's fixed Chromium ID, derived from the manifest's public key."""
+    import base64
+    import hashlib
+    import json
+    key = json.loads((Path(root) / "assets/browser-helper/manifest.json").read_bytes())["key"]
+    digest = hashlib.sha256(base64.b64decode(key)).hexdigest()[:32]
+    return "".join(chr(97 + int(n, 16)) for n in digest)
+
+
+def helper_version(root) -> str:
+    import json
+    try:
+        return str(json.loads((Path(root) / "assets/browser-helper/manifest.json").read_bytes()).get("version", ""))
+    except (OSError, ValueError):
+        return ""
+
+
+def helper_in_browser(root, name, *, local_app_data=None):
+    """What a Chromium browser's own settings say about the helper (read only).
+
+    ``None`` when it cannot be known (Firefox keeps loaded helpers only for the
+    session, or the browser has no profile folder); otherwise a dict with
+    ``loaded`` and, when loaded, ``path``, ``version``, ``enabled``."""
+    import json
+    if name not in PROFILE_ROOTS:
+        return None
+    base = Path(local_app_data or os.environ.get("LOCALAPPDATA", "")) / PROFILE_ROOTS[name]
+    if not base.is_dir():
+        return None
+    try:
+        ident = extension_id(root)
+    except (OSError, ValueError, KeyError):
+        return None
+    for profile in [base / "Default", *sorted(base.glob("Profile *"))]:
+        for filename in ("Secure Preferences", "Preferences"):
+            try:
+                data = json.loads((profile / filename).read_text(encoding="utf-8"))
+            except (OSError, ValueError, UnicodeError):
+                continue
+            extensions = data.get("extensions") if isinstance(data, dict) else None
+            settings = extensions.get("settings") if isinstance(extensions, dict) else None
+            entry = settings.get(ident) if isinstance(settings, dict) else None
+            if isinstance(entry, dict):
+                manifest = entry.get("manifest") if isinstance(entry.get("manifest"), dict) else {}
+                return dict(loaded=True, path=str(entry.get("path") or ""), version=str(manifest.get("version") or ""),
+                            enabled=not entry.get("disable_reasons") and entry.get("state", 1) != 0,
+                            profile=profile.name)
+    return dict(loaded=False)
+
+
+def same_folder(root, path) -> bool:
+    try:
+        return Path(path).resolve() == (Path(root) / "assets/browser-helper").resolve()
+    except (OSError, ValueError):
+        return False
+
+
+def _contact_path():
+    from ..runtime_paths import user_data_root
+    return user_data_root() / CONTACT_FILE
+
+
+def record_contact(browser: str) -> None:
+    """The helper reached the desktop from this browser (written by the native host)."""
+    import json
+    import time
+    if browser not in CONTACT_NAMES:
+        return
+    path = _contact_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        data = data if isinstance(data, dict) else {}
+        data[browser] = time.time()
+        from ..media.link_manifest import atomic_json
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json(path, data)
+    except (OSError, ValueError):
+        pass
+
+
+def last_contact() -> dict[str, float]:
+    import json
+    try:
+        data = json.loads(_contact_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {key: float(value) for key, value in data.items()
+            if key in CONTACT_NAMES and isinstance(value, (int, float))} if isinstance(data, dict) else {}
 
 
 def detect():

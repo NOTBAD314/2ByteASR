@@ -1870,7 +1870,11 @@ class MpvController:
                     except Exception:
                         pass
             result = self._send(command)
-            if value and position_seconds is not None:
+            # 2026-11-26 修复：离开工作台或重开工程时，stop/clear 之后才执行到
+            # 这条暂停任务；mpv 已空载（idle-active），对齐 seek 必被拒绝
+            # （command_rejected），整条暂停任务随之记成失败。没有已加载
+            # 媒体就只设暂停，不再补 seek；下一次 loadfile 会自带起点。
+            if value and position_seconds is not None and self._subtitle_media_path:
                 self._send(["seek", max(0., position_seconds), "absolute+exact"])
             playback_mark("mpv_pause_applied",paused=value,source_epoch=self._source_epoch)
             return result

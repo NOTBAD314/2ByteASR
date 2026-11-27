@@ -13,10 +13,33 @@ def same_media_path(left, right):
         os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right)))
 
 
+# A clip edge is a millisecond in the source; pictures sit on the stream's frame grid. Without a
+# measured tolerance a picture this close to an edge still belongs to it (the witness's minimum).
+EDGE_TOLERANCE_S = 0.050
+
+
 def frame_in_clip(witness, source_range):
+    """The witnessed picture shows this clip (``source_range`` in source ms).
+
+    2026-11-27 (user: a recognition result never opened, 准备播放器 timed out on every retry): the
+    project was saved with the playhead at the timeline's end, inside the last clip
+    [3391685, 3395858). The seek to 3395.857 landed on the picture at 3395.864 (after the clip:
+    rightly refused), and the one fallback seek to the clip start landed on the picture at
+    3391.681. That picture is on screen from 3391.681 until the next one, so it is what the
+    clip shows at its first millisecond; the strict test called it outside, no picture ever
+    counted and the open stalled until 准备超时. A picture is the clip's when the time it is on
+    screen meets the clip: it may start up to one frame (the witness's landing tolerance,
+    max(50 ms, 1.5 frames)) before the clip's first millisecond, but not at or after its end.
+    """
     position = witness.get('position')
-    return (witness.get('ready') and isinstance(position, (int, float))
-            and source_range[0] <= position * 1000 < source_range[1])
+    if not (witness.get('ready') and isinstance(position, (int, float))):
+        return False
+    tolerance = witness.get('target_tolerance_seconds')
+    if not isinstance(tolerance, (int, float)) or tolerance < 0:
+        tolerance = EDGE_TOLERANCE_S
+    tolerance_ms = min(float(tolerance), 0.5) * 1000.0
+    start, end = float(source_range[0]), float(source_range[1])
+    return start - tolerance_ms <= position * 1000 < end
 
 
 def first_picture_seconds(project, media_path):

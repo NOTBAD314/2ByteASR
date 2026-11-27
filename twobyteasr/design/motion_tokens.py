@@ -199,6 +199,25 @@ SCROLL = Spring(0.36, 1.0)
 # Numbers and progress catch up with their value instead of jumping.
 VALUE = Spring(0.55, 1.0)
 
+# A guide points at what to press: a soft ring grows and fades, rests, then again
+# (兔白助手 install guide, 2026-11-26). The long rest makes it a hint, not an alarm.
+ATTENTION_PULSE = Tween(400, FADE_EASE)
+ATTENTION_REST_MS = 1200
+
+# The header brand (2026-11-26, subtitle bubble): hovered, 兔白 peeks up a little over her bubble;
+# the caret after 「兔白字幕」 blinks slowly, as a text cursor does.
+BRAND_PEEK = Tween(320, APPLE_EASE)
+BRAND_PEEK_PX = 4
+BRAND_CARET_MS = 550
+
+# 兔白 at start (2026-11-27, user: she popped in two or three seconds late): she fades in while
+# rising a little into place, then waves. No hop, no bounce. On PAGE_IN's front-loaded curve a real
+# start (frames 24 ms apart on average, one 64 ms stall while startup work held the GIL) jumped
+# from 11 % to 70 % opacity in one frame — still a pop. PAGE_PUSH's even start spreads it out.
+BUNNY_ENTER = PAGE_PUSH
+BUNNY_ENTER_RISE_PX = 18
+BUNNY_ENTER_WAVE_DELAY_MS = 260         # the wave starts while she is still settling in
+
 
 def easing_curve(tween: Tween):
     """A ``QEasingCurve`` for this tween's cubic-bezier."""

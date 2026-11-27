@@ -384,7 +384,11 @@ class StudioCueController:
             active = next((item for item in selected if item), '')
         cue = self.session._cue_lookup.get(active)
         layer = 'translation' if cue is not None and page.cue_model.editing_translation(cue) else 'original'
-        page.timeline.set_subtitle_layer(layer)
+        page._syncing_layer_from_table = True
+        try:
+            page.timeline.set_subtitle_layer(layer)
+        finally:
+            page._syncing_layer_from_table = False
         if layer == 'translation':
             page.timeline.translation_selected_ids = set(selected)
         page.timeline.explicit_subtitle_id = active
@@ -1104,6 +1108,14 @@ class StudioCueController:
         except KeyError:return False
         if str(value) == cue.text:
             return False
+        meta = getattr(project, "generation_metadata", None)
+        if (isinstance(meta, Mapping)
+                and str((meta.get("translations") or {}).get(cue.id, "") or "").strip()
+                and cue.id not in ((meta.get("translation_records") or {}).get("records") or {})):
+            # Preserve pre-edit original text in translation_records so status
+            # cleanly derives `needs_update` and surfaces 「重翻此句」.
+            from ..subtitle_rules.subtitle_translation import migrate
+            migrate(project)
         from ..timeline.studio_commands import LEARNABLE_TEXT_ORIGINS
 
         if origin in LEARNABLE_TEXT_ORIGINS:
@@ -1316,6 +1328,11 @@ class StudioCueController:
             recorded.append(token)
             del recorded[:-24]
         page._manual_text_baselines[cue_id] = after
+        try:
+            from .studio_finish_flow import on_manual_text_edited
+            on_manual_text_edited(page, before, after)
+        except Exception:  # noqa: BLE001
+            pass
 
     def translation_changed(self) -> None:
         cue_id = self.session.selected_cue_id
@@ -1854,6 +1871,19 @@ class StudioCueController:
             if cue.id in selected and cue.speaker_id not in self.page.timeline.locked_speakers
         ]
         if not targets:
+            return
+        from .ai_rough_cut import (
+            REASON_MANUAL,
+            is_cue_marked_for_cut,
+            is_linked_video_cut_enabled,
+            set_cues_cut_marks,
+        )
+        if is_linked_video_cut_enabled(project):
+            all_marked = all(is_cue_marked_for_cut(project, cid) for cid in targets)
+            set_cues_cut_marks(project, targets, marked=not all_marked, reason=REASON_MANUAL)
+            refresh_rc = getattr(self.page, "_refresh_rough_cut_ui", None)
+            if callable(refresh_rc):
+                refresh_rc(targets)
             return
         target_set = set(targets)
         index = min(

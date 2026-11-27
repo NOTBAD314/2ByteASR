@@ -76,8 +76,9 @@ class ProviderSnapshot:
     json_mode: bool = True
     structured_output: bool = True
     max_output_tokens: int = 10000
-    enable_thinking: bool = False
+    enable_thinking: bool | str | None = False
     thinking_protocol: str = "auto"
+    reasoning_profile: str = ""
     timeout_policy: TimeoutPolicy = field(default_factory=TimeoutPolicy)
     prompt_versions: tuple[tuple[str, str], ...] = field(default_factory=lambda: (
         ("polished", POLISH_PROMPT_VERSION), ("grouped", GROUP_PROMPT_VERSION)))
@@ -90,6 +91,7 @@ class ProviderSnapshot:
         return digest(self.cache_identity())
 
     def cache_identity(self) -> dict:
+        from .reasoning_adapter import wire_identity
         return {"provider": self.provider, "profile_id": self.profile_id,
                 "profile_revision": self.profile_revision, "model": self.model,
                 "kind": self.kind, "transport": self.transport,
@@ -101,14 +103,15 @@ class ProviderSnapshot:
                 "prefer_arabic_numbers": self.prefer_arabic_numbers,
                 "json_mode": self.json_mode, "structured_output": self.structured_output,
                 "max_output_tokens": self.max_output_tokens, "enable_thinking": self.enable_thinking,
-                "thinking_protocol": self.thinking_protocol}
+                "thinking_protocol": self.thinking_protocol, "reasoning": wire_identity(self.endpoint())}
 
     def public_identity(self) -> dict:
         return {**self.cache_identity(), "fingerprint": self.fingerprint}
 
     def endpoint(self) -> dict:
         return {**dict(self._endpoint), "max_output_tokens": self.max_output_tokens,
-                "enable_thinking": self.enable_thinking, "thinking_protocol": self.thinking_protocol}
+                "enable_thinking": self.enable_thinking, "thinking_protocol": self.thinking_protocol,
+                "reasoning_profile": self.reasoning_profile}
 
     def execution_settings(self) -> dict:
         # Only the typed private marker is honored by the production resolver.
@@ -165,7 +168,8 @@ def resolve_provider_snapshot(settings, *, timeout_policy=None, stage="group") -
               "protocol": endpoint["protocol"], "transport": transport, "capabilities": capabilities,
               "json_mode": json_mode, "structured_output": structured_output}
     from .subtitle_request_policy import settings_policy
-    policy = settings_policy(frozen, stage)
+    policy = settings_policy(frozen, stage, endpoint)
+    policy["reasoning_profile"] = endpoint.get("reasoning_profile", "")
     return ProviderSnapshot(**policy, provider=endpoint["provider"], profile_id=profile_id,
         profile_revision=digest(public), model=endpoint["model"],
         kind="cli" if transport.endswith("_cli") else "http", transport=transport,

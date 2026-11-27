@@ -261,7 +261,8 @@ foreach ($property in $Lock.models.PSObject.Properties) {
 
 # GUI 模型工坊可以只安装用户点击的模型。MOSS 是主流程骨架，运行时还依赖
 # FireRedVAD 与说话人嵌入，因此选择 moss 时自动补齐这两个轻量依赖。
-$allowedOnlyNames = @(
+$haasNames = @('haas_ja_q8_0', 'haas_ja_q4_k', 'haas_ja_f16')
+$allowedOnlyNames = $haasNames + @(
     "moss", "firered_vad", "firered_aed", "qwen_asr", "speaker_embedding",
     "qwen_aligner", "whisper_turbo", "sensevoice", "paraformer", "funasr_nano",
     "firered_llm", "glm_asr_nano", "canary_qwen", "omni_asr_llm_7b", "mfa_aligner", "qwen_ultra_aligner", "qwen_ultra_head"
@@ -329,6 +330,28 @@ if ($onlyNames.Count -gt 0) {
 # MOSS 是默认主力模型，而且它的官方 ModelScope 仓库已经声明并验证。
 # 优先下载它，让用户尽快拿到核心能力；后续辅助模型失败不会挡住 MOSS。
 $modelSpecs = @($modelSpecs | Sort-Object { if ($_.Name -eq "moss") { 0 } else { 1 } })
+
+if (-not $VerifyOnly) {
+    $selectedHaas = @($modelSpecs | Where-Object { $_.Name -in $haasNames })
+    foreach ($entry in $selectedHaas) {
+        $program = $env:TWOBYTEASR_HAAS_PROGRAM
+        $arguments = @('--prepare-haas', '--model', $entry.Name, '--source', $Source)
+        if (-not $program) { $program = Join-Path $ProjectRoot '2ByteASR.exe' }
+        if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+            throw '无法启动 Haas 准备程序。请从模型工坊启动，或修复应用安装。'
+        }
+        if ($env:TWOBYTEASR_HAAS_ENTRY_SCRIPT) {
+            $arguments = @('-B', $env:TWOBYTEASR_HAAS_ENTRY_SCRIPT) + $arguments
+        }
+        if ($env:TWOBYTEASR_HAAS_DEVICE) { $arguments += @('--device', $env:TWOBYTEASR_HAAS_DEVICE) }
+        & $program @arguments | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
+    if ($selectedHaas.Count -gt 0) {
+        $modelSpecs = @($modelSpecs | Where-Object { $_.Name -notin $haasNames })
+        if ($modelSpecs.Count -eq 0) { exit 0 }
+    }
+}
 
 # 模型权重与 Python 引擎都按需安装。首次 Setup 只创建工作台；用户点击
 # 某个模型后，下载窗口在同一次流程中补齐该模型需要的 Torch/FunASR/

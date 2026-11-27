@@ -1728,7 +1728,12 @@ def _run_full_library_update(
                 sources=[{k:s[k] for k in ('url','title','registry_key','version') if k in s} for s in by_name[name].sources[:2]])
                 for name, _ in batch]
             messages[1]['content'] = json.dumps(context, ensure_ascii=False)
-            cache_key = _model_cache_key(game_name, capability.get("model") or "",
+            from ..providers.llm_config import endpoint_from_settings
+            from ..providers.reasoning_adapter import wire_identity
+            endpoint = endpoint_from_settings(settings_dict, "polish")
+            request_identity = json.dumps([capability.get("model"), endpoint.get("base_url"), wire_identity(endpoint)],
+                                          ensure_ascii=False, sort_keys=True)
+            cache_key = _model_cache_key(game_name, request_identity,
                                          "enrich-names-v1", messages[1]["content"])
             emit("模型整理",
                  f"准备名单批次 {index}/{batch_total}（{len(batch)} 名；不代表全库 AI 覆盖）",

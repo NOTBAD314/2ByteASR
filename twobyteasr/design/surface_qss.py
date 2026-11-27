@@ -1,6 +1,6 @@
 """Token-authored application surfaces. No warm-literal substitution."""
 from .tokens import RADIUS_SCALE, TYPE_SCALE, WEIGHT_SCALE
-from .typography import TITLE_FONT_STACK, UI_FONT_STACK
+from .typography import PLAYFUL_FONT_STACK, TITLE_FONT_STACK, UI_FONT_STACK
 from .typography import emphasized
 
 
@@ -14,7 +14,8 @@ def build_surface_qss(t):
 def _header_navigation_qss(t):
     """Header buttons (2026-10-23, home design A): tonal fills, no outline.
     字幕工作台 and 模型工坊 take the accent tint; 检查更新, 设置, 说明 and the
-    language menu a quiet neutral one; 支持我 the Studio pink."""
+    language menu a quiet neutral one; 支持我 the Studio pink.
+    2026-11-26 (user): this row is one of the few places in 猫啃什锦黑; content stays 思源黑体."""
     from .ui_theme import blend_hex
     light = t.is_light
 
@@ -29,7 +30,7 @@ def _header_navigation_qss(t):
     quiet_sel = nav_sel + '[homeTone="quiet"]'
     return f"""
 {nav_sel}, QPushButton#supportEntry {{ min-height: 38px; max-height: 38px; padding: 0 14px;
-    border-radius: 12px; font-size: 14px; font-weight: 600; background: {nav};
+    border-radius: 12px; font-size: 14px; font-weight: 600; font-family: {PLAYFUL_FONT_STACK}; background: {nav};
     border: 1px solid transparent; color: {t.text}; }}
 {nav_sel}:hover {{ background: {nav_hover}; }}
 {nav_sel}:pressed {{ background: {nav_down}; }}

@@ -1,4 +1,4 @@
-"""Output-only budgets and one explicitly supported thinking protocol.
+"""Output-only budgets and subtitle retry policy.
 
 Missing historical settings used constants, so only missing fields migrate.
 An explicitly saved value (including 4096) remains a user choice.
@@ -7,103 +7,59 @@ from urllib.parse import urlsplit
 
 DEFAULT_OUTPUT_TOKENS = 10000
 POLICY_VERSION = "subtitle-output-thinking-v1"
-THINKING_PROTOCOLS = ("auto", "deepseek", "enable_thinking", "reasoning_effort")
-THINKING_KEYS = {"thinking", "enable_thinking", "reasoning", "reasoning_effort", "include_reasoning"}
+from .reasoning_adapter import EFFORT_LEVELS, THINKING_PROTOCOLS, apply_thinking, observe_reasoning
 
 
-def settings_policy(settings, stage="group"):
+def settings_policy(settings, stage="group", endpoint=None):
     models = settings.get("models", {})
     prefix = "group" if stage != "polish" or settings.get("switches", {}).get("unified_glm_processing") else "polish"
     value = models.get(f"{prefix}_max_output_tokens", DEFAULT_OUTPUT_TOKENS)
     budget = int(value)
     if isinstance(value, bool) or budget <= 0:
         raise ValueError("最大输出 Token 必须为正整数。")
-    protocol = str(models.get(f"{prefix}_thinking_protocol", "auto"))
+    legacy_values = None
+    if endpoint is not None:
+        from .llm_config import default_protocol, normalize_base_url
+        base = normalize_base_url(models.get(f"{prefix}_base_url", ""))
+        provider = models.get(f"{prefix}_provider")
+        protocol = models.get(f"{prefix}_protocol") or "auto"
+        if (provider, base, models.get(f"{prefix}_model"),
+                default_protocol(provider, base) if protocol == "auto" else protocol) == tuple(
+                endpoint.get(key) for key in ("provider", "base_url", "model", "protocol")):
+            legacy_values = models
+    elif not models.get("reasoning_profiles"):
+        legacy_values = models
+    legacy = legacy_values or {}
+    protocol = str(legacy.get(f"{prefix}_thinking_protocol", "auto"))
     if protocol not in THINKING_PROTOCOLS:
         raise ValueError("未知的思考控制协议。")
     return dict(max_output_tokens=budget,
-                enable_thinking=bool(models.get(f"{prefix}_enable_thinking", False)),
+                enable_thinking=bool(legacy.get(f"{prefix}_enable_thinking", False)),
                 thinking_protocol=protocol)
 
 
 def provider_policy(provider):
     settings = getattr(provider, "_settings", None)
+    endpoint = dict(getattr(provider, "endpoint", {}) or {})
+    endpoint.setdefault("model", getattr(provider, "model", ""))
     if settings is not None:
-        return settings_policy(settings, getattr(provider, "_stage", "group"))
-    endpoint = getattr(provider, "endpoint", {})
+        from .llm_config import endpoint_from_settings
+        endpoint = endpoint_from_settings(settings, getattr(provider, "_stage", "group"))
+    from .reasoning_adapter import wire_identity
+    from .asr_provider_snapshot import endpoint_identity
     return dict(max_output_tokens=int(endpoint.get("max_output_tokens", DEFAULT_OUTPUT_TOKENS)),
                 enable_thinking=endpoint.get("enable_thinking", False),
-                thinking_protocol=endpoint.get("thinking_protocol", "auto"))
-
-
-# 2026-11-15 (问问兔白, user: "默认推理等级 high，难的改 max"): ``enabled`` may also name a depth.
-# The official DeepSeek endpoint was checked on 2026-11-15: thinking enabled plus reasoning_effort
-# high / max are accepted (max thinks longer); its own list is none … high, xhigh, ultra, max.
-EFFORT_LEVELS = ("low", "medium", "high", "max")
+                thinking_protocol=endpoint.get("thinking_protocol", "auto"),
+                reasoning_profile=endpoint.get("reasoning_profile", ""),
+                reasoning=wire_identity(endpoint),
+                endpoint_identity=endpoint_identity(endpoint.get("base_url", "")))
 
 
 def thinking_control(provider, base_url, enabled, protocol="auto"):
-    """Return a single wire dialect and an honest compatibility description."""
-    host = (urlsplit(str(base_url)).hostname or "").lower()
-    if protocol == "auto":
-        protocol = ("deepseek" if host == "api.deepseek.com" else
-                    "enable_thinking" if host in {"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"} else "unknown")
-    if enabled is None:
-        return {}, "provider_default", "not_requested"
-    level = enabled if isinstance(enabled, str) and enabled in EFFORT_LEVELS else None
-    if isinstance(enabled, str):
-        enabled = level is not None
-    if protocol == "deepseek":
-        controls = {"thinking": {"type": "enabled" if enabled else "disabled"}}
-        if level:
-            controls["reasoning_effort"] = level
-        return controls, f"enabled_{level}" if level else "enabled" if enabled else "disabled", "requested_unverified"
-    if protocol == "enable_thinking":
-        return {"enable_thinking": bool(enabled)}, "enabled" if enabled else "disabled", "requested_unverified"
-    if protocol == "reasoning_effort":
-        return ({"reasoning_effort": (level or "high") if enabled else "none"},
-                f"enabled_{level}" if level else "enabled" if enabled else "disabled", "requested_unverified")
-    return {}, "provider_default", "unsupported_or_unknown"
-
-
-def apply_thinking(body, *, provider, base_url, enabled, protocol="auto", extra_body=None, api="chat"):
-    controls, mode, compatibility = thinking_control(provider, base_url, enabled, protocol)
-    if api == "responses":
-        host = (urlsplit(str(base_url)).hostname or "").lower()
-        if enabled is not None and (host == 'api.deepseek.com' or protocol == 'reasoning_effort'):
-            level = enabled if isinstance(enabled, str) and enabled in EFFORT_LEVELS else None
-            enabled = bool(level) if isinstance(enabled, str) else enabled
-            controls = {'reasoning': {'effort': (level or 'high') if enabled else 'none'}}
-            mode, compatibility = ('enabled' if enabled else 'disabled'), 'requested_unverified'
-        else:
-            controls, mode, compatibility = {}, 'provider_default', 'unsupported_or_unknown' if enabled is not None else 'not_requested'
-    extra = dict(extra_body or {})
-    for key in ('max_tokens', 'max_output_tokens', 'max_completion_tokens'):
-        if key in extra and extra[key] != body.get('max_tokens', body.get('max_output_tokens')):
-            raise ValueError("扩展参数不能覆盖任务输出预算。")
-    # Caller extensions may describe a verified dialect, but cannot silently
-    # contradict the task switch or the one selected dialect.
-    supplied = {key: extra[key] for key in THINKING_KEYS if key in extra}
-    if supplied and (len(supplied) != 1 or controls and supplied != controls):
-        raise ValueError("思考参数与任务设置冲突；请选择中转实际支持的一种协议。")
-    if supplied and not controls:
-        if enabled is not None:
-            key = next(iter(supplied))
-            dialect = {"thinking":"deepseek", "enable_thinking":"enable_thinking", "reasoning_effort":"reasoning_effort"}.get(key)
-            expected = thinking_control(provider, base_url, enabled, dialect)[0] if dialect else {}
-            if supplied != expected:
-                raise ValueError("扩展思考参数与任务开关冲突。")
-        controls = supplied
-        mode = "enabled" if enabled else "disabled" if enabled is not None else "explicit_extension"
-        compatibility = "requested_unverified"
-    body.update({key: value for key, value in extra.items() if key not in THINKING_KEYS and key not in body and key not in {'max_tokens','max_output_tokens','max_completion_tokens','model','messages','input'}})
-    body.update(controls)
-    return dict(max_tokens=body.get("max_tokens", body.get("max_output_tokens")),
-                output_budget_kind="maximum_output_tokens",
-                thinking_requested=enabled, thinking_mode=mode,
-                thinking_compatibility=compatibility, reasoning_parameters_sent={k:body[k] for k in THINKING_KEYS if k in body},
-                thinking_sent=body.get("thinking"), enable_thinking_sent=body.get("enable_thinking"),
-                reasoning_tokens=None, reasoning_tokens_status="unknown")
+    from .reasoning_adapter import resolve
+    controls, mode, _, compatibility = resolve(
+        provider=provider, base_url=base_url, model="", enabled=enabled, protocol=protocol)
+    return controls, {"off": "disabled", "default": "provider_default"}.get(mode, mode), compatibility
 
 
 # 2026-11-16 (user: failed AI proofreading/grouping should be collected and retried once with the
@@ -190,19 +146,22 @@ def escalated_output_tokens(snapshot, operation="polish"):
 
 
 def retry_thinking(snapshot, categories, operation="polish", *, base_url="", endpoint_protocol=""):
-    """The thinking value for the one final retry, or None when the retry cannot help.
-
-    One level higher when the dialect has one. When it has none (an unverified relay, or already
-    at the top level) but every failure was a cut-off answer, the same thinking value is resent
-    with the larger output budget: a relay whose model thinks anyway used to go straight to
-    local rules here.
-    """
-    level = escalated_thinking(snapshot.enable_thinking, snapshot.thinking_protocol,
-                               base_url=base_url, endpoint_protocol=endpoint_protocol)
-    if (level is None and categories and set(categories) <= TRUNCATION_CATEGORIES
-            and escalated_output_tokens(snapshot, operation) > int(snapshot.max_output_tokens or 0)):
+    """Keep the selected mode for a bounded retry on a known route."""
+    if not categories:
+        return None
+    from .reasoning_adapter import wire_identity
+    endpoint = {**snapshot.endpoint(), "enable_thinking": snapshot.enable_thinking,
+                "thinking_protocol": snapshot.thinking_protocol}
+    if base_url:
+        endpoint["base_url"] = base_url
+    if endpoint_protocol:
+        endpoint["protocol"] = endpoint_protocol
+    if wire_identity(endpoint)["parameters"]:
         return snapshot.enable_thinking
-    return level
+    if set(categories) <= TRUNCATION_CATEGORIES and (
+            escalated_output_tokens(snapshot, operation) > int(snapshot.max_output_tokens or 0)):
+        return snapshot.enable_thinking
+    return None
 
 
 def escalation_enabled(settings, stage="group"):
@@ -230,13 +189,7 @@ def escalation_cue_limit(total):
 
 def observe_response_policy(diagnostics):
     """Do not turn a requested disable into a claim about the server's state."""
-    if (diagnostics.get("thinking_requested") is False
-            and diagnostics.get("thinking_mode") in {"disabled", "no_upfront_thinking"}
-            and diagnostics.get("reasoning_parameters_sent")
-            and (diagnostics.get("reasoning_content_present") or diagnostics.get("reasoning_chars")
-                 or (diagnostics.get("reasoning_tokens") or 0) > 0)):
-        diagnostics["thinking_compatibility"] = "reasoning_returned_despite_disable"
-        diagnostics["thinking_mode"] = "disable_requested_but_reasoning_returned"
+    observe_reasoning(diagnostics)
     if (diagnostics.get("finish_reason") in {"length", "max_tokens"}
             and isinstance(diagnostics.get("completion_tokens"), (int, float))
             and diagnostics["completion_tokens"] < diagnostics.get("max_tokens", 0)):

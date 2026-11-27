@@ -58,6 +58,8 @@ def run(root, argv):
 
     def deliver(message):
         if message["action"] == "ping":
+            from .browser_helper_setup import record_contact
+            record_contact(message.get("browser") or ("Firefox" if launcher == "firefox" else "Chromium"))
             return {"ok": True, "code": "connected"}
         from PySide6.QtCore import QCoreApplication
         from .single_instance import SingleInstanceGuard

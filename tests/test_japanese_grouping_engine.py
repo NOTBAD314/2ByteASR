@@ -254,3 +254,86 @@ def test_fixed_predicates_and_humble_suru_have_no_inner_phrase_edge():
     words = [("一生", "名詞"), ("懸命", "形状詞"), ("やれ", "動詞"), ("ば", "助詞")]
     allowed, _ = japanese_morphology.bunsetsu_breaks(text, spans(text, words))
     assert 2 not in allowed and 4 in allowed
+
+
+# 13.json (比利犬 第二期 13, 2026-11-26) batch 25.1: the rows the request sent.
+# The aligner's word times ran past their rows; stage 9 failed with
+# "断句候选时间超出其实际来源范围" on both the AI result and the retained fallback.
+BILLY_ROWS = [
+    (234, 782.72, 787.52, "API_S07", "ニャハハハハわしらが大人しくしてると思ったら大間違いニャ"),
+    (235, 787.52, 791.44, "API_S04", "ビリケンたちの邪魔をして仕事を遅らしてやるニャ"),
+    (236, 791.44, 793.76, "API_S10", "おらいおらいおらい"),
+    (237, 793.76, 794.40, "API_S10", "おらい"),
+    (238, 798.08, 799.36, "API_S04", "来ましたニャ"),
+    (239, 799.36, 801.92, "API_S07", "ニャハハハ見てろよビリケンめ"),
+    (240, 805.68, 808.88, "API_S07", "この手鏡で奴らの目をくらませてやるニャ"),
+    (241, 808.88, 810.56, "API_S04", "はいいい考えニャ"),
+    (242, 813.12, 814.08, "API_S05", "よし"),
+    (243, 814.40, 817.28, "API_S05", "うわぁー！なんだこれまんましい"),
+]
+BILLY_SHIFT = {234: 1.4, 237: 0.9, 240: -0.8, 243: 1.2}   # seconds the word times drift
+
+
+def billy_segments():
+    segments = []
+    for sid, start, end, speaker, text in BILLY_ROWS:
+        chars = content_exact(text)
+        step = (end - start) / len(chars)
+        shift = BILLY_SHIFT.get(sid, 0.0)
+        words = [core.WordUnit(start + shift + i * step, start + shift + (i + 1) * step, ch, .9)
+                 for i, ch in enumerate(chars)]
+        segments.append(core.SpeechSegment(sid, start, end, text, .9, words, speaker=speaker))
+    return segments
+
+
+def test_word_times_past_their_row_never_leave_the_source_envelope(no_document):
+    from twobyteasr.subtitle_rules.grouping_contract import validate_grouping_result
+    segments = billy_segments()
+    with language_scope("ja"):
+        text = "".join(s.text for s in segments)
+        offsets = [28, 51, 60, 63, 69, 83, 102, 110, 112]
+        candidates = japanese_grouping.build_candidates(text, mandatory=[28, 51, 63, 69, 83, 102, 110],
+                                                        segment_offsets=offsets, hard_max=26)
+        cues, receipt = japanese_grouping.finalize_batch(
+            segments, [28, 51, 60, 63, 69, 83, 102, 110, 112, 126], candidates, complete=None)
+        assert validate_grouping_result(segments, cues)
+    assert "".join(c.text for c in cues) == text
+    by_id = {s.segment_id: s for s in segments}
+    oray = [c for c in cues if c.text.endswith("おらい")][-1]      # ends with row 237
+    assert by_id[236].start <= oray.start < oray.end <= by_id[237].end
+    tail = [c for c in cues if c.text.endswith("まんましい")][-1]   # its words drift 1.2 s late
+    assert tail.end <= by_id[243].end
+
+
+def test_retained_fallback_with_drifting_word_times_keeps_the_task_alive(no_document, monkeypatch):
+    from twobyteasr.subtitle_rules import grouping
+    from twobyteasr.subtitle_rules.grouping_contract import validate_grouping_result
+    records = []
+    monkeypatch.setattr(grouping, "record_run_event", lambda event, **kw: records.append((event, kw)))
+    monkeypatch.setattr(grouping, "add_review_item", lambda *a, **k: None)
+    segments = billy_segments()
+    with language_scope("ja"):
+        result = grouping._retain_grouping_range(segments, "AI 断句未完成，保留来源字幕。", "25.1")
+        assert validate_grouping_result(segments, result)
+    assert "".join(c.text for c in result) == "".join(s.text for s in segments)
+    assert all(len(content_exact(c.text)) <= 26 for c in result)     # the 28-character line was split
+    assert any(event == "grouping_retained_range_local_split" for event, _ in records)
+
+
+def test_retained_fallback_keeps_source_lines_when_the_split_breaks_the_contract(no_document, monkeypatch):
+    from twobyteasr.subtitle_rules import grouping
+    records = []
+    monkeypatch.setattr(grouping, "record_run_event", lambda event, **kw: records.append((event, kw)))
+    monkeypatch.setattr(grouping, "add_review_item", lambda *a, **k: None)
+    segments = billy_segments()
+
+    def bad_split(rows, cues):
+        broken = copy.deepcopy(cues)
+        broken[0].end = rows[-1].end + 5.0             # claims seconds of another source
+        return broken
+    monkeypatch.setattr(grouping, "_locally_split_retained_japanese", bad_split)
+    with language_scope("ja"):
+        result = grouping._retain_grouping_range(segments, "AI 断句未完成，保留来源字幕。", "25.1")
+    assert [c.text for c in result] == [s.text for s in segments]
+    assert [(c.start, c.end) for c in result] == [(s.start, s.end) for s in segments]
+    assert any(event == "grouping_retained_range_split_dropped" for event, _ in records)

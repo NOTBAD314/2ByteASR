@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QProgressBar, QPushB
                                QToolButton, QVBoxLayout, QWidget)
 
 from ..design.elided_label import ElidedLabel
-from ..design.soft_qss import soft_tokens
+from ..design.soft_qss import blend_hex, soft_tokens
 from ..i18n import tr
 from ..i18n_widgets import user_text
 from ..media.link_choices import size_text
@@ -60,7 +60,7 @@ QLabel#linkBrandNote, QLabel#linkMeta, QLabel#linkHint, QLabel#linkStatusText {{
 QLabel#linkBrandNote {{ font-size: 11px; }}
 QPushButton#linkNav {{
     background: transparent; color: {t.text_secondary}; border: 0; border-radius: 17px;
-    min-height: 36px; max-height: 36px; padding: 0 13px; font-size: 13px; font-weight: 600;
+    min-height: 36px; max-height: 36px; padding: 0 13px; font-size: 13px; font-weight: 500;
 }}
 QPushButton#linkNav:hover {{ background: {k.fill}; color: {t.text}; }}
 QPushButton#linkNav:checked {{ background: {k.chip}; color: {t.accent_text}; font-weight: 700; }}
@@ -73,10 +73,10 @@ QToolButton#linkIconButton:checked {{ background: {k.chip}; }}
 QLabel#linkHeroTitle {{ color: {t.text}; font-size: 24px; font-weight: 700; }}
 QLabel#linkHeroNote {{ color: {t.text_secondary}; font-size: 14px; }}
 QFrame#linkUrlField {{
-    background: {t.surface_elevated}; border: 1px solid {t.border_strong}; border-radius: 23px;
-    min-height: 48px; max-height: 48px;
+    background: {t.surface_elevated}; border: 1px solid {t.border_strong}; border-radius: 18px;
+    min-height: 52px; max-height: 52px;
 }}
-QFrame#linkUrlField[compact="true"] {{ border-radius: 19px; min-height: 40px; max-height: 40px; }}
+QFrame#linkUrlField[compact="true"] {{ border-radius: 15px; min-height: 44px; max-height: 44px; }}
 QFrame#linkUrlField QLineEdit {{
     background: transparent; border: 0; padding: 0; font-size: 14px; color: {t.text};
     min-height: 30px;
@@ -88,16 +88,16 @@ QPushButton#linkPrimary {{
 }}
 QPushButton#linkPrimary:hover {{ background: {t.accent_hover}; }}
 QPushButton#linkPrimary:pressed {{ background: {t.accent_pressed}; }}
-QPushButton#linkPrimary:disabled {{ background: {k.fill}; color: {t.text_muted}; }}
+QPushButton#linkPrimary:disabled {{ background: {k.chip}; color: {blend_hex(t.accent_text, k.chip, 0.35)}; }}
 QPushButton#linkGhost {{
     background: {k.fill}; color: {t.text}; border: 0; border-radius: 17px;
-    min-height: 36px; max-height: 36px; padding: 0 15px; font-size: 13px; font-weight: 600;
+    min-height: 36px; max-height: 36px; padding: 0 15px; font-size: 13px; font-weight: 500;
 }}
 QPushButton#linkGhost:hover {{ background: {k.fill_hover}; }}
 QPushButton#linkGhost:disabled {{ color: {t.disabled}; }}
 QPushButton#linkLink {{
     background: transparent; color: {t.accent_text}; border: 0; padding: 0 4px;
-    min-height: 28px; font-size: 13px; font-weight: 700;
+    min-height: 28px; font-size: 13px; font-weight: 500;
 }}
 QPushButton#linkLink:hover {{ color: {t.text}; }}
 QPushButton#linkLink:disabled {{ color: {t.disabled}; }}
@@ -105,14 +105,14 @@ QFrame#linkSegmented {{ background: {k.fill}; border: 0; border-radius: 18px; }}
 QFrame#linkSegmented[collapsed="true"] {{ background: transparent; }}
 QFrame#linkSegmented QPushButton {{
     background: transparent; color: {t.text_secondary}; border: 0; border-radius: 15px;
-    min-height: 32px; max-height: 32px; padding: 0 14px; font-size: 13px; font-weight: 600;
+    min-height: 32px; max-height: 32px; padding: 0 14px; font-size: 13px; font-weight: 500;
 }}
 QFrame#linkSegmented QPushButton:hover {{ background: {k.fill_hover}; color: {t.text}; }}
 QFrame#linkSegmented QPushButton:checked {{ background: {k.raised}; color: {t.text}; font-weight: 700; }}
 QFrame#linkSegmented QPushButton:disabled {{ background: transparent; color: {t.disabled}; }}
 QPushButton#linkChip {{
     background: {k.fill}; color: {t.text_secondary}; border: 1px solid transparent; border-radius: 15px;
-    min-height: 32px; max-height: 32px; padding: 0 13px; font-size: 13px; font-weight: 600;
+    min-height: 32px; max-height: 32px; padding: 0 13px; font-size: 13px; font-weight: 500;
 }}
 QPushButton#linkChip:hover {{ background: {k.fill_hover}; color: {t.text}; }}
 QPushButton#linkChip:checked {{ background: {k.chip}; color: {t.accent_text}; border-color: {t.accent}; }}
@@ -127,7 +127,7 @@ QLabel#linkTaskTitle {{ color: {t.text}; font-size: 14px; font-weight: 700; }}
 QLabel#linkMeta {{ font-size: 13px; }}
 QLabel#linkHint {{ font-size: 12px; }}
 QLabel#linkStepper {{ font-size: 12px; color: {t.text_muted}; }}
-QLabel#linkStateText {{ font-size: 12px; font-weight: 700; color: {t.text_muted}; }}
+QLabel#linkStateText {{ font-size: 12px; font-weight: 500; color: {t.text_muted}; }}
 QLabel#linkStateText[tone="ok"] {{ color: {k.ok}; }}
 QLabel#linkStateText[tone="warn"] {{ color: {k.warn}; }}
 QLabel#linkStateText[tone="accent"] {{ color: {t.accent_text}; }}
@@ -140,7 +140,7 @@ QToolButton#linkIconButton[small="true"] {{
 }}
 QCheckBox#linkSectionCheck {{ font-size: 13px; font-weight: 700; color: {t.text}; }}
 QLabel#linkPill {{
-    border-radius: 12px; min-height: 26px; max-height: 26px; padding: 0 10px; font-size: 12px; font-weight: 700;
+    border-radius: 12px; min-height: 26px; max-height: 26px; padding: 0 10px; font-size: 12px; font-weight: 500;
     background: {k.fill}; color: {t.text_muted};
 }}
 QLabel#linkPill[tone="ok"] {{ background: {k.ok_tint}; color: {k.ok}; }}
@@ -153,7 +153,7 @@ QProgressBar#linkProgress {{
 QProgressBar#linkProgress::chunk {{ background: {t.accent}; border-radius: 3px; }}
 QFrame#linkStatusBar {{ background: {t.panel}; border: 0; border-top: 1px solid {t.border}; }}
 QLabel#linkStatusText {{ font-size: 12px; }}
-QLabel#linkStatusStrong {{ color: {t.text_secondary}; font-size: 12px; font-weight: 700; }}
+QLabel#linkStatusStrong {{ color: {t.text_secondary}; font-size: 12px; font-weight: 500; }}
 QFrame#linkStatusDivider {{ background: {t.border_strong}; min-width: 1px; max-width: 1px; min-height: 14px; max-height: 14px; }}
 QLabel#linkNotice {{
     background: {k.chip}; color: {t.text}; border-radius: 10px; padding: 8px 14px; font-size: 13px;
@@ -197,7 +197,8 @@ QPushButton#linkCapsule[tone="warn"] {{ background: {tone[0]}; color: {tone[1]};
 
 def apply_link_sheet(widget: QWidget, t=None) -> None:
     from .ui_zoom import set_sheet
-    set_sheet(widget, emphasis_qss(link_qss(t)))
+    from .link_ticket_widgets import ticket_qss
+    set_sheet(widget, emphasis_qss(link_qss(t) + ticket_qss(t)))
 
 
 def pill(text: str = "", tone: str = "off") -> QLabel:

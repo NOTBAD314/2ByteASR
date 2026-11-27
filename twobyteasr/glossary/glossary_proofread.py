@@ -41,7 +41,7 @@ from PySide6.QtCore import (QBuffer, QByteArray, QIODevice, QObject, QPointF, QR
                             Signal)
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QIcon, QPainter, QPen, QPolygonF, QUndoStack
 from PySide6.QtWidgets import (QApplication, QBoxLayout, QButtonGroup, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton,
+                               QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton,
                                QScrollArea, QScrollBar, QSizePolicy, QStackedWidget, QStyle, QStyledItemDelegate,
                                QVBoxLayout, QWidget)
 
@@ -992,6 +992,10 @@ class CaptionReviewList(QWidget):
     row_toggled = Signal(str)
     rows_select_all = Signal()
     columns_changed = Signal()
+    next_pending_requested = Signal(bool)    # reverse
+    adopt_option_requested = Signal(int)     # -1 = single unambiguous group, 0..8 = option 1..9
+    dismiss_current_requested = Signal()
+    quick_capture_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1966,31 +1970,76 @@ class CaptionReviewList(QWidget):
         event.accept()
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_R and event.modifiers() == Qt.KeyboardModifier.ShiftModifier:
+        if self._editing:
+            super().keyPressEvent(event)
+            return
+        mods = event.modifiers()
+        key = event.key()
+        if key == Qt.Key.Key_R and mods == Qt.KeyboardModifier.ShiftModifier:
             self.adopt_requested.emit()
             event.accept()
             return
-        if event.key() == Qt.Key.Key_A and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+        if key == Qt.Key.Key_A and mods & Qt.KeyboardModifier.ControlModifier:
             self.rows_select_all.emit()
             return
         from PySide6.QtGui import QKeySequence
         if event.matches(QKeySequence.StandardKey.Copy) and self.selection() is not None:
             QApplication.clipboard().setText(self.selection()[3])
             return
-        if event.key() == Qt.Key.Key_Escape and self._selection is not None:
+        if key == Qt.Key.Key_Escape and self._selection is not None:
             self.clear_selection()
             return
+        # 4-key speed review (2026-11-25): Tab/N/P jump strictly across pending rows,
+        # A / 1-9 adopt & advance, D ignore & advance, E inline edit, T quick capture.
+        if key == Qt.Key.Key_Backtab or (key == Qt.Key.Key_Tab and mods == Qt.KeyboardModifier.ShiftModifier):
+            self.next_pending_requested.emit(True)
+            event.accept()
+            return
+        if key == Qt.Key.Key_Tab and mods == Qt.KeyboardModifier.NoModifier:
+            self.next_pending_requested.emit(False)
+            event.accept()
+            return
+        if mods == Qt.KeyboardModifier.NoModifier:
+            if key == Qt.Key.Key_N:
+                self.next_pending_requested.emit(False)
+                event.accept()
+                return
+            if key == Qt.Key.Key_P:
+                self.next_pending_requested.emit(True)
+                event.accept()
+                return
+            if key == Qt.Key.Key_T:
+                self.quick_capture_requested.emit()
+                event.accept()
+                return
+            if self.current:
+                if key == Qt.Key.Key_A:
+                    self.adopt_option_requested.emit(-1)
+                    event.accept()
+                    return
+                if Qt.Key.Key_1 <= key <= Qt.Key.Key_9:
+                    self.adopt_option_requested.emit(int(key - Qt.Key.Key_1))
+                    event.accept()
+                    return
+                if key == Qt.Key.Key_D:
+                    self.dismiss_current_requested.emit()
+                    event.accept()
+                    return
+                if key == Qt.Key.Key_E:
+                    self.edit_requested.emit(self.current)
+                    event.accept()
+                    return
         slot = self.slot_of(self.current)
-        if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up) and self.slots:
-            slot = max(0, min(len(self.slots) - 1, slot + (1 if event.key() == Qt.Key.Key_Down else -1)))
+        if key in (Qt.Key.Key_Down, Qt.Key.Key_Up) and self.slots:
+            slot = max(0, min(len(self.slots) - 1, slot + (1 if key == Qt.Key.Key_Down else -1)))
             self.current = self.rows[self._primary(slot)]["cue_id"]
             self.ensure_visible(self.current)
             self.update()
             return
-        if self.current and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_F2):
+        if self.current and key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_F2):
             self.edit_requested.emit(self.current)
             return
-        if self.current and event.key() == Qt.Key.Key_Space:
+        if self.current and key == Qt.Key.Key_Space:
             self.play_requested.emit(self.current)
             return
         super().keyPressEvent(event)
@@ -4195,6 +4244,12 @@ class GlossaryProofreadPage(QWidget):
         bind_text(self.add_button, '把上面的专有名词加入所选词库', property='toolTip')
         self.add_button.clicked.connect(self._add_terms)
         add_row.addWidget(self.add_button)
+        self.quick_capture_button = QPushButton(tr("✨ 随手贴"))
+        self.quick_capture_button.setObjectName("proofreadSoft")
+        self.quick_capture_button.setFixedHeight(36)
+        bind_text(self.quick_capture_button, '贴上百科、人名表或错词清单，本机拆词或用文字 AI 整理并补易听错别名，加入后立刻重扫全片（快捷键 T）', property='toolTip')
+        self.quick_capture_button.clicked.connect(lambda: self._open_quick_capture())
+        add_row.addWidget(self.quick_capture_button)
         source.addLayout(add_row)
         self.term_preview = QLabel()
         self.term_preview.setObjectName("proofreadTermPreview")
@@ -4539,11 +4594,37 @@ class GlossaryProofreadPage(QWidget):
         self.list.reveal_requested.connect(self._reveal_speakers)
         self.list.row_toggled.connect(self._batch_toggle_row)
         self.list.rows_select_all.connect(self._batch_select_all)
+        self.list.next_pending_requested.connect(self._jump_next_pending)
+        self.list.adopt_option_requested.connect(self._speed_adopt_and_advance)
+        self.list.dismiss_current_requested.connect(self._speed_dismiss_and_advance)
+        self.list.quick_capture_requested.connect(lambda: self._open_quick_capture())
         # 原文 · 英语 | 译文 · 简体中文 over the list's columns (2026-11-13).
         self.columns_header = _ColumnHeader(self)
         right_layout.addWidget(self.columns_header)
         right_layout.addWidget(self.list, 1)
+        # Compact 1-row Speed-Review keycap legend + auto-play toggle (2026-11-25)
+        self.speed_bar = QFrame()
+        self.speed_bar.setObjectName("proofreadSpeedBar")
+        speed_row = QHBoxLayout(self.speed_bar)
+        speed_row.setContentsMargins(14, 4, 12, 4)
+        speed_row.setSpacing(10)
+        self.speed_hint = QLabel(tr("键盘秒审：Tab 跳下一待审 · Space 听原声 · A / 1-3 采纳并跳下条 · D 忽略 · E 手改 · T 随手贴 · 右键 删误判别名"))
+        self.speed_hint.setObjectName("proofreadTiny")
+        self.speed_hint.setWordWrap(True)
+        speed_row.addWidget(self.speed_hint, 1)
+        self.auto_play_next = QCheckBox(tr("跳条自动播原声"))
+        self.auto_play_next.setObjectName("proofreadTiny")
+        self.auto_play_next.setChecked(False)
+        speed_row.addWidget(self.auto_play_next)
+        right_layout.addWidget(self.speed_bar)
         # Every bulk action under the list; 采用全部建议 last (2026-11-13).
+        self.ai_progress_bar = QProgressBar()
+        self.ai_progress_bar.setFixedHeight(6)
+        self.ai_progress_bar.setTextVisible(False)
+        bind_text(self.ai_progress_bar, 'AI 校对进度', property='accessibleName')
+        self.ai_progress_bar.hide()
+        right_layout.addWidget(self.ai_progress_bar)
+        self.ai_review_outcome = ''
         # Three groups that wrap whole: counts | selection | the list actions.
         self.bulk_bar = CommandBar()
         self.bulk_bar.setObjectName("proofreadBulkBar")
@@ -5099,6 +5180,11 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         self.search.clear()
         self.search.blockSignals(False)
         self._refresh_view()
+        studio_cue = str(getattr(studio_page, "selected_cue_id", "") or "") if studio_page is not None else ""
+        if studio_cue and studio_cue in self._by_id:
+            self.list.current = studio_cue
+            self.list.ensure_visible(studio_cue)
+            self.list.update()
         from ..app.ui_zoom import apply_to
         apply_to(self)
         # The captions paint first; the local checks start right after. Both
@@ -6747,6 +6833,8 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
                 c, self._by_id[c]["base"], select=s))
             copy_selected = menu.addAction(tr("复制「{text}」", text=chosen))
             copy_selected.triggered.connect(lambda _=False, t=chosen: QApplication.clipboard().setText(t))
+            add_sel_term = menu.addAction(tr("把「{text}」快添到词库…", text=chosen))
+            add_sel_term.triggered.connect(lambda _=False, t=chosen: self._open_quick_capture(initial_text=t))
             menu.addSeparator()
         pair = None
         stutter = self.stutter_toggle.isChecked()
@@ -6783,6 +6871,16 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
             action.triggered.connect(lambda _=False, o=old, n=new: self.start_batch_replace(o, n))
             remember = menu.addAction(tr("把『{old} → {new}』加入词库…", old=old, new=new))
             remember.triggered.connect(lambda _=False, o=old, n=new: self._remember_pair(o, n))
+            from .proofread_speed_review import find_term_record_for_issue
+            matched_record = find_term_record_for_issue(self._snapshot, new, old)
+            if matched_record is not None:
+                if any(a.casefold() == old.casefold() for a in matched_record.aliases):
+                    drop_alias = menu.addAction(tr("删掉误判别名「{old}」（保留「{new}」，可撤销）", old=old, new=matched_record.canonical))
+                    drop_alias.triggered.connect(lambda _=False, rec=matched_record, a=old: self._remove_term_alias(rec, a))
+                edit_rec = menu.addAction(tr("就地编辑词条「{name}」…", name=matched_record.canonical))
+                edit_rec.triggered.connect(lambda _=False, rec=matched_record: self._edit_term_record(rec))
+                del_rec = menu.addAction(tr("删除整个词条「{name}」（可撤销）", name=matched_record.canonical))
+                del_rec.triggered.connect(lambda _=False, rec=matched_record: self._delete_term_record(rec))
             copy_action = menu.addAction(tr("复制『{new}』", new=new))
             copy_action.triggered.connect(lambda _=False, n=new: QApplication.clipboard().setText(n))
             menu.addSeparator()
@@ -7717,20 +7815,119 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
     def _edit_current_term(self):
         record = self._current_term()
         if record is not None:
-            from .term_editor import TermEditor
-            self._term_editor = TermEditor(record, self)
-            self._term_editor.saved.connect(self._term_saved)
-            self._term_editor.open()
+            self._edit_term_record(record)
+
+    def _edit_term_record(self, record):
+        from .term_editor import TermEditor
+        self._term_editor = TermEditor(record, self)
+        self._term_editor.saved.connect(self._term_saved)
+        self._term_editor.open()
 
     def _delete_current_term(self):
         record = self._current_term()
         if record is not None:
-            import subtitle_core as legacy
-            from .term_editing import edit_term
-            try:
-                self._term_saved(edit_term(legacy, record, delete=True))
-            except (ValueError, OSError) as exc:
-                self._set_status(str(exc))
+            self._delete_term_record(record)
+
+    def _delete_term_record(self, record):
+        import subtitle_core as legacy
+        from .term_editing import edit_term
+        try:
+            self._term_saved(edit_term(legacy, record, delete=True))
+        except (ValueError, OSError) as exc:
+            self._set_status(str(exc))
+
+    def _remove_term_alias(self, record, alias):
+        """1-click removal of a single mis-triggering alias right from a caption suggestion."""
+        import subtitle_core as legacy
+        from .proofread_speed_review import remove_alias_from_term
+        try:
+            change = remove_alias_from_term(legacy, record, alias)
+            self._term_saved(change)
+            self._set_status(tr("已删掉误判别名「{alias}」（保留「{name}」），全片误判建议已刷新；可点左侧「撤销修改」恢复。",
+                                alias=alias, name=record.canonical))
+        except (ValueError, OSError) as exc:
+            self._set_status(str(exc))
+
+    def _open_quick_capture(self, *, initial_text: str = ""):
+        """Open QuickTermCaptureDialog directly inside AI Glossary Proofread and re-scan on commit."""
+        import subtitle_core as legacy
+        from .quick_term_dialog import QuickTermCaptureDialog
+        from .proofread_speed_review import collect_manual_edit_pairs
+        lib_id = self._target_id()
+        lib_name = self._target_name() or lib_id or "通用词库"
+        pairs = collect_manual_edit_pairs(self._rows, single_replacement)
+        settings_getter = getattr(self._window, "_current_ai_settings", None)
+        dlg = QuickTermCaptureDialog(
+            library_name=lib_name,
+            library_id=lib_id,
+            legacy=legacy,
+            settings_getter=settings_getter if callable(settings_getter) else None,
+            project_pairs=pairs,
+            parent=self,
+        )
+        if initial_text:
+            dlg.panel.input_box.setPlainText(str(initial_text))
+
+        def _on_committed(res: dict) -> None:
+            self._notify_library_changed()
+            chosen = set(self._selected_ids())
+            if lib_id:
+                chosen.add(lib_id)
+            live, _studio = self._live_project()
+            self._fill_libraries(live, keep=chosen, target=lib_id)
+            self._run(False)
+            self._set_status(tr("已从随手贴加入 {count} 条词条到「{lib}」，正在重新扫描全片…",
+                                count=int(res.get("added", 0)), lib=res.get("library", lib_name)))
+
+        dlg.panel.committed.connect(_on_committed)
+        dlg.exec()
+
+    # 4-key speed review handlers (2026-11-25) --------------------------------
+    def _visible_cue_ids(self):
+        return [self._rows[self.list._primary(i)]["cue_id"] for i in range(len(self.list.slots))]
+
+    def _is_cue_pending(self, cue_id: str) -> bool:
+        row = self._by_id.get(cue_id)
+        if row is None or row.get("review_dismissed"):
+            return False
+        _sug, pending, _chg = self._row_state(row)
+        return bool(pending)
+
+    def _jump_next_pending(self, reverse: bool = False):
+        from .proofread_speed_review import next_pending_cue_id
+        nxt = next_pending_cue_id(self._visible_cue_ids(), self.list.current, self._is_cue_pending, reverse=reverse)
+        if not nxt:
+            self._set_status(tr("✓ 当前列表里的待审建议都处理完了！"))
+            return
+        self.list.current = nxt
+        self.list.ensure_visible(nxt)
+        self.list.update()
+        if self.auto_play_next.isChecked():
+            self._play(nxt)
+
+    def _speed_adopt_and_advance(self, option_slot: int):
+        from .proofread_speed_review import pick_adopt_index
+        cue_id = self.list.current
+        row = self._by_id.get(cue_id)
+        if row is None:
+            self._jump_next_pending(False)
+            return
+        idx, hint = pick_adopt_index(self._groups(row), option_slot=None if option_slot < 0 else option_slot)
+        if idx is None:
+            self._set_status(tr(hint))
+            return
+        self._toggle_issue(cue_id, idx)
+        if not self._is_cue_pending(cue_id):
+            self._jump_next_pending(False)
+
+    def _speed_dismiss_and_advance(self):
+        cue_id = self.list.current
+        row = self._by_id.get(cue_id)
+        if row is None:
+            self._jump_next_pending(False)
+            return
+        self._dismiss_group(cue_id, 0)
+        self._jump_next_pending(False)
 
     def _term_saved(self, change):
         self._library_edits.append(change)
@@ -8067,11 +8264,16 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         worker = _ReviewThread(view, wanted, review_snapshot, settings, bool(use_ai), self,
                                stand_in=self.ai_stand_in if use_ai else None)
         self._worker, self._worker_ai, self._worker_scope_all = worker, bool(use_ai), scope is None
+        if use_ai:
+            self.ai_review_outcome = ''
+            self.ai_progress_bar.setRange(0, 0)
         self._set_busy(True)
         self._set_status(tr("正在请求 AI 校对…") if use_ai else tr("正在按词库匹配（本地）…"))
 
         def progress(done, total):
             if generation == self._generation and use_ai and total:
+                self.ai_progress_bar.setRange(0, total)
+                self.ai_progress_bar.setValue(done)
                 self._set_status(tr("AI 校对中：第 {done}/{total} 批…（可取消；已有建议和修改会保留）",
                                     done=done, total=total))
             elif generation == self._generation and total and done < total:
@@ -8118,10 +8320,15 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
                 return
             self._show_result(result, current, use_ai, texts_at_run, scope, versions_at_run, revisions_at_run,
                               context_versions_at_run)
+            if use_ai:
+                state = (result.receipt or {}).get('run_state')
+                self.ai_review_outcome = state if state in {'partial', 'failed'} else 'complete'
 
         def failed(message):
             if generation != self._generation:
                 return
+            if use_ai:
+                self.ai_review_outcome = 'cancelled' if message == "cancelled" else 'failed'
             if message == "cancelled":
                 self._set_status(tr("已取消 {what}；已有建议和你的修改都保留", what=tr("AI 校对") if use_ai else tr("匹配")))
             else:
@@ -8154,6 +8361,7 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         for button in (self.local_button, self.ai_button, self.retry_ai_button):
             button.setEnabled(not busy)
         self.cancel_button.setVisible(busy)
+        self.ai_progress_bar.setVisible(busy and self._worker_ai)
 
     def _clear_term_issues(self, cue_ids=None):
         wanted = None if cue_ids is None else set(cue_ids)
@@ -8497,6 +8705,12 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
             self._set_status(tr("修改尚未保存：{reason}。请重试返回。", reason=self._save_error))
             return
         self._flush_library_changes()
+        _live, studio_page = self._live_project()
+        if studio_page is not None and self.list.current and hasattr(studio_page, "select_cue"):
+            try:
+                studio_page.select_cue(self.list.current)
+            except Exception:  # noqa: BLE001
+                pass
         if not returned:
             self.back_requested.emit()
 

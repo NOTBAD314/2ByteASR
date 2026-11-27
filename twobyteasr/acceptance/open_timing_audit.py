@@ -93,6 +93,10 @@ def run(output, *, window):
             rss_before = process.memory_info().rss / 1024 ** 2
             began = time.perf_counter()
             window.open_studio_project(str(target), mode='edit', source='studio_recognition')
+            # The gate is made by the first open, which may start a moment later (2026-11-27).
+            deadline = time.monotonic() + 15
+            while getattr(page, '_readiness', None) is None and time.monotonic() < deadline:
+                QTest.qWait(20)
             readiness = page._readiness
             deadline = time.monotonic() + 120
             QTest.qWait(50)

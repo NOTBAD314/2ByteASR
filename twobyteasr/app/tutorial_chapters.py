@@ -34,7 +34,13 @@ CHAPTERS = {
     'speakers': ('说话人管理', 3),
     'style': ('样式、动效与 AI 设计', 4),
     'audio': ('声音与剪辑', 4),
+    # 2026-11-27 (user: people who never used an editor): written in tutorial_basics.
+    'timeline': ('看懂时间轴', 5),
+    'select': ('选字幕与套用范围', 3),
+    'ai': ('AI 生成与修复字幕', 4),
+    'cut': ('剪视频入门', 4),
 }
+BASICS = ('timeline', 'select', 'ai', 'cut')
 TERMS_LIBRARY = '兔白教学词库'
 
 
@@ -56,11 +62,20 @@ CATALOG = (
             ('选识别方案和视频的语言', '放入示范视频，看三张模型卡', 'AI Key 是什么、要不要填', '开始生成、看结果、导出字幕')),
     Chapter('how', '软件怎么做出字幕', 3, '基础', 'firered',
             ('三个模型各管什么', '三份写法怎么比、哪些留给你挑', '术语库、AI 断句和本地规则', '怎样让字幕更准'), new=True),
+    Chapter('timeline', '看懂时间轴', 5, '基础', 'studio_open',
+            ('每一行是什么：字幕轨、视频轨、音轨', '红色播放头、灰黄红复核标记', '展开折叠的配角、滚轮上下滑',
+             '新建字幕轨和视频轨、加一条字幕'), new=True),
     Chapter('fix', '改错字：AI 词库校对', 2, '基础', 'gl_ai',
             ('勾选词库，本机免费找错字', 'AI 校对找词库外的错字', '点建议改正，Ctrl+Z 撤销')),
     Chapter('studio', '字幕工作台基本功', 4, '基础', 'review',
             ('双击或按 E 改字，Enter 保存', '按 R 审核，1 / 2 / 3 选候选', 'C 剃刀、B 合并、Shift+Q / W 波纹合并',
              'T 新增一条、导出和压制')),
+    Chapter('select', '选字幕与套用范围', 3, '基础', 'replace',
+            ('点一下选一条，Ctrl 多选', '拖框选、Ctrl+A 全选', '「应用到」：当前、已选、说话人、全片',
+             'I / O 只处理一段'), new=True),
+    Chapter('ai', 'AI 生成与修复字幕', 4, '基础', 'apikey',
+            ('AI 生成字幕、只重新识别一段', 'AI 校对、清理、优化、智能修轴', 'AI 断句：只断开不改字',
+             '翻译与双语显示'), new=True),
     Chapter('editor', '编辑器新操作与快捷键', 4, '进阶', 'edit',
             ('Shift+F 直接换代称，Shift+E 确认编辑', 'Shift+C 在光标处切开', 'Ctrl+A 再 Alt+← / → 整片微调',
              'I / O 框一段，只重新识别这一段', '= / - 缩放时间轴、J / K / L 播放'), new=True),
@@ -76,11 +91,13 @@ CATALOG = (
             ('改名、换颜色、合并同一个人', '字幕前显示名字、分主播导出'), new=True),
     Chapter('style', '样式、动效与 AI 设计', 4, '进阶', 'punct',
             ('样式预设、只改译文或某个说话人', '在画面上拖字幕位置', '动效时间线、卡拉 OK', '一句话生成字幕设计'), new=True),
+    Chapter('cut', '剪视频入门', 4, '进阶', 'remove',
+            ('Ctrl+K 在播放头切开', '选中一段、Delete 删掉', '波纹删除、Q / W 剪头去尾', '转场、素材、只导出一段'), new=True),
     Chapter('audio', '声音与剪辑', 4, '进阶', 'qw',
             ('播放音量、轨道调音台、工程响度', 'Ctrl+K 分割、波纹剪除、转场', '素材和剪辑助手'), new=True),
 )
 BY_ID = {chapter.id: chapter for chapter in CATALOG}
-OWN_STEPS = ('editor', 'terms', 'bunny', 'render', 'how', 'speakers', 'style', 'audio')                 # steps written in this module
+OWN_STEPS = ('editor', 'terms', 'bunny', 'render', 'how', 'speakers', 'style', 'audio') + BASICS   # steps written here or in tutorial_basics
 STANDALONE = ('fix', 'studio') + OWN_STEPS              # set up their own demo data, start where they are
 
 
@@ -90,6 +107,9 @@ def is_chapter(part: str) -> bool:
 
 
 def steps(window, part: str) -> list:
+    if part in BASICS:
+        from . import tutorial_basics
+        return tutorial_basics.steps(window, part)
     build = {'editor': editor_steps, 'terms': terms_steps, 'bunny': bunny_steps, 'render': render_steps,
              'how': how_steps, 'speakers': speakers_steps, 'style': style_steps, 'audio': audio_steps}[part]
     found = build(window)
@@ -498,7 +518,7 @@ def speakers_steps(w) -> list:
     host = dialog
     return [
         TourStep('这一章学==说话人管理==：改名、换颜色、合并同一个人、字幕前带名字', None,
-                 note='用示范工程练习；它有「主播」和「嘉宾」两位', enter=s.open, anim='speakers'),
+                 note='用示范工程练习；主角是「主播」和「嘉宾」，另有两位配角', enter=s.open, anim='speakers'),
         TourStep('点「==说话人管理==」打开', speaker_button,
                  [TourAction('帮我打开', open_manager)], show_next=False, interactive=True,
                  click=TourAction('', open_manager), done=lambda: dialog() is not None,

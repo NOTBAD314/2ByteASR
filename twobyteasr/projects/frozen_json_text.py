@@ -16,6 +16,7 @@ hashing piece by piece never builds one 60 MB string.
 from __future__ import annotations
 
 import json
+from json.encoder import INFINITY, encode_basestring
 from time import perf_counter_ns
 from ..diagnostics.save_trace import current as current_save_trace
 from typing import Any, Iterable
@@ -31,9 +32,107 @@ def dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+_float_repr = float.__repr__
+_int_repr = int.__repr__
+
+
+def _float_text(value: float) -> str:
+    if value != value:
+        return "NaN"
+    if value == INFINITY:
+        return "Infinity"
+    if value == -INFINITY:
+        return "-Infinity"
+    return _float_repr(value)
+
+
+def _key_text(key) -> str:
+    if isinstance(key, str):
+        return key
+    if isinstance(key, float):
+        return _float_text(key)
+    if key is True:
+        return "true"
+    if key is False:
+        return "false"
+    if key is None:
+        return "null"
+    if isinstance(key, int):
+        return _int_repr(key)
+    raise TypeError(f"keys must be str, int, float, bool or None, not {key.__class__.__name__}")
+
+
+def _scalar_text(value):
+    """json's text of a scalar, or None for a container or an unknown type (json's order)."""
+    if isinstance(value, str):
+        return encode_basestring(value)
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, int):
+        return _int_repr(value)
+    if isinstance(value, float):
+        return _float_text(value)
+    return None
+
+
+def _pretty_into(value, pads: list, level: int, out: list) -> None:
+    if isinstance(value, dict):
+        if not value:
+            out.append("{}")
+            return
+        items, opener, closer = sorted(value.items()), "{", "}"
+    elif isinstance(value, (list, tuple)):
+        if not value:
+            out.append("[]")
+            return
+        items, opener, closer = value, "[", "]"
+    else:
+        text = _scalar_text(value)
+        if text is None:
+            raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+        out.append(text)
+        return
+    inner = level + 1
+    if inner == len(pads):
+        pads.append(pads[-1] + "  ")
+    lead = opener + pads[inner]
+    following = "," + pads[inner]
+    for item in items:
+        if opener == "{":
+            key, item = item
+            lead += encode_basestring(_key_text(key)) + ": "
+        text = _scalar_text(item)
+        if text is None:
+            out.append(lead)
+            _pretty_into(item, pads, inner, out)
+        else:
+            out.append(lead + text)
+        lead = following
+    out.append(pads[level] + closer)
+
+
 def pretty(value: Any) -> str:
-    """The formal project file's encoding of one value at nesting level 0."""
-    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+    """The formal project file's encoding of one value at nesting level 0.
+
+    The same text as ``json.dumps(value, ensure_ascii=False, indent=2,
+    sort_keys=True)``. 2026-11-27 (fast-anything scan of
+    scripts/benchmark_studio_save_lag.py: 47 % of a formal save): with
+    ``indent`` CPython runs its generic pure-Python encoder, where every piece
+    climbs back through one generator per nesting level. This encoder keeps
+    json's rules (sorted items, key conversion, type order, NaN/Infinity,
+    C string escaping) and appends pieces to one list: 1.6x faster. A cycle
+    still raises json's own error.
+    """
+    out: list = []
+    try:
+        _pretty_into(value, ["\n"], 0, out)
+    except RecursionError:
+        return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+    return "".join(out)
 
 
 class FrozenTextCache:

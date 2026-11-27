@@ -153,10 +153,12 @@ class CountChip(QPushButton):
 
 class ResponsiveCueTableView(QTableView):
     first_selected_rows_painted = Signal(int)
+    enter_edit_requested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._selection_paint_token = 0
+        self._last_double_click_pos = None
         # Two-line reading view by default (2026-10-09, M16); the classic
         # five-column table stays available.
         self.reading = False
@@ -164,6 +166,19 @@ class ResponsiveCueTableView(QTableView):
         # lets the app-wide smooth wheel (design.smooth_scroll) glide this list; per-item
         # scrolling could only jump whole rows. scrollTo / centring on the playhead work the same.
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        self._last_double_click_pos = event.position()
+        super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                and event.modifiers() == Qt.KeyboardModifier.NoModifier
+                and self.currentIndex().isValid()):
+            self.enter_edit_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def expect_selected_rows_paint(self, token: int) -> None:
         self._selection_paint_token = int(token)
@@ -915,10 +930,18 @@ class StudioWorkspaceBuilder:
         yield from page.source_monitor.build_steps()
         yield from _gui_slice.checkpoint()
         page.source_tabs.addTab(page.source_monitor, '源素材')
+        from .mission_strip_ui import FinishChecklistPanel, MicroUpgradePill
+        page.finish_checklist_panel = FinishChecklistPanel(page.source_tabs)
+        page.finish_checklist_tab_index = page.source_tabs.addTab(page.finish_checklist_panel, '专名与方案')
         # Each transport keeps its own intent. The source's hideEvent pauses
         # that source; opening its tab never pauses or rebinds the sequence.
         page.upper_splitter.insertWidget(0, page.source_tabs)
         video_layout.addWidget(overlay_host, 1)
+        page.micro_upgrade_pill = MicroUpgradePill(video_host)
+        page.micro_upgrade_pill.hide()
+        video_layout.addWidget(page.micro_upgrade_pill, 0)
+        from .studio_finish_flow import install_studio_finish_wiring
+        install_studio_finish_wiring(page)
         page.subtitle_edit_dock.hide()
         yield from _gui_slice.checkpoint()
         yield '视频承载区'
@@ -1263,6 +1286,7 @@ class StudioWorkspaceBuilder:
         context_layout.addWidget(page.context_tools)
         page.context_stack.currentChanged.connect(lambda _index:page.context_tools.setVisible(page.context_stack.currentWidget() is page.context_drawer))
         page.context_stack.addWidget(page.context_drawer)
+        page.context_stack.setCurrentWidget(page.context_drawer)
         yield from _gui_slice.checkpoint()
         context_layout.addWidget(page.context_stack, 1)
         page.upper_splitter.addWidget(page.context_panel)
@@ -1964,6 +1988,16 @@ class StudioWorkspaceBuilder:
         page.highlight_panel.autocut_apply_requested.connect(page._apply_autocut)
         page.highlight_panel.autocut_cancel_requested.connect(page._cancel_autocut)
         page.highlight_panel.autocut_preview_requested.connect(page._preview_autocut_seam)
+        # 任务包 4：AI 文稿粗剪控制栏接通。
+        rc_bar = page.highlight_panel.rough_cut_bar
+        rc_bar.linked_cut_toggled.connect(page._on_rough_cut_linked_toggled)
+        rc_bar.ai_analyze_requested.connect(page._run_ai_rough_cut)
+        rc_bar.keep_highlights_requested.connect(page._rough_cut_keep_highlights)
+        rc_bar.cut_background_requested.connect(page._rough_cut_background_speaker)
+        rc_bar.seam_preview_toggled.connect(page._toggle_rough_cut_seam_preview)
+        rc_bar.apply_cut_requested.connect(page._apply_rough_cut)
+        rc_bar.clear_marks_requested.connect(page._clear_rough_cut_marks)
+        rc_bar.reason_toggled.connect(page._toggle_rough_cut_reason)
         yield from _gui_slice.checkpoint()
         page.timeline.text_edit_committed.connect(page._timeline_text_edited)
         # 2026-10-22: Ctrl+Enter in the inline editor splits at the text cursor.
@@ -2540,11 +2574,14 @@ class StudioWorkspaceBuilder:
         filter_button.setIconSize(QSize(14, 14))  # 2026-11-12 (user): the 24 px funnel was too big
         search_row.addWidget(page.review_entry_button)
         layout.addLayout(search_row)
+        from .studio_bilingual import build_cue_layer_switcher, sync_cue_list_layer_controls
+        layout.addWidget(build_cue_layer_switcher(page))
 
         page.cue_table = ResponsiveCueTableView()
         page.cue_table.setObjectName("cueTable")
         page.cue_model = CueTableModel(parent=page.cue_table)
         page.cue_table.setModel(page.cue_model)
+        page.cue_model.text_layer_changed.connect(lambda _layer: sync_cue_list_layer_controls(page))
         page.cue_model.text_edit_requested.connect(
             lambda cue_id, text: page._timeline_text_edited(cue_id, False, text)
         )
@@ -2580,6 +2617,10 @@ class StudioWorkspaceBuilder:
             page._selection_first_visual
         )
         page.cue_table.doubleClicked.connect(page._begin_list_inline_edit)
+        page.cue_table.enter_edit_requested.connect(page._begin_list_enter_edit)
+        from .studio_translation_edit import show_cue_list_context_menu
+        page.cue_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        page.cue_table.customContextMenuRequested.connect(lambda pos: show_cue_list_context_menu(page, pos))
         header = page.cue_table.horizontalHeader()
         for column, width in ((0, 36), (1, 88), (2, 66), (4, 58)):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
@@ -2590,6 +2631,8 @@ class StudioWorkspaceBuilder:
         from PySide6.QtWidgets import QStyledItemDelegate
         page.cue_reading_delegate = CueReadingDelegate(page.cue_table)
         page.cue_reading_delegate.review_confirm_requested.connect(page._confirm_review_cue)
+        page.cue_reading_delegate.retranslate_requested.connect(page._retranslate_single_cue)
+        page.cue_reading_delegate.rough_cut_toggle_requested.connect(page._toggle_rough_cut_cue)
         page._cue_text_delegate = QStyledItemDelegate(page.cue_table)
 
         def set_cue_list_view(mode: str, *, remember: bool = True) -> None:
@@ -2601,7 +2644,7 @@ class StudioWorkspaceBuilder:
             table.setAlternatingRowColors(not reading)
             table.setWordWrap(False)
             table.verticalHeader().setDefaultSectionSize(
-                CueReadingDelegate.row_height(table.font()) if reading else 42)
+                CueReadingDelegate.row_height(table.font(), bilingual=page.cue_model.bilingual_cards) if reading else 42)
             table.setProperty("cueView", "reading" if reading else "table")
             table.style().unpolish(table)
             table.style().polish(table)

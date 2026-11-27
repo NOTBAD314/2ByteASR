@@ -55,6 +55,12 @@ def fingerprint(settings: dict, stage: str = 'polish') -> str:
     protocol = str(endpoint.get('protocol') or '')
     if protocol not in ('', 'auto', 'openai_compatible_chat'):
         parts.append(protocol)
+    if endpoint.get("reasoning_profile"):
+        from .reasoning_adapter import wire_identity
+        try:
+            parts.append(wire_identity(endpoint))
+        except (KeyError, TypeError, ValueError):
+            return ""
     return hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode('utf-8')).hexdigest()
 
 

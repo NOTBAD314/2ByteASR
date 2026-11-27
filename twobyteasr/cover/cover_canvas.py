@@ -183,6 +183,13 @@ class CoverView(QGraphicsView):
         self.space_down = False
         self.auto_fit = True
         self.hover_handle = None
+        # Viewport pixels kept free around the fitted canvas (the editor's floating zoom pill and
+        # feed preview sit in the bottom one), the mat colour around the canvas, and whether to
+        # mark the corner a video platform's duration badge covers (2026-11-27).
+        self.fit_padding = (24, 24, 24, 24)
+        self.scene_margin = .25
+        self.mat_color = None
+        self.duration_corner = False
         self.setMouseTracking(True)
         self.setScene(QGraphicsScene(self))
         self.setObjectName('coverCanvas')
@@ -219,7 +226,9 @@ class CoverView(QGraphicsView):
                 item.update_layer(layer)
             item.setZValue(z)
             item.setSelected(layer.id in self.session.selected)
-        self.scene().setSceneRect(-document.width*.25, -document.height*.25, document.width*1.5, document.height*1.5)
+        margin = self.scene_margin
+        self.scene().setSceneRect(-document.width*margin, -document.height*margin,
+                                  document.width*(1+2*margin), document.height*(1+2*margin))
         self.renderer.release_unused(document)
         self.syncing = False
         self.viewport().update()
@@ -233,8 +242,16 @@ class CoverView(QGraphicsView):
 
     def fit_canvas(self):
         self.auto_fit = True
-        self.fitInView(QRectF(0, 0, self.session.document.width, self.session.document.height).adjusted(-24, -24, 24, 24), Qt.KeepAspectRatio)
-        self.zoom_changed.emit(self.transform().m11())
+        document = self.session.document
+        left, top, right, bottom = self.fit_padding
+        area = self.viewport().rect()
+        width, height = max(40, area.width()-left-right), max(40, area.height()-top-bottom)
+        scale = max(.02, min(8., min(width/document.width, height/document.height)))
+        self.resetTransform()
+        self.scale(scale, scale)
+        # The document's centre goes to the centre of the free area, not of the whole viewport.
+        self.centerOn(document.width/2 - (left-right)/2/scale, document.height/2 - (top-bottom)/2/scale)
+        self.zoom_changed.emit(scale)
 
     def set_zoom(self, value):
         self.auto_fit = False
@@ -258,7 +275,7 @@ class CoverView(QGraphicsView):
         event.accept()
 
     def drawBackground(self, painter, rect):
-        painter.fillRect(rect, self.palette().window())
+        painter.fillRect(rect, self.mat_color if self.mat_color is not None else self.palette().window())
         doc = self.session.document
         canvas = QRectF(0, 0, doc.width, doc.height)
         painter.save()
@@ -278,7 +295,7 @@ class CoverView(QGraphicsView):
         doc = self.session.document
         # Dim outside the canvas; it is never part of an export.
         painter.save()
-        shade = QColor(35, 48, 43, 100)
+        shade = QColor(35, 48, 43, 0 if self.mat_color is not None else 100)
         painter.fillRect(QRectF(rect.left(), rect.top(), rect.width(), max(0, -rect.top())), shade)
         painter.fillRect(QRectF(rect.left(), doc.height, rect.width(), max(0, rect.bottom()-doc.height)), shade)
         painter.fillRect(QRectF(rect.left(), 0, max(0, -rect.left()), doc.height), shade)
@@ -298,6 +315,24 @@ class CoverView(QGraphicsView):
                     painter.setBrush(QColor('#79b69b') if self.hover_handle == index else QColor('#ffffff'))
                     painter.drawRect(QRectF(point.x()-handle_size/2, point.y()-handle_size/2, handle_size, handle_size))
                 painter.setBrush(Qt.NoBrush)
+        if self.duration_corner:
+            # Video feeds print the duration over the bottom-right corner: about 15 % x 13 %.
+            corner = QRectF(doc.width*.84, doc.height*.85, doc.width*.145, doc.height*.12)
+            painter.setBrush(QColor(240, 192, 96, 70))
+            corner_pen = QPen(QColor('#f0c060'), 1.5, Qt.DashLine)
+            corner_pen.setCosmetic(True)
+            painter.setPen(corner_pen)
+            painter.drawRoundedRect(corner, doc.width*.006, doc.width*.006)
+            badge = QRectF(corner.right()-corner.width()*.42, corner.bottom()-corner.height()*.42, corner.width()*.36, corner.height()*.32)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 205))
+            painter.drawRoundedRect(badge, badge.height()*.2, badge.height()*.2)
+            font = painter.font()
+            font.setPixelSize(max(1, int(badge.height()*.62)))
+            painter.setFont(font)
+            painter.setPen(QColor('#ffffff'))
+            painter.drawText(badge, Qt.AlignCenter, '12:34')
+            painter.setBrush(Qt.NoBrush)
         if self.drag_constraint is not None:
             self.drag_constraint.paint(painter)
         painter.restore()

@@ -80,8 +80,10 @@ def test_settings_preparation_leaves_an_open_window_alone(app, monkeypatch):
 
 # --- idle runner -----------------------------------------------------------
 
-def test_idle_runner_takes_one_step_per_turn_waits_off_home_and_stops_on_error(app):
+def test_idle_runner_takes_one_step_per_turn_waits_off_home_and_stops_on_error(app, monkeypatch):
     from twobyteasr.app.idle_prepare import IdlePreparation
+    from twobyteasr.design import frame_clock
+    monkeypatch.setattr(frame_clock, 'motion_active', lambda: False)   # (a 兔白 left by an earlier test)
     ran = []
     allowed = [False]
 
@@ -101,6 +103,30 @@ def test_idle_runner_takes_one_step_per_turn_waits_off_home_and_stops_on_error(a
     QTest.qWait(700)
     assert ran == [1, 2] and runner.done          # error ends preparation quietly
     assert len(runner.timings) == 3
+    host.deleteLater()
+
+
+def test_idle_steps_wait_while_the_bunny_is_in_motion(app, monkeypatch):
+    """2026-11-27 (user: when Home appears and while 兔白 plays with the page she stutters): a page
+    building step held the GUI thread 30-200 ms between her frames; none runs while she moves."""
+    from twobyteasr.app import idle_prepare
+    from twobyteasr.design import frame_clock
+    monkeypatch.setattr(frame_clock, '_hold_until', 0.0)
+    monkeypatch.setattr(frame_clock, '_master', None)  # (timers left running by earlier tests)
+    host = QWidget()
+    timer = frame_clock.FrameTimer(host, 16, motion=True)
+    calm = frame_clock.FrameTimer(host, 16)           # her breathing alone is no motion
+    calm.start()
+    assert not frame_clock.motion_active()
+    timer.start()
+    assert frame_clock.motion_active() and idle_prepare._dialog_or_motion()
+    timer.stop()
+    assert not frame_clock.motion_active()
+    frame_clock.hold_motion(0.3)                      # her entrance
+    assert frame_clock.motion_active()
+    QTest.qWait(350)
+    assert not frame_clock.motion_active()
+    calm.stop()
     host.deleteLater()
 
 

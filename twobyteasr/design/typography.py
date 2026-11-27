@@ -3,6 +3,11 @@
 正文使用随包思源黑体 Medium，重点使用 Heavy。显式指定两个字面，
 避免只有 Heavy 的机器把所有正文替换为 Heavy，或回退到过细的系统字体。
 2026-11-13 起所有重点（字重 ≥ 600）都用真 Heavy，见文件末 emphasis 一节。
+
+随包的猫啃什锦黑只做点缀（PLAYFUL_FONT_FAMILIES）：2026-11-26 上午曾把它改成全界面
+字体，用户当天改口：“在思源黑体的基础上加上猫啃什锦黑，先确保可读，猫啃只是让它
+可爱童趣，不能太常出现”——顶栏那排按钮（字幕工作台、问问兔白……）与「兔白字幕」
+可以用，模型、AI 文字处理这类内容要正经。它只有一个字重，拉丁小写是小型大写。
 """
 
 from __future__ import annotations
@@ -12,7 +17,9 @@ import re
 
 from ..caption_style.font_system import SOURCE_HAN_FAMILY_ALIASES
 
-UI_FONT_FAMILIES = (
+MAOKEN_FAMILY = "MaokenAssortedSans"      # assets/fonts/MaokenAssortedSans.otf
+# Typed and user content (links, file names, subtitles in input boxes): case must read.
+CONTENT_FONT_FAMILIES = (
     "Source Han Sans SC Medium",
     "思源黑体 Medium",
     "Microsoft YaHei UI",
@@ -22,6 +29,8 @@ UI_FONT_FAMILIES = (
     "Noto Sans CJK SC",
     "PingFang SC",
 )
+CONTENT_FONT_STACK = ", ".join(f'"{name}"' for name in CONTENT_FONT_FAMILIES) + ", sans-serif"
+UI_FONT_FAMILIES = CONTENT_FONT_FAMILIES
 UI_FONT_STACK = ", ".join(f'"{name}"' for name in UI_FONT_FAMILIES) + ", sans-serif"
 
 # 时间码/数值等宽栈：编辑器高频读数必须 tabular（数字跳动不位移）。
@@ -41,6 +50,21 @@ MONO_FONT_STACK = ", ".join(f'"{name}"' for name in MONO_FONT_FAMILIES) + ", mon
 
 TITLE_FONT_FAMILIES = SOURCE_HAN_FAMILY_ALIASES + UI_FONT_FAMILIES
 TITLE_FONT_STACK = ", ".join(f'"{name}"' for name in TITLE_FONT_FAMILIES) + ", sans-serif"
+
+# The playful accent: the header's row of buttons, 问问兔白, the 「兔白字幕」 name. Never body
+# text, settings, model or AI content. Its ~13 missing Traditional glyphs fall to 思源黑体 Heavy.
+PLAYFUL_FONT_FAMILIES = (MAOKEN_FAMILY,) + SOURCE_HAN_FAMILY_ALIASES + CONTENT_FONT_FAMILIES
+PLAYFUL_FONT_STACK = ", ".join(f'"{name}"' for name in PLAYFUL_FONT_FAMILIES) + ", sans-serif"
+
+
+def playful_font(font=None):
+    """``font`` (or the application font) in 猫啃什锦黑, size kept; a new QFont."""
+    from PySide6.QtGui import QFont
+    from PySide6.QtWidgets import QApplication
+
+    result = QFont(font if font is not None else QApplication.font())
+    result.setFamilies(list(PLAYFUL_FONT_FAMILIES))
+    return result
 
 # 数值在此定义，design.tokens.WEIGHT_SCALE 为 QSS 提供同源语义映射。
 # 字重规则（2026-11-13 修订；原 2026-10-07 规则把 600 当作 Medium 合成半粗）：
@@ -115,6 +139,30 @@ def application_font():
     font.setFamilies(list(UI_FONT_FAMILIES))
     font.setWeight(QFont.Weight.Medium)
     return font
+
+
+CONTENT_WIDGET_CLASSES = ("QLineEdit", "QTextEdit", "QPlainTextEdit")
+
+
+def content_font():
+    """随包思源黑体 Medium for typed and user content (case-sensitive text reads as typed)."""
+    from PySide6.QtGui import QFont
+
+    font = QFont(CONTENT_FONT_FAMILIES[0], 9)
+    font.setFamilies(list(CONTENT_FONT_FAMILIES))
+    font.setWeight(QFont.Weight.Medium)
+    return font
+
+
+def install_application_fonts(app) -> None:
+    """The interface face for everything, the content face for input boxes (today the same
+    思源黑体 Medium; kept apart so the two can differ again).
+
+    Class fonts, not style sheets: a widget that sets its own font (caption
+    editors, the font picker) keeps it."""
+    app.setFont(application_font())
+    for name in CONTENT_WIDGET_CLASSES:
+        app.setFont(content_font(), name)
 
 
 # --------------------------------------------------------------- emphasis

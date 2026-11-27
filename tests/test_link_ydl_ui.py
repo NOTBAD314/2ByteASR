@@ -490,3 +490,33 @@ def test_window_height_follows_its_content(controller):
     from PySide6.QtGui import QResizeEvent
     QApplication.sendEvent(dialog, QResizeEvent(QSize(dialog.width(), 900), dialog.size()))
     assert dialog._user_sized is False                         # a programmatic event is not the user
+
+
+def test_booth_home_keeps_kind_tickets_and_recent_stubs_in_step(controller):
+    """2026-11-26 draft A 售票窗口: kinds are ticket buttons in step with the
+    kind box; parsed, the counter turns into a row with the segment instead;
+    recent parses are three stubs that show site, length and day."""
+    import time
+    controller.show()
+    dialog = controller.dialog
+    assert dialog.pass_row.isVisibleTo(dialog) and not dialog.mode_segment.isVisibleTo(dialog)
+    assert [t.isChecked() for t in dialog.kind_tickets] == [i == dialog.mode.currentIndex() for i in range(len(dialog.kind_tickets))]
+    dialog.kind_tickets[3].click()
+    dialog.kind_tickets[3].click()
+    assert dialog.mode.currentData() == "subtitles" and dialog.kind_tickets[3].isChecked()
+    dialog.mode.setCurrentIndex(dialog.mode.findData("audio"))
+    assert dialog.kind_tickets[2].isChecked() and not dialog.kind_tickets[3].isChecked()
+    dialog.preferences["history"] = [dict(url="https://www.youtube.com/watch?v=zC88fer6JCA", title="t", duration=5432,
+                                          saved=time.time() - 86400)]
+    dialog._refresh_recent()
+    stub = dialog.recent_tickets[0]
+    assert stub.isVisibleTo(dialog) and stub.note.text() == "YouTube · 1:30:32 · 昨天"
+    assert not dialog.recent_tickets[1].isVisibleTo(dialog)
+    dialog.preferences["history"].append(dict(url="https://www.bilibili.com/video/BV1", title="Old"))
+    dialog.preferences["history"].append(dict(url="https://www.bilibili.com/video/BV2", title="Partial",
+                                              duration="unknown", saved="unknown"))
+    dialog._refresh_recent()
+    assert [ticket.note.text() for ticket in dialog.recent_tickets[1:]] == ["Bilibili", "Bilibili"]
+    dialog.set_catalog(catalog())
+    assert not dialog.pass_row.isVisibleTo(dialog) and dialog.mode_segment.isVisibleTo(dialog)
+    assert dialog.counter.property("compact") is True

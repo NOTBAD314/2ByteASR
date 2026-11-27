@@ -12,6 +12,31 @@ def geometry(timeline, track_id, row, value=None):
                   max(1, timeline._content_right()-timeline.TRACK_HEADER_WIDTH-16), 10)
 
 
+def _track_clips(timeline, track_id):
+    drag = getattr(timeline, '_clip_drag', None)
+    snapshot = drag.get('snapshot') if drag else None
+    tracks = snapshot[1] if snapshot else timeline.project.audio_tracks
+    track = next((item for item in tracks if item.id == track_id), None)
+    return list(track.clips) if track is not None else []
+
+
+def segments(timeline, track_id, row, value=None):
+    """The gain line of each clip on the track: [QRectF], only within each clip's own span.
+
+    2026-11-27 (user: on A1 the yellow volume line ran past the clip to the timeline's right
+    edge): the line used to cross the whole lane. It now sits on the clips, like their cards,
+    clipped to the visible lane."""
+    line = geometry(timeline, track_id, row, value)
+    left_edge, right_edge = float(timeline.TRACK_HEADER_WIDTH), float(timeline._content_right())
+    result = []
+    for clip in sorted(_track_clips(timeline, track_id), key=lambda item: int(item.timeline_in_ms)):
+        left = max(left_edge, timeline._time_to_x(int(clip.timeline_in_ms))+2)
+        right = min(right_edge, timeline._time_to_x(int(clip.timeline_out_ms))-2)
+        if right - left >= 1:
+            result.append(QRectF(left, line.top(), right-left, line.height()))
+    return result
+
+
 def paint(timeline, painter):
     if not timeline.project or not timeline.waveform_visible: return
     drag = getattr(timeline, '_track_gain_drag', None)
@@ -21,10 +46,17 @@ def paint(timeline, painter):
     for key, row in timeline._audio_track_rects().items():
         if audio_track_locked(timeline.project, key): continue
         value = drag['value'] if drag and drag['project'] is timeline.project and drag['track'] == key else track_gain_db(timeline.project, key)
-        rect = geometry(timeline, key, row, value)
-        painter.setPen(QPen(QColor('#e6bf7b'), 2 if drag and drag['track'] == key else 1.5))
-        painter.drawLine(rect.topLeft()+QPointF(0,5), rect.topRight()+QPointF(0,5))
-        painter.setBrush(QColor('#e6bf7b')); painter.drawRoundedRect(QRectF(rect.left()+5, rect.top(), 14, 10), 3, 3)
+        pieces = segments(timeline, key, row, value)
+        if not pieces: continue
+        pen = QPen(QColor('#e6bf7b'), 2 if drag and drag['track'] == key else 1.5)
+        pen.setCapStyle(Qt.FlatCap)
+        painter.setPen(pen)
+        for piece in pieces:
+            painter.drawLine(piece.topLeft()+QPointF(0,5), piece.topRight()+QPointF(0,5))
+        # The handle sits at the start of the first clip in view (when there is room for it).
+        rect = next((piece for piece in pieces if piece.width() >= 24), pieces[0])
+        if rect.width() >= 24:
+            painter.setBrush(QColor('#e6bf7b')); painter.drawRoundedRect(QRectF(rect.left()+5, rect.top(), 14, 10), 3, 3)
         # 2026-11-23: the value now sits in the track header; the label over
         # the waveform only shows while this line is hovered or dragged.
         if not ((drag and drag['track'] == key) or getattr(timeline, '_track_gain_hover', '') == key):
@@ -39,7 +71,8 @@ def paint(timeline, painter):
 def hit(timeline, point):
     if not timeline.project or not timeline.waveform_visible or not QRectF(timeline.rect()).contains(point): return ''
     for key, row in timeline._audio_track_rects().items():
-        if not audio_track_locked(timeline.project, key) and geometry(timeline, key, row).adjusted(0,-2,0,2).contains(point): return key
+        if not audio_track_locked(timeline.project, key) and any(
+                piece.adjusted(0,-2,0,2).contains(point) for piece in segments(timeline, key, row)): return key
     return ''
 
 

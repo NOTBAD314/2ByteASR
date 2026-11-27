@@ -14,6 +14,7 @@ def start(window, output):
     from PySide6.QtGui import QKeyEvent, QTextCursor
     from PySide6.QtTest import QTest
     app=QApplication.instance();output=Path(output);baseline=os.environ.get('EDITOR_DOWNLOAD_BASELINE')=='1'
+    ticket_only = os.environ.get('TWOBYTEASR_TICKET_AUDIT') == '1'
     result=dict(passed=False,checks={},top_level_shows=[],native_creates=[],baseline=baseline)
     def save(): (output/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),'utf8')
     def check(name, value):
@@ -40,6 +41,9 @@ def start(window, output):
             save()
             from ..design.theme_manager import apply_theme
             apply_theme(os.environ.get('CAPTION_PRESS_THEME','sand'),app)
+            if ticket_only:
+                check('language guard row hidden on main window', window._language_guard_row.isHidden())
+                check('language repair details hidden', not window._language_repair_limits.isVisible())
             page=window.studio_page;window._switch_page(page)
             page.project_controller.open_project_entry(os.environ['TWOBYTEASR_STARTUP_PROJECT'],single_shot_fn=QTimer.singleShot,skip_dirty_guard=True)
             wait(lambda:page.project is not None and page._readiness.ready)
@@ -48,27 +52,28 @@ def start(window, output):
             if os.environ.get('CAPTION_PRESS_AUDIT')=='1':
                 from .caption_press_audit import exercise
                 exercise(page,window,output,check,wait)
-            page._open_caption_editor('a','original');page._lock_caption_editor()
-            editor=page.subtitle_edit_input;panel=page.subtitle_edit_card;dock=page.subtitle_edit_dock
-            QApplication.setActiveWindow(dock);editor.setFocus();QTest.qWait(250)
-            from ..subtitle_rules.review_suggestions import ReviewSuggestion,SuggestionOption
-            text=editor.toPlainText();pos=text.index('营第')
-            draft=page._caption_draft
-            draft.suggestions=(ReviewSuggestion(0,1,'她',(SuggestionOption('他'),SuggestionOption('它')),'pronoun'),
-                ReviewSuggestion(pos,pos+2,'营第',tuple(SuggestionOption(v) for v in ('营地','营区','营地附近')),'model'))
-            draft.suggestion_text=text;page._refresh_editor_suggestions();QTest.qWait(250)
-            dock.fit_to_workspace();QTest.qWait(100)
-            dock.grab().save(str(output/'editor-before.png' if baseline else output/'editor-single.png'))
-            window.grab().save(str(output/'studio-context.png'))
-            check('actions below body',panel.strip.mapTo(panel,QPoint()).y()>panel.face.mapTo(panel,QPoint()).y())
-            check('edit tag at top',panel.tag.y()<panel.face.mapTo(panel,QPoint()).y()+10)
-            check('candidate above body',panel.bubble.geometry().bottom()<=panel.face.mapTo(panel,QPoint()).y()+3)
-            check('arrow tip aligned with current glyph',arrow_aligned(panel))
-            if not baseline:
-                exercise_editor(page,window,output,check,wait)
-            else:
-                QTest.keyClick(editor,Qt.Key_P,Qt.ShiftModifier)
-                result['old_shift_p_result']=editor.toPlainText()
+            if not ticket_only:
+                page._open_caption_editor('a','original');page._lock_caption_editor()
+                editor=page.subtitle_edit_input;panel=page.subtitle_edit_card;dock=page.subtitle_edit_dock
+                QApplication.setActiveWindow(dock);editor.setFocus();QTest.qWait(250)
+                from ..subtitle_rules.review_suggestions import ReviewSuggestion,SuggestionOption
+                text=editor.toPlainText();pos=text.index('营第')
+                draft=page._caption_draft
+                draft.suggestions=(ReviewSuggestion(0,1,'她',(SuggestionOption('他'),SuggestionOption('它')),'pronoun'),
+                    ReviewSuggestion(pos,pos+2,'营第',tuple(SuggestionOption(v) for v in ('营地','营区','营地附近')),'model'))
+                draft.suggestion_text=text;page._refresh_editor_suggestions();QTest.qWait(250)
+                dock.fit_to_workspace();QTest.qWait(100)
+                dock.grab().save(str(output/'editor-before.png' if baseline else output/'editor-single.png'))
+                window.grab().save(str(output/'studio-context.png'))
+                check('actions below body',panel.strip.mapTo(panel,QPoint()).y()>panel.face.mapTo(panel,QPoint()).y())
+                check('edit tag at top',panel.tag.y()<panel.face.mapTo(panel,QPoint()).y()+10)
+                check('candidate above body',panel.bubble.geometry().bottom()<=panel.face.mapTo(panel,QPoint()).y()+3)
+                check('arrow tip aligned with current glyph',arrow_aligned(panel))
+                if not baseline:
+                    exercise_editor(page,window,output,check,wait)
+                else:
+                    QTest.keyClick(editor,Qt.Key_P,Qt.ShiftModifier)
+                    result['old_shift_p_result']=editor.toPlainText()
             page._cancel_canvas_inline_edit()
             from ..app.ui_zoom import set_zoom_percent
             set_zoom_percent(120)
@@ -84,7 +89,11 @@ def start(window, output):
             QTest.qWait(100)
             check('repeated entry does not create another window',len({s['id'] for s in result['top_level_shows']})==1)
             check('opening window does not start tasks',not controller.queue.snapshots())
+            if ticket_only and os.environ.get('TWOBYTEASR_BOOTH_AUDIT') == '1':
+                exercise_booth_home(dialog, output, check)
             if not baseline: exercise_download(controller,dialog,check,wait)
+            if ticket_only:
+                exercise_ticket_ui(dialog,output,check)
             dialog.close();app.removeEventFilter(shows)
             page._cancel_canvas_inline_edit()
             window.close()
@@ -254,3 +263,120 @@ def exercise_download(controller,dialog,check,wait):
     check('cancelled download allows new submission',len(controller.queue.snapshots())==2)
     controller.task_action('cancel',downloads[-1]);wait(lambda:controller.queue.snapshots()[-1]['state']=='cancelled')
     timer.stop()
+
+
+def exercise_booth_home(dialog, output, check):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QScrollArea
+    import time
+
+    previous_history = dialog.preferences.get("history", [])
+    previous_mode = dialog.mode.currentIndex()
+    previous_width = dialog.width()
+    dialog.preferences["history"] = [
+        dict(url="https://www.youtube.com/watch?v=fixture1", title="First subtitle download", duration=88, saved=time.time()),
+        dict(url="https://www.bilibili.com/video/BV2", title="Second parse", duration=5432, saved=time.time() - 86400),
+        dict(url="https://www.youtube.com/watch?v=fixture3", title="Old history item"),
+    ]
+    dialog._refresh_recent()
+    from ..runtime_paths import get_runtime_paths
+    dialog.helper_strip.refresh(get_runtime_paths().install_root, ['Chrome', 'Edge', 'Brave', 'Firefox'])
+    dialog.resize(dialog.minimumWidth(), dialog.height())
+    QTest.qWait(200)
+    check("mascot peeks across the counter edge", dialog.booth_bunny.isVisible() and
+          dialog.booth_bunny.y() < dialog.counter.y() <= dialog.booth_bunny.geometry().bottom())
+    check("four visible ticket choices", len(dialog.kind_tickets) == 4 and all(button.isVisible() for button in dialog.kind_tickets))
+    QTest.mouseClick(dialog.kind_tickets[3], Qt.MouseButton.LeftButton)
+    QTest.mouseClick(dialog.kind_tickets[3], Qt.MouseButton.LeftButton)
+    check("selected ticket stays selected on a second click", dialog.kind_tickets[3].isChecked() and
+          dialog.mode.currentData() == "subtitles")
+    check("three recent stubs preserve old records", all(stub.isVisible() for stub in dialog.recent_tickets) and
+          "1:30:32" in dialog.recent_tickets[1].note.text() and dialog.recent_tickets[2].note.text() == "YouTube")
+    check("booth fits the minimum window width", all(
+          area.horizontalScrollBar().maximum() == 0 for area in dialog.findChildren(QScrollArea) if area.isVisible()))
+    check("booth screenshot saved", dialog.grab().save(str(output / "download-booth.png")))
+    scroll = dialog.pages.currentWidget()
+    scroll.ensureWidgetVisible(dialog.recent_tickets[-1])
+    QTest.qWait(120)
+    check("all three ticket stubs reached by scrolling", all(
+          scroll.viewport().rect().contains(stub.mapTo(scroll.viewport(), stub.rect().center()))
+          for stub in dialog.recent_tickets))
+    check("recent ticket screenshot saved", dialog.grab().save(str(output / "download-recent-tickets.png")))
+    scroll.verticalScrollBar().setValue(0)
+    dialog.preferences["history"] = previous_history
+    dialog.mode.setCurrentIndex(previous_mode)
+    dialog._refresh_recent()
+    dialog._refresh_helper()
+    dialog.resize(previous_width, dialog.height())
+
+
+def exercise_ticket_ui(dialog, output, check):
+    from unittest.mock import patch
+
+    from PySide6.QtCore import QTimer, Qt
+    from PySide6.QtGui import QFontInfo
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QDialog, QScrollArea
+    from ..app import browser_helper_dialog
+    from ..app.browser_helper_dialog import STEPS, StepStub
+    from ..design.typography import CONTENT_FONT_FAMILIES
+
+    dialog.resize(dialog.minimumWidth(), dialog.height())
+    QTest.qWait(150)
+    check('parsed ticket remains visible at minimum width', dialog.result_card.isVisible())
+    check('parsed ticket has no horizontal overflow', all(
+        area.horizontalScrollBar().maximum() == 0
+        for area in dialog.findChildren(QScrollArea)
+        if area.isVisible()
+    ))
+    check('parsed ticket screenshot saved', dialog.grab().save(str(output/'download-parsed.png')))
+    check('packaged interface uses bundled Source Han Sans', QApplication.font().families()[0] == CONTENT_FONT_FAMILIES[0])
+    check('URL input keeps the bundled content font', (
+        dialog.url.font().families()[0] == CONTENT_FONT_FAMILIES[0]
+        and QFontInfo(dialog.url.font()).family() == CONTENT_FONT_FAMILIES[0]
+    ))
+
+    wizard_results = {}
+
+    def inspect_wizard():
+        wizard = QApplication.activeModalWidget()
+        if not isinstance(wizard, QDialog):
+            wizard = dialog.findChild(QDialog, 'browserHelperDialog')
+        if wizard is None:
+            return
+        try:
+            wizard_results['opens at the first unfinished step'] = STEPS[wizard.step] == 'link'
+            wizard_results['six numbered installation steps'] = len(wizard.findChildren(StepStub)) == 6
+            QTest.mouseClick(wizard.stubs[0], Qt.MouseButton.LeftButton)
+            wizard_results['four browser tiles'] = len(wizard.tiles) == 4 and wizard.tiles['Firefox'].isVisible()
+            firefox = wizard.tiles['Firefox']
+            QTest.mouseClick(firefox, Qt.MouseButton.LeftButton)
+            QTest.mouseClick(wizard.stubs[2], Qt.MouseButton.LeftButton)
+            wizard_results['browser selection changes installation steps'] = (
+                wizard.browser == 'Firefox' and wizard.step == 2 and 'Firefox' in wizard.step_title.text()
+            )
+            wizard_results['installation screenshot saved'] = wizard.grab().save(str(output/'browser-helper-wizard.png'))
+            tip = wizard.tip_text.text()
+            QTest.mouseClick(wizard.stuck, Qt.MouseButton.LeftButton)
+            wizard_results['stuck button changes the tip'] = wizard.tip_text.text() != tip
+            wizard.show_tab('manage')
+            QTest.qWait(150)
+            rows = [wizard.rows_host.itemAt(i).widget() for i in range(wizard.rows_host.count())]
+            wizard_results['my browsers page screenshot saved'] = (
+                wizard.pages.currentIndex() == 1 and len(rows) == 4
+                and all(row.isVisible() and row.height() > 0 for row in rows)
+                and wizard.grab().save(str(output/'browser-helper-browsers.png'))
+            )
+        finally:
+            wizard.close()
+
+    with patch.object(browser_helper_dialog, 'detect', return_value={'Chrome': 'fixture', 'Firefox': 'fixture'}), \
+            patch.object(browser_helper_dialog, 'registration', return_value=False), \
+            patch.object(browser_helper_dialog, 'helper_in_browser', return_value=None), \
+            patch.object(browser_helper_dialog, 'last_contact', return_value={}):
+        QTimer.singleShot(180, inspect_wizard)
+        dialog._show_helper()
+    check('installation window opened from download', bool(wizard_results))
+    for name, passed in wizard_results.items():
+        check(name, passed)

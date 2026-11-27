@@ -430,6 +430,15 @@ class HighlightAssistantPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(7)
+        from .rough_cut_ui import RoughCutControlBar
+        self.rough_cut_bar = RoughCutControlBar(self)
+        layout.addWidget(self.rough_cut_bar, 1)
+        self.clip_tools = QWidget()
+        tools_layout = QVBoxLayout(self.clip_tools)
+        tools_layout.setContentsMargins(0, 0, 0, 0)
+        tools_layout.setSpacing(layout.spacing())
+        self.rough_cut_bar.fold_changed.connect(self._show_clip_tools)
+        self._show_clip_tools(self.rough_cut_bar.is_folded())
         title = QLabel("剪辑助手")
         title.setObjectName("sectionTitle")
         title.hide()
@@ -464,7 +473,7 @@ class HighlightAssistantPanel(QWidget):
         self.empty_summary.setWordWrap(True)
         empty_layout.addWidget(self.empty_summary)
         self.empty_setup.hide()
-        layout.addWidget(self.empty_setup)
+        tools_layout.addWidget(self.empty_setup)
 
         # 2026-10-23 (the user's picks): the two tools as tabs on top (design B)
         # — finding clips and compressing speech pauses — their settings in
@@ -493,6 +502,7 @@ class HighlightAssistantPanel(QWidget):
             tabs_row.addWidget(button, 1)
         self.clips_tab_button.setChecked(True)
         layout.addWidget(self.tool_tabs)
+        layout.addWidget(self.clip_tools, 1)
 
         self.config_header_host = QWidget()
         config_header = QHBoxLayout(self.config_header_host)
@@ -523,20 +533,20 @@ class HighlightAssistantPanel(QWidget):
         bind_text(self.config_toggle, '收起')
         self.config_toggle.setArrowType(Qt.ArrowType.UpArrow)
         config_header.addWidget(self.config_toggle)
-        layout.addWidget(self.config_header_host)
+        tools_layout.addWidget(self.config_header_host)
         self.progress_label=QLabel()
         self.progress_label.setObjectName('softMeta')
         self.progress_label.setWordWrap(True)
         self.progress_label.hide()
         self.analysis_progress=QProgressBar()
         self.analysis_progress.hide()
-        layout.addWidget(self.progress_label)
-        layout.addWidget(self.analysis_progress)
+        tools_layout.addWidget(self.progress_label)
+        tools_layout.addWidget(self.analysis_progress)
         self.local_hint=QLabel()
         self.local_hint.setObjectName('softMeta')
         self.local_hint.setWordWrap(True)
         self.local_hint.hide()
-        layout.addWidget(self.local_hint)
+        tools_layout.addWidget(self.local_hint)
 
 
         # 2026-10-11: data and analysis settings share one collapsible scroll
@@ -724,7 +734,7 @@ class HighlightAssistantPanel(QWidget):
         config_body_layout.addWidget(setup)
         settings_layout.addWidget(self.config_body)
         settings_layout.addStretch(1)
-        layout.addWidget(self.settings_area, 1)
+        tools_layout.addWidget(self.settings_area, 1)
         self.config_toggle.toggled.connect(self._toggle_config)
         self._restore_ai_selection()
 
@@ -834,7 +844,7 @@ class HighlightAssistantPanel(QWidget):
         pause_layout.addWidget(autocut)
         pause_layout.addStretch(1)
         self.pause_area.hide()
-        layout.addWidget(self.pause_area, 1)
+        tools_layout.addWidget(self.pause_area, 1)
 
         self.cancel_button = QPushButton("取消")
         self.cancel_button.setObjectName("studioButton")
@@ -943,8 +953,8 @@ class HighlightAssistantPanel(QWidget):
         candidates_layout.addWidget(self.edit_result)
         self._sequence_edited = False
         self.candidates_body.hide()
-        layout.addWidget(self.candidates_body, 1)
-        self._layout = layout
+        tools_layout.addWidget(self.candidates_body, 1)
+        self._layout = tools_layout
         for button in (
             self.xml_button,
             self.xml_unbind_button,
@@ -1080,8 +1090,13 @@ class HighlightAssistantPanel(QWidget):
         self._stage = "settings" if self.config_toggle.isChecked() else "candidates"
         self._apply_stage()
 
+    def _show_clip_tools(self, folded: bool) -> None:
+        self.clip_tools.setVisible(folded)
+        self.layout().setStretchFactor(self.rough_cut_bar, 0 if folded else 1)
+
     def set_tool(self, tool: str) -> None:
-        """The two tools of the tab (2026-10-23, design B): clips or pauses."""
+        """Show the selected tool in the space used by the rough-cut steps."""
+        self.rough_cut_bar.set_folded(True, by_user=True)
         self._tool = "pauses" if tool == "pauses" else "clips"
         self.clips_tab_button.setChecked(self._tool == "clips")
         self.pauses_tab_button.setChecked(self._tool == "pauses")
@@ -1105,6 +1120,9 @@ class HighlightAssistantPanel(QWidget):
                 widget.setVisible(False)
             return
         has_candidates = self.results.count() > 0
+        if hasattr(self, "rough_cut_bar"):
+            # 2026-11-26: while clip candidates are listed, 文稿粗剪 folds to its title row (unless opened).
+            self.rough_cut_bar.auto_fold(has_candidates)
         compact_empty = (
             self._project is not None and self._auto_mode == "none" and not self._danmaku_path
         )
@@ -1219,6 +1237,8 @@ class HighlightAssistantPanel(QWidget):
             bind_text(self.skill_label, '切片分析使用内置规则；口播停顿使用本地音频检测。')
 
     def set_project_status(self, project: SubtitleProject | None, danmaku_path: str = "") -> None:
+        if hasattr(self, "rough_cut_bar"):
+            self.rough_cut_bar.set_project(project)
         if project is not self._project:
             self.show_edit_result("")
             info=(project.studio_state.get('highlight_analysis') or {}) if project else {}
@@ -1669,6 +1689,8 @@ class HighlightAssistantPanel(QWidget):
         )
         self.results.setStyleSheet(list_qss)
         self.bin.setStyleSheet(list_qss)
+        if hasattr(self, "rough_cut_bar"):
+            self.rough_cut_bar.refresh_theme_palette()
 
 
 def _clock_range(start_ms: int, end_ms: int) -> str:

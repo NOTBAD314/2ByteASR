@@ -149,6 +149,9 @@ def chat_body(chunks, diagnostics, emit=lambda *_: None, cancel_check=None, tool
         for field in ('content', 'reasoning_content', 'reasoning'):
             if delta.get(field) is not None and not isinstance(delta[field], str):
                 raise StreamProtocolError(f'SSE delta.{field}必须为字符串')
+        from .reasoning_adapter import has_reasoning
+        if has_reasoning(delta):
+            diagnostics['reasoning_content_present'] = True
         reasoning = delta.get('reasoning_content') or delta.get('reasoning') or ''
         text = delta.get('content') or ''
         if tool_name:
@@ -208,7 +211,7 @@ def responses_final(packet, diagnostics):
     diagnostics['reasoning_tokens'] = (normalize_usage(usage) or {}).get('reasoning_tokens')
     diagnostics['reasoning_tokens_status'] = 'provided' if diagnostics['reasoning_tokens'] is not None else 'unknown'
     diagnostics['usage'] = normalize_usage(usage)
-    diagnostics['reasoning_content_present'] = any(isinstance(item,dict) and item.get('type')=='reasoning' for item in packet.get('output') or [])
+    diagnostics['reasoning_content_present'] = bool(diagnostics.get('reasoning_content_present')) or any(isinstance(item,dict) and item.get('type')=='reasoning' for item in packet.get('output') or [])
     status = packet.get('status')
     diagnostics['finish_reason'] = status
     if status != 'completed' or packet.get('error'):
@@ -268,6 +271,7 @@ def responses_body(chunks, diagnostics, emit=lambda *_: None, cancel_check=None)
             summary = packet.get('delta')
             if not isinstance(summary, str):
                 raise StreamProtocolError('公开推理摘要必须为字符串')
+            diagnostics['reasoning_content_present'] = True
             emit('reasoning_summary', summary)
             summary_received=True
         elif kind in {'response.refusal.delta', 'response.refusal.done'}:
@@ -316,7 +320,7 @@ def request_chat(url, headers, body, timeout, diagnostics, emit, cancel_check=No
     encoded=requests.Request('POST',url,json=body).prepare().body
     diagnostics['wire_payload']=dict(bytes=len(encoded),sha256=hashlib.sha256(encoded).hexdigest(),
         encoding='requests JSON, UTF-8 (ASCII escapes included)',
-        parameters={key:body[key] for key in ('model','max_tokens','max_output_tokens','temperature','stream',
+        parameters={key:body[key] for key in ('model','max_tokens','max_output_tokens','max_completion_tokens','temperature','stream',
                     'stream_options','thinking','enable_thinking','response_format','output_config','fallbacks')
                     if key in body})
     if input_budget is not None:
@@ -353,7 +357,7 @@ def request_chat(url, headers, body, timeout, diagnostics, emit, cancel_check=No
             if input_budget is not None:input_budget['dispatched']=True
             send('request_started', {'model':body.get('model'), 'endpoint':url, 'stream':True})
             dispatch(diagnostics)
-            response = network_policy.post(url, headers=headers, json=body, stream=True, timeout=network_timeout)
+            response = network_policy.post(url, headers=headers, json=body, stream=True, timeout=network_timeout, allow_redirects=False)
             holder['response'] = response
             diagnostics['http_status'] = response.status_code
             diagnostics['content_type'] = str(response.headers.get('Content-Type', ''))
@@ -375,6 +379,7 @@ def request_chat(url, headers, body, timeout, diagnostics, emit, cancel_check=No
                     error_bytes.extend(chunk[:8192-len(error_bytes)])
                     if len(error_bytes) >= 8192: break
                 message = ''
+                error = {}
                 try:
                     packet = json.loads(error_bytes.decode('utf-8'))
                     if isinstance(packet, dict) and isinstance(packet.get('usage'), dict):
@@ -394,6 +399,11 @@ def request_chat(url, headers, body, timeout, diagnostics, emit, cancel_check=No
                     from .anthropic_messages import refine_error_category
                     category = refine_error_category(category, str(diagnostics.get('provider_error', {}).get('type') or ''),
                                                      response.status_code)
+                from .reasoning_adapter import rejected_reasoning
+                if rejected_reasoning(response.status_code, error, diagnostics):
+                    diagnostics['thinking_compatibility'] = 'request_rejected'
+                    category = 'reasoning_parameter_incompatible'
+                    message = ''
                 error = StreamProtocolError(f'Provider HTTP {response.status_code}' + (': '+message if message else ''), category)
                 error.retry_after_seconds = retry_after_seconds(response.headers.get('Retry-After'))
                 diagnostics['retry_after_seconds'] = error.retry_after_seconds
@@ -438,6 +448,8 @@ def request_chat(url, headers, body, timeout, diagnostics, emit, cancel_check=No
                         if tool_name:
                             content = _tool_arguments(choice['message'].get('tool_calls') or [], tool_name)
                             reason = 'stop' if reason in ('stop', 'tool_calls') else reason
+                        from .reasoning_adapter import has_reasoning
+                        diagnostics['reasoning_content_present'] = has_reasoning(choice['message'])
                         reasoning = choice['message'].get('reasoning_content') or choice['message'].get('reasoning')
                         if isinstance(reasoning,str) and reasoning:send('thinking',reasoning)
                         public_summary = choice['message'].get('reasoning_summary')
@@ -447,8 +459,8 @@ def request_chat(url, headers, body, timeout, diagnostics, emit, cancel_check=No
                         if isinstance(usage,dict):
                             for key in ('prompt_tokens','completion_tokens','total_tokens'):diagnostics[key]=usage.get(key)
                             details=usage.get('completion_tokens_details') or {}
-                            if isinstance(details,dict):diagnostics['reasoning_tokens']=details.get('reasoning_tokens')
                             diagnostics['usage']=normalize_usage(usage)
+                            diagnostics['reasoning_tokens']=(diagnostics['usage'] or {}).get('reasoning_tokens')
                 except (UnicodeError, ValueError, KeyError, TypeError) as exc:
                     if isinstance(exc, StreamProtocolError):
                         raise

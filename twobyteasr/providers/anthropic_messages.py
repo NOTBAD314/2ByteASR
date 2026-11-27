@@ -161,7 +161,8 @@ def _usage(diagnostics, usage):
     if reasoning is not None:
         diagnostics.update(reasoning_tokens=reasoning, reasoning_tokens_status='provided')
     diagnostics.update(prompt_tokens=prompt, completion_tokens=completion, total_tokens=prompt + completion,
-                       usage=normalize_usage(merged))
+                       usage=normalize_usage(merged),
+                       reasoning_tokens=(normalize_usage(merged) or {}).get("reasoning_tokens"))
 
 
 def _finish(diagnostics, stop_reason, stop_details=None):
@@ -220,6 +221,8 @@ def messages_body(chunks, diagnostics, emit=lambda *_: None, cancel_check=None):
                 raise StreamProtocolError("Claude 返回了工具调用，缺少最终正文", "provider_tool_request")
         elif kind == "content_block_start":
             block = packet.get("content_block") or {}
+            if block.get("type") in {"thinking", "redacted_thinking"}:
+                diagnostics["reasoning_content_present"] = True
             if block.get("type") == "fallback":
                 diagnostics["fallback"] = {"from": (block.get("from") or {}).get("model"),
                                            "to": (block.get("to") or {}).get("model")}
@@ -263,6 +266,8 @@ def messages_final(packet, diagnostics):
     if isinstance(packet.get("model"), str):
         diagnostics["response_model"] = packet["model"][:160]
     _usage(diagnostics, packet.get("usage"))
+    from .reasoning_adapter import has_reasoning
+    diagnostics["reasoning_content_present"] = has_reasoning(packet)
     text = "".join(block.get("text") or "" for block in packet.get("content") or []
                    if isinstance(block, dict) and block.get("type") == "text")
     diagnostics["content_chars"] = len(text)
@@ -273,7 +278,8 @@ def messages_final(packet, diagnostics):
 
 
 def complete(endpoint, messages, *, max_tokens, timeout, stage="", cancel_check=None, json_wanted=False,
-             effort=None, enable_thinking=None, on_stream_event=None, request_diagnostics=None, total_deadline=None, input_budget=None):
+             effort=None, enable_thinking=False, on_stream_event=None, request_diagnostics=None, total_deadline=None,
+             input_budget=None, thinking_protocol="auto", reasoning_profile="", extra_body=None):
     """One Messages request; returns the answer text or raises ``LLMRequestError`` (category set)."""
     import requests
     from .llm_adapter import (LLMRequestError, _DIAGNOSTIC_LOCAL, _record_answered_call, _redact,
@@ -282,36 +288,26 @@ def complete(endpoint, messages, *, max_tokens, timeout, stage="", cancel_check=
     model, api_key, url = str(endpoint.get("model") or ""), str(endpoint.get("api_key") or ""), str(endpoint.get("url") or "")
     if not api_key:
         raise LLMRequestError("Claude 缺少 API Key：请在设置里填写 Anthropic Console 的 API Key。", category="auth_config")
-    body = request_body(model, messages, max_tokens=int(max_tokens) if enable_thinking is not None else output_budget(max_tokens), json_wanted=json_wanted, effort=effort)
-    thinking_mode, compatibility = "model_default", "not_requested"
-    if enable_thinking is not None:
-        from urllib.parse import urlsplit
-        official = (urlsplit(url).hostname or '').lower() == 'api.anthropic.com'
-        # Official per-model rules checked 2026-11-05. Unknown relays/models
-        # keep an explicit unsupported receipt; no guessed fields are sprayed.
-        if official and enable_thinking is False and model.startswith('claude-sonnet-5-5'):
-            body['thinking'] = {'type':'between_tools'}
-            thinking_mode, compatibility = 'no_upfront_thinking', 'requested_unverified'
-        elif official and enable_thinking is False and model.startswith(('claude-sonnet-5','claude-haiku-5-5','claude-sonnet-4-6','claude-opus-4-6','claude-opus-4-7','claude-opus-4-8')):
-            body['thinking'] = {'type':'disabled'}
-            thinking_mode, compatibility = 'disabled', 'requested_unverified'
-        elif official and (enable_thinking is True or isinstance(enable_thinking, str) and bool(effort)):
-            # A named depth (high / max) is thinking on, with that depth as the effort.
-            body['thinking'] = {'type':'adaptive'}
-            thinking_mode, compatibility = 'adaptive', 'requested_unverified'
-        else:
-            thinking_mode, compatibility = 'model_default', 'unsupported_or_unknown'
+    body = request_body(model, messages, max_tokens=int(max_tokens), json_wanted=json_wanted)
     headers = request_headers(api_key, model)
-    diagnostics = dict(provider="anthropic", model=model, endpoint=url, base_url=endpoint.get("base_url", ""),
-                       stream=True, max_tokens=body["max_tokens"], effort=effort or "model_default",
-                       fallbacks=body.get("fallbacks"), thinking_mode=thinking_mode,
-                       thinking_requested=enable_thinking, thinking_compatibility=compatibility,
-                       thinking_sent=body.get('thinking'), reasoning_parameters_sent={'thinking':body['thinking']} if 'thinking' in body else {},
-                       reasoning_tokens=None, reasoning_tokens_status='unknown',output_budget_kind='maximum_output_tokens')
+    diagnostics = dict(provider=endpoint.get("provider", "anthropic"), model=model, endpoint=url, stage=stage,
+                       base_url=endpoint.get("base_url", ""), stream=True, fallbacks=body.get("fallbacks"))
     _DIAGNOSTIC_LOCAL.value = diagnostics
+    from .reasoning_adapter import apply_thinking, observe_reasoning
+    try:
+        diagnostics.update(apply_thinking(body, provider=diagnostics["provider"],
+            base_url=endpoint.get("base_url") or url, enabled=effort if effort is not None else enable_thinking,
+            protocol=thinking_protocol, reasoning_profile=reasoning_profile, extra_body=extra_body, api="anthropic"))
+    except LLMRequestError as exc:
+        diagnostics.update(exc.diagnostics)
+        if request_diagnostics is not None:
+            request_diagnostics.update(diagnostics)
+        raise
     started = time.perf_counter()
 
     def emit(kind, value):
+        if kind in {"thinking", "reasoning_summary"}:
+            diagnostics["reasoning_content_present"] = True
         if kind == "request_started":
             diagnostics.setdefault("first_activity_ms", None)
         elif kind in {"transport", "delta"} and diagnostics.get("first_activity_ms") is None:
@@ -338,6 +334,7 @@ def complete(endpoint, messages, *, max_tokens, timeout, stage="", cancel_check=
         raise
     finally:
         diagnostics.pop("_anthropic_usage", None)
+        observe_reasoning(diagnostics)
         _DIAGNOSTIC_LOCAL.value = dict(diagnostics)
         if request_diagnostics is not None:
             request_diagnostics.update({k:v for k,v in diagnostics.items() if k not in {"api_key"}})
@@ -346,10 +343,10 @@ def complete(endpoint, messages, *, max_tokens, timeout, stage="", cancel_check=
                 first_activity_ms=diagnostics.get("first_activity_ms"), prompt_tokens=diagnostics.get("prompt_tokens"),
                 completion_tokens=diagnostics.get("completion_tokens"), usage=diagnostics.get("usage"),
                 finish_reason=diagnostics.get("finish_reason"), response_model=diagnostics.get("response_model"))
-        record_llm_invocation(stage=stage, provider="anthropic", model=model, base_url=endpoint.get("base_url", ""),
+        record_llm_invocation(stage=stage, provider=diagnostics["provider"], model=model, base_url=endpoint.get("base_url", ""),
                               url=url, request_mode="anthropic.messages_stream",
                               key_source=str(endpoint.get("key_source") or ""), key_present=bool(api_key),
                               status_code=diagnostics.get("http_status"), ok=False if failure else None,
                               error=failure, duration_ms=(time.perf_counter() - started) * 1000.0)
-        _record_answered_call(diagnostics, stage=stage, provider="anthropic", model=model,
+        _record_answered_call(diagnostics, stage=stage, provider=diagnostics["provider"], model=model,
                               request_mode="anthropic.messages_stream")

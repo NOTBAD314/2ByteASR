@@ -149,6 +149,11 @@ def _tutorial_rows() -> list[tuple[float, float, str, str, str, str]]:
         (15.2, 18.0, 'S01', *same('这期纪行的奖励还挺划算')),
         (18.2, 21.0, 'S00', *same('下次带派门一起去探险')),
         (21.2, 23.6, 'S01', *same('好啊，记得叫上她')),
+        # 2026-11-27: two minor speakers, so the timeline shows its folded 「次要角色」 row (the
+        # 看懂时间轴 chapter opens it). They say nothing the glossary or the AI check would change.
+        (4.0, 5.6, 'S02', *same('哇，雪大到能堆雪人了')),
+        (13.0, 14.6, 'S03', *same('要不要来点烤肉')),
+        (19.0, 20.6, 'S02', *same('也要带上我哦')),
     ]
 
 
@@ -188,12 +193,20 @@ def _ensure_tutorial_project() -> Path:
                            'note': '新手教学用的示意工程：没有真实对白，三份识别结果是为演示写好的。'},
         'language': {'code': 'zh', 'requested': 'zh', 'evidence': {}},
     })
-    names = {'S00': '主播', 'S01': '嘉宾'}
+    # Each line points at its own recognized segment, as recognition does: the minor speakers'
+    # lines overlap the main ones in time, and without the link review mode offered the other
+    # speaker's words as a choice (2026-11-27).
+    for cue in project.cues:
+        cue.evidence_refs = [f"segment:{cue.id.rsplit('-', 1)[1]}"]
+    names = {'S00': '主播', 'S01': '嘉宾', 'S02': '小精灵', 'S03': '路人'}
     for speaker in project.speakers:
         speaker.name = names.get(speaker.id, speaker.name)
     project.media.display_name = TUTORIAL_NAME
     if not project.media.duration_ms:
         project.media.duration_ms = SAMPLE_SECONDS * 1000
+    # Grouped like a recognized project: the two minor speakers share the folded row.
+    from ..recognition.speaker_roles import initialize_for_recognition
+    initialize_for_recognition(project, cap=2)
     project.validate()
     path = tutorial_project_path()
     discard_tutorial_autosave()   # an autosave of the last tutorial would offer to "recover" demo edits

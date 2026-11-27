@@ -252,7 +252,10 @@ class HomeAiCard(QFrame):
         self.settings_button.setVisible(view.state in (READY, UNTESTED, FAILED, TESTING))
         self.help_button.setVisible(view.state == NO_KEY)
         size = 44 if self._compact else 54
-        self.icon_label.setFixedSize(ui_zoom.px(size), ui_zoom.px(size))
+        # Logical px through ui_zoom (2026-11-27): a zoomed setFixedSize was zoomed a second time by
+        # the next zoom pass, so the card was taller until a later refresh shrank it again (back from
+        # 模型工坊 at 120% everything under it moved up 7 px a second after the page appeared).
+        ui_zoom.set_size(self.icon_label, fixed_w=size, fixed_h=size)
         self.refresh_theme()
         for widget in (self, self.state_chip, *self.features.values()):
             widget.style().unpolish(widget)
