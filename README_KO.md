@@ -10,7 +10,7 @@ Windows와 Mac에서 쓸 수 있습니다. NVIDIA GPU가 있으면 전부 오프
 
 [1.2.0 다운로드](#다운로드) · [기능](#기능) · [자주 묻는 질문](#자주-묻는-질문) · [사용 가이드](docs/product-guide.ko.md)
 
-[English](README.md) · [中文](README_ZH.md) · [日本語](README_JA.md) · **한국어**
+[English](README.md) · [中文](README_ZH.md) · [日本語](README_JA.md) · **한국어** · [Türkçe](README_TR.md)
 
 </div>
 

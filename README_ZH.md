@@ -10,7 +10,7 @@ Windows 和 Mac 都能用，有 NVIDIA 显卡可以全程离线。
 
 [下载 1.2.0](#下载) · [功能](#功能) · [常见问题](#常见问题) · [使用指南](docs/product-guide.zh-CN.md)
 
-[English](README.md) · **中文** · [日本語](README_JA.md) · [한국어](README_KO.md)
+[English](README.md) · **中文** · [日本語](README_JA.md) · [한국어](README_KO.md) · [Türkçe](README_TR.md)
 
 </div>
 

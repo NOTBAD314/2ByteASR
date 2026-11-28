@@ -10,7 +10,7 @@ Runs on Windows and Mac. With an NVIDIA GPU, everything can stay offline.
 
 [Download 1.2.0](#download) · [Features](#features) · [FAQ](#faq) · [User guide](docs/product-guide.en.md)
 
-**English** · [中文](README_ZH.md) · [日本語](README_JA.md) · [한국어](README_KO.md)
+**English** · [中文](README_ZH.md) · [日本語](README_JA.md) · [한국어](README_KO.md) · [Türkçe](README_TR.md)
 
 </div>
 
