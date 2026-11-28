@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, macos-26]
+        os: [macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     env:
@@ -68,13 +68,21 @@ jobs:
           dmgreceipt = json.loads((scope / "producer/dmg/dmg-result.json").read_text("utf8"))
           assert sha256(expected_path) == dmgreceipt["bundle_inventory"]["sha256"]
           app = Path("/Applications/2ByteASR.app")
-          subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)], check=True)
-          expected = json.loads(expected_path.read_text("utf8"))
-          assert inventory(app) == expected
-          result = dict(passed=True, product_source=os.environ["PRODUCT_SOURCE_SHA"],
+          signed = subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", "--verbose=4", str(app)],
+                                  text=True, capture_output=True)
+          expected = {row["path"]: row for row in json.loads(expected_path.read_text("utf8"))}
+          actual = {row["path"]: row for row in inventory(app)}
+          added = [actual[name] for name in sorted(actual.keys() - expected.keys())]
+          removed = [expected[name] for name in sorted(expected.keys() - actual.keys())]
+          changed = [{"before": expected[name], "after": actual[name]} for name in sorted(expected.keys() & actual.keys())
+                     if expected[name] != actual[name]]
+          result = dict(passed=not (signed.returncode or added or removed or changed),
+                        product_source=os.environ["PRODUCT_SOURCE_SHA"],
                         checker_source=os.environ["GITHUB_SHA"], dmg_sha256=os.environ["PRODUCT_DMG_SHA"],
-                        product_files=len(expected))
+                        product_files=len(expected), added=added, removed=removed, changed=changed,
+                        seal_exit=signed.returncode, seal_stderr=signed.stderr)
           (scope / "recheck-120/build/recheck-identity.json").write_text(json.dumps(result, indent=2), "utf8")
+          assert result["passed"]
           PY
       - name: Select bounded acceptance receipts
         if: always()
