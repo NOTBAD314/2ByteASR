@@ -6,6 +6,12 @@ import os
 import sys
 from pathlib import Path
 
+if getattr(sys, "frozen", False):
+    # The app and its external Python workers can import bundled sources.
+    # Bytecode beside those sources would invalidate the resource seal.
+    sys.dont_write_bytecode = True
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1])).resolve()
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))

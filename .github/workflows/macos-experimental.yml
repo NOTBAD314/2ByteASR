@@ -353,6 +353,14 @@ jobs:
           set -euo pipefail
           app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
           python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-112-bunny-scenes" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario bunny-scenes --output "$MAC_QA_ROOT/bunny-scenes"
+      - name: Verify the installed application seal after desktop use
+        if: ${{ always() && steps.dmg.outcome == 'success' }}
+        id: installed_seal
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
+          python scripts/macos_verify_installed_seal.py --app "$app" --receipt "$MAC_QA_ROOT/dmg/dmg-result.json" --output "$MAC_QA_ROOT/build/installed-seal.json"
       - name: Record separate validation outcomes
         if: always()
         env:
@@ -383,6 +391,7 @@ jobs:
           python scripts/macos_ci_status.py --qa-root "$MAC_QA_ROOT" --enforce
           test '${{ steps.glossary_worker.outcome }}' = success
           test '${{ steps.release120.outcome }}' = success
+          test '${{ steps.installed_seal.outcome }}' = success
 
   same-candidate-newer-macos:
     needs: native-arm64

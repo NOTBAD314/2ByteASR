@@ -375,6 +375,9 @@ def renderer_child_environment():
     from ..diagnostics.process_diagnostics import process_log_path
     env=sanitized_child_environment()
     for name in ('NODE_OPTIONS','NODE_PATH','ELECTRON_RUN_AS_NODE'):env.pop(name,None)
+    if sys.platform == "darwin" and getattr(sys, "frozen", False):
+        # Remotion's default webpack cache sits inside the signed app bundle.
+        env["TWOBYTEASR_RENDERER_DISABLE_DISK_CACHE"] = "1"
     env['TWOBYTEASR_CHILD_PROCESS_LOG']=str(process_log_path())
     env['TWOBYTEASR_PROCESS_ACTION']='web-subtitle-render'
     from ..exports.export_run_log import current_export_log

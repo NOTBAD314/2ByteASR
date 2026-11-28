@@ -129,6 +129,7 @@ export async function exportBundle(emit=()=>{}, {buildTo}={}) {
       const empty=path.join(stage,'.empty-public');await fs.mkdir(empty);
       await bundle({entryPoint:path.join(root,'src/index.ts'),rootDir:root,outDir:stage,
         publicDir:empty,onProgress:()=>{},gitSource:null,
+        enableCaching:process.env.TWOBYTEASR_RENDERER_DISABLE_DISK_CACHE !== '1',
         webpackOverride:config=>({...config,devtool:false})});
       await fs.rm(empty,{recursive:true,force:true});
       // Headless exports never expose Studio's local project directory. Keep

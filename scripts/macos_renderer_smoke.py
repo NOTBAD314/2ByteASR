@@ -21,7 +21,7 @@ const {bundle}=requireApp('@remotion/bundler');
 const {selectComposition,renderStill,renderMedia}=requireApp('@remotion/renderer');
 (async()=>{
  const serveUrl=await bundle({entryPoint:path.join(cfg.renderer,'src/index.ts'),outDir:path.join(cfg.out,'bundle'),
-   onProgress:()=>{},webpackOverride:(c)=>({...c,cache:false})});
+   onProgress:()=>{},enableCaching:false});
  const options={serveUrl,id:'SubtitleOverlay',inputProps:cfg.props,browserExecutable:cfg.browser,
    binariesDirectory:path.join(cfg.renderer,'node_modules/@remotion/compositor-darwin-arm64'),logLevel:'error'};
  const composition=await selectComposition(options);

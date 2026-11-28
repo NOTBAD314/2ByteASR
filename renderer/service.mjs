@@ -20,6 +20,7 @@ const entryPoint = path.join(rendererRoot, 'src', 'index.ts');
 // An explicit override wins; otherwise use the bundled, tested headless shell.
 // Treating the installed Chrome as an override bypassed the bundled browser.
 const configuredChrome = process.env.TWOBYTEASR_RENDERER_CHROME || undefined;
+const enableBundlerDiskCache = process.env.TWOBYTEASR_RENDERER_DISABLE_DISK_CACHE !== '1';
 
 // Fonts live canonically in assets/fonts/ (public PR #2 by CODE-A-DUCK). Fill public/fonts/
 // only where a font is missing or differs in size: an installed or signed app already ships
@@ -224,7 +225,7 @@ const ensureWarm = async () => {
     if (!bundleStarting) bundleStarting = (async () => {
       const started = performance.now();
       const {bundle} = await import('@remotion/bundler');
-      serveUrl = await bundle({entryPoint, enableCaching: true, onProgress: () => undefined});
+      serveUrl = await bundle({entryPoint, enableCaching: enableBundlerDiskCache, onProgress: () => undefined});
       await installBundleBoundary(browser, serveUrl, event => record('resource_blocked',event));
       return record('bundle_ready', {duration_ms: elapsed(started)});
     })();

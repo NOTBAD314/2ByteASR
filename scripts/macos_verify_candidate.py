@@ -74,6 +74,8 @@ def main(argv=None):
              '今天测试兔白字幕。字幕可以编辑，剪切后保存工程，最后导出视频。'])
         run([sys.executable,ROOT/'scripts/macos_desktop_smoke.py','--app',app,'--runtime',out/'unused-build-runtime',
              '--fresh-runtime','--audio',audio,'--output',out/'desktop-flow'],timeout=2100)
+        run([sys.executable,ROOT/'scripts/macos_verify_installed_seal.py','--app',app,
+             '--receipt',args.receipt,'--output',out/'build/installed-seal.json'],timeout=240)
         result['passed']=True
     except Exception:
         result['error']=traceback.format_exc()
