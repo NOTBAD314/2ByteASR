@@ -121,6 +121,7 @@ def run(output, window=None):
             QCCategory.TEXT, c.id, '检查当前字幕', '人工保留当前字幕'),)
             for i,c in enumerate(p.cues)})
         invalidate(p)
+        current_issue_view(p)
 
     try:
         media = output/'fixture.mp4'
@@ -196,7 +197,6 @@ def run(output, window=None):
         if timer:timer.stop()
         page._qc_full_scan_pending=False;page._pending_qc_cue_ids.clear()
         seed_qc(p)
-        current_issue_view(p)
         page.cue_model.refresh();page._refresh_cue_list_summary()
         page.cue_search.setText('是的');pump(.05)
         page._refresh_cue_list_summary()

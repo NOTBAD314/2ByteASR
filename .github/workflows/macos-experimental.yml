@@ -183,6 +183,7 @@ jobs:
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_package_dmg.py --app "$MAC_QA_ROOT/build/dist/2ByteASR.app" --output "$MAC_QA_ROOT/dmg" --install-to-applications
       - name: Check the early DMG artifact stays inside the storage allowance
         if: ${{ always() && steps.dmg.outcome == 'success' }}
+        id: early_dmg_size
         run: |
           python - <<'PY'
           import json, os
@@ -194,7 +195,7 @@ jobs:
           assert file.stat().st_size + 8*1024*1024 <= int(os.environ['MAXIMUM_ARTIFACT_BYTES'])
           PY
       - name: Retain the built DMG before desktop checks
-        if: ${{ always() && steps.dmg.outcome == 'success' }}
+        if: ${{ always() && steps.early_dmg_size.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: macos-arm64-setup-${{ inputs.source_sha }}
