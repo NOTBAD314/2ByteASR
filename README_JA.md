@@ -10,7 +10,7 @@ Windows と Mac に対応。NVIDIA の GPU があれば、すべてオフライ�
 
 [ダウンロード 1.2.0](#ダウンロード) · [機能](#機能) · [よくある質問](#よくある質問) · [使い方ガイド](docs/product-guide.ja.md)
 
-[English](README.md) · [中文](README_ZH.md) · **日本語** · [한국어](README_KO.md)
+[English](README.md) · [中文](README_ZH.md) · **日本語** · [한국어](README_KO.md) · [Türkçe](README_TR.md)
 
 </div>
 
