@@ -263,7 +263,8 @@ def test_local_preparation_registers_only_after_every_model_ran(mac_prepare):
     assert events[-2:] == [('register', 'main'), ('register', 'moss')]
     assert max(i for i, e in enumerate(events) if e[0] == 'ready') < events.index(('register', 'main'))
     command, environment = mac_prepare.commands[-1]
-    assert command[-1] == '--force' and command[2].endswith('validate_prepared_model.py')
+    assert list(command[1:3]) == ['-I', '-B']
+    assert command[-1] == '--force' and command[3].endswith('validate_prepared_model.py')
     assert environment['TWOBYTEASR_MOSS_PYTHON'].endswith(str(Path('moss/bin/python')))
     assert environment['TWOBYTEASR_RUNTIME_REGISTRY_READ_ONLY'] == '1'
     assert '2BYTEASR_CPU_ONLY' not in environment
