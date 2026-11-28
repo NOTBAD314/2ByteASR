@@ -103,7 +103,7 @@ def test_failed_mps_probe_is_isolated_and_stops_preparation(tmp_path,monkeypatch
     monkeypatch.setattr(prepare.subprocess,'run',failed)
     with pytest.raises(RuntimeError,match='尚未下载模型权重'):
         prepare.require_mps_runtime(tmp_path/'runtime/bin/python',tmp_path,dtype='bfloat16')
-    assert seen[0][0][1:3]==['-I','-c'] and seen[0][1]['timeout']==180
+    assert seen[0][0][1:4]==['-I','-B','-c'] and seen[0][1]['timeout']==180
 
 
 def test_build_bootstrap_and_runtime_minimums_agree():
