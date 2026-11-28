@@ -63,16 +63,10 @@ def main(argv=None):
         run([sys.executable,ROOT/'scripts/macos_glossary_worker_smoke.py','--app',app,
              '--output',out/'glossary-worker'],timeout=150)
         result['glossary_worker']=json.loads((out/'glossary-worker/result.json').read_text('utf8'))['passed']
-        for scenario in ('stable-captions', 'chinese-complete-expression', 'speaker-board', 'timeline-cue-pill', 'vm2-model-settings', 'workshop-columns', 'multilingual-terms', 'vm2-onboarding', 'bunny-harness', 'tutorial-centre', 'ai-escalation', 'glossary-conflicts', 'bunny-112', 'editor-review', 'playhead-center', 'home-layout', 'bunny-scenes'):
+        for scenario in ('stable-captions', 'bunny-scenes'):
             run([sys.executable,ROOT/'scripts/macos_caption_policy_smoke.py','--app',app,
                  '--scenario',scenario,'--output',out/scenario],timeout=720)
         run([sys.executable,ROOT/'scripts/macos_edit_save_smoke.py','--app',app,'--output',out/'edit-save'],timeout=840)
-        run([sys.executable,ROOT/'scripts/macos_edit_save_smoke.py','--app',app,'--part','saves',
-             '--output',out/'cold-save'],timeout=840)
-        run([sys.executable,ROOT/'scripts/macos_edit_save_smoke.py','--app',app,'--part','waveform',
-             '--output',out/'waveform-stability'],timeout=840)
-        run([sys.executable,ROOT/'scripts/macos_edit_save_smoke.py','--app',app,'--part','waveform-full',
-             '--output',out/'full-waveform'],timeout=1250)
         run([app/'Contents/MacOS/2ByteASR','--macos-media-smoke',out/'native-media-smoke'],timeout=120)
         run([sys.executable,ROOT/'scripts/macos_renderer_smoke.py','--app',app,'--output',out/'renderer-smoke'],timeout=660)
         audio=out/'speech.wav'

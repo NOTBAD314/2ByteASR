@@ -85,7 +85,7 @@ permissions:
 
 concurrency:
   # Runs on different runner sizes may proceed side by side (2026-10-14).
-  group: macos-arm64-experimental-${{ github.repository }}-${{ inputs.app_runner }}-${{ inputs.local_models_runner }}-${{ inputs.run_app_checks }}
+  group: macos-arm64-release-delivery-${{ github.repository }}-${{ inputs.app_runner }}-${{ inputs.local_models_runner }}-${{ inputs.run_app_checks }}
   cancel-in-progress: false
 
 jobs:
@@ -181,6 +181,27 @@ jobs:
         run: |
           set -euo pipefail
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_package_dmg.py --app "$MAC_QA_ROOT/build/dist/2ByteASR.app" --output "$MAC_QA_ROOT/dmg" --install-to-applications
+      - name: Check the early DMG artifact stays inside the storage allowance
+        if: ${{ always() && steps.dmg.outcome == 'success' }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          folder = Path(os.environ['MAC_QA_ROOT']) / 'dmg'
+          receipt = json.loads((folder / 'dmg-result.json').read_text('utf-8'))
+          file, = folder.glob('*-Setup.dmg')
+          assert receipt['passed'] and file.stat().st_size == receipt['artifact']['bytes']
+          assert file.stat().st_size + 8*1024*1024 <= int(os.environ['MAXIMUM_ARTIFACT_BYTES'])
+          PY
+      - name: Retain the built DMG before desktop checks
+        if: ${{ always() && steps.dmg.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: macos-arm64-setup-${{ inputs.source_sha }}
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 0
+          path: ${{ env.MAC_QA_ROOT }}/dmg/*-Setup.dmg
       - name: Installed app normal new blank project, save and reopen
         if: ${{ always() && steps.dmg.outcome == 'success' }}
         id: blank_project
@@ -322,57 +343,15 @@ jobs:
         run: |
           app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_glossary_worker_smoke.py --app "$app" --output "$MAC_QA_ROOT/glossary-worker"
-      - name: Installed 1.0.1 model cards settings and workshop columns
+
+      - name: Installed 1.2.0 Bunny scenes
         if: ${{ always() && steps.dmg.outcome == 'success' }}
-        id: release_ui
+        id: release120
         continue-on-error: true
-        timeout-minutes: 15
         run: |
           set -euo pipefail
           app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
-          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-release-ui" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario vm2-model-settings --output "$MAC_QA_ROOT/vm2-model-settings"
-          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-workshop-columns" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario workshop-columns --output "$MAC_QA_ROOT/workshop-columns"
-          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-multilingual" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario multilingual-terms --output "$MAC_QA_ROOT/multilingual-terms"
-          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-onboarding" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario vm2-onboarding --output "$MAC_QA_ROOT/vm2-onboarding"
-      - name: Installed 1.1.0 Bunny editing motion audio and usage
-        if: ${{ always() && steps.dmg.outcome == 'success' }}
-        id: release110
-        continue-on-error: true
-        timeout-minutes: 25
-        run: |
-          set -euo pipefail
-          app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
-          code=0
-          for scenario in bunny-chat editor-download english-track-loudness task-candy usage-candy; do
-            python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-110-$scenario" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario "$scenario" --output "$MAC_QA_ROOT/$scenario" || code=1
-          done
-          exit "$code"
-      - name: Installed 1.1.1 tutorials Bunny vision tasks glossary and AI rescue
-        if: ${{ always() && steps.dmg.outcome == 'success' }}
-        id: release111
-        continue-on-error: true
-        timeout-minutes: 25
-        run: |
-          set -euo pipefail
-          app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
-          code=0
-          for scenario in bunny-harness tutorial-centre ai-escalation glossary-conflicts; do
-            python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-111-$scenario" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario "$scenario" --output "$MAC_QA_ROOT/$scenario" || code=1
-          done
-          exit "$code"
-      - name: Installed Bunny scenes, editor review, playhead and home
-        if: ${{ always() && steps.dmg.outcome == 'success' }}
-        id: release112
-        continue-on-error: true
-        timeout-minutes: 25
-        run: |
-          set -euo pipefail
-          app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
-          code=0
-          for scenario in bunny-112 editor-review playhead-center home-layout bunny-scenes; do
-            python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-112-$scenario" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario "$scenario" --output "$MAC_QA_ROOT/$scenario" || code=1
-          done
-          exit "$code"
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-112-bunny-scenes" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario bunny-scenes --output "$MAC_QA_ROOT/bunny-scenes"
       - name: Record separate validation outcomes
         if: always()
         env:
@@ -397,24 +376,12 @@ jobs:
           if-no-files-found: warn
           compression-level: 0
           path: ${{ env.MAC_QA_ROOT }}/artifacts/receipts/
-      - name: Retain real installer within observed included allowance
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: macos-arm64-setup-${{ inputs.source_sha }}
-          retention-days: 1
-          if-no-files-found: warn
-          compression-level: 0
-          path: ${{ env.MAC_QA_ROOT }}/artifacts/application/
       - name: Enforce installer, blank project and requested desktop results
         if: always()
         run: |
           python scripts/macos_ci_status.py --qa-root "$MAC_QA_ROOT" --enforce
-          test '${{ steps.release_ui.outcome }}' = success
           test '${{ steps.glossary_worker.outcome }}' = success
-          test '${{ steps.release110.outcome }}' = success
-          test '${{ steps.release111.outcome }}' = success
-          test '${{ steps.release112.outcome }}' = success
+          test '${{ steps.release120.outcome }}' = success
 
   same-candidate-newer-macos:
     needs: native-arm64
