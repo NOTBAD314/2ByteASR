@@ -41,7 +41,7 @@ def probe_device():
     on top of the worker's own load for the whole check and helped push PCs
     with a small page file into os error 1455.
     """
-    completed=subprocess.run([sys.executable,'-I','-c',_DEVICE_PROBE],capture_output=True,text=True,encoding='utf-8',
+    completed=subprocess.run([sys.executable,'-I', '-B','-c',_DEVICE_PROBE],capture_output=True,text=True,encoding='utf-8',
                              errors='replace',timeout=300,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     lines=completed.stdout.strip().splitlines()
     if completed.returncode or not lines:
@@ -205,7 +205,7 @@ def main():
                 if model=='moss':
                     worker=root/'workers/moss_worker.py'
                     if not worker.is_file():worker=root/'moss_worker.py'
-                    command=[resolve_runtime_python('moss'),'-I',str(worker),'--audio',str(sample),'--output',str(output_path),'--model',str(model_path)]
+                    command=[resolve_runtime_python('moss'),'-I', '-B',str(worker),'--audio',str(sample),'--output',str(output_path),'--model',str(model_path)]
                 elif model=='speaker_embedding':
                     npy=temporary/'audio.npy';np.save(npy,audio)
                     manifest=temporary/'manifest.json'
@@ -213,9 +213,9 @@ def main():
                         chunks=[dict(offset=0.,duration=duration,segments=[dict(start=0.,end=duration,speaker='S01')])])),'utf8')
                     worker=root/'workers/speaker_embed_worker.py'
                     if not worker.is_file():worker=root/'speaker_embed_worker.py'
-                    command=[resolve_runtime_python('main'),'-I',str(worker),'--manifest',str(manifest),'--output',str(output_path)]
+                    command=[resolve_runtime_python('main'),'-I', '-B',str(worker),'--manifest',str(manifest),'--output',str(output_path)]
                 elif model=='firered_vad':
-                    command=[resolve_runtime_python('main'),'-I',str(root/'firered_vad_worker.py'),'--wav',str(sample),'--model-dir',str(model_path/'VAD'),'--output',str(output_path)]
+                    command=[resolve_runtime_python('main'),'-I', '-B',str(root/'firered_vad_worker.py'),'--wav',str(sample),'--model-dir',str(model_path/'VAD'),'--output',str(output_path)]
                 else:raise RuntimeError('没有正式 readiness adapter: '+model)
                 subprocess.run(command,check=True,timeout=600,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
                 output=json.loads(output_path.read_text('utf8'))

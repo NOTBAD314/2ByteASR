@@ -4096,6 +4096,8 @@ class ModelDownloadDialog(QDialog):
                     program=str(_main_worker_python())
                 if self.model.key != 'haas_ja':
                     arguments=['-I','-X','utf8',str(self.root/'scripts/validate_prepared_model.py'),'--root',str(self.root),'--model',str(self.model.download_key)]
+                    if sys.platform == 'darwin':
+                        arguments.insert(1, '-B')
                 self._phase='loading'
                 bind_text(self.headline,'验证 {value0}',value0=self.display_name)
                 bind_text(self.progress_status,'正在验证本机可用性…')

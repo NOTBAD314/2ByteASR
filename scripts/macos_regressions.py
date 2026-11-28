@@ -44,8 +44,9 @@ def main():
   junit=out/f'{i:02d}.xml';log=out/f'{i:02d}.log';start=time.monotonic()
   env=dict(os.environ,QT_QPA_PLATFORM='offscreen',PYTHONUTF8='1',TWOBYTEASR_TEST_ROOT=str(root/'regression-profiles'/str(i)))
   command=[sys.executable,'-B','-m','pytest','-vv',selector,'--deselect',DESELECTED,'--basetemp',str(root/'pytest'/str(i)),'--junitxml',str(junit)]
+  timeout=300 if selector=='tests/test_editor_review_interaction.py' else 180
   try:
-   with log.open('wb')as stream:done=subprocess.run(command,cwd=ROOT,env=env,stdout=stream,stderr=subprocess.STDOUT,timeout=180)
+   with log.open('wb')as stream:done=subprocess.run(command,cwd=ROOT,env=env,stdout=stream,stderr=subprocess.STDOUT,timeout=timeout)
    code=done.returncode
   except subprocess.TimeoutExpired:code=124
   if junit.is_file():

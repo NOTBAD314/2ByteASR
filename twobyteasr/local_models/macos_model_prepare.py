@@ -124,7 +124,7 @@ def _pip_index_urls() -> list:
 
 def _supported_tags(runtime_python: Path, environment: dict) -> list:
     """This Mac's wheel tags in pip's own priority order (pip vendors ``packaging``)."""
-    result = subprocess.run([str(runtime_python), '-I', '-c',
+    result = subprocess.run([str(runtime_python), '-I', '-B', '-c',
                              'import json; from pip._vendor.packaging.tags import sys_tags; '
                              'print(json.dumps([str(tag) for tag in sys_tags()]))'],
                             capture_output=True, text=True, timeout=60, env=environment)
@@ -269,7 +269,7 @@ def check_runtime(python: Path, root: Path, *, exact_python: str | None = None) 
         'print(json.dumps(dict(python=platform.python_version(),machine=platform.machine(),device="cpu")))'
     )
     try:
-        result = subprocess.run([str(python), '-I', '-c', probe], cwd=root, capture_output=True,
+        result = subprocess.run([str(python), '-I', '-B', '-c', probe], cwd=root, capture_output=True,
                                 text=True, timeout=120, env=_child_environment())
         if result.returncode:
             print('[运行库探测] 子程序退出码 ' + str(result.returncode) + '：' + (result.stderr or result.stdout)[-600:],flush=True)
@@ -334,7 +334,7 @@ def require_mps_runtime(python: Path, root: Path, *, dtype: str) -> None:
               'y=x+x; torch.mps.synchronize(); assert y.cpu().item()==2; '
               f'print(json.dumps(dict(ok=True,device="mps",dtype="{dtype}",torch=torch.__version__)))')
     try:
-        result = subprocess.run([str(python),'-I','-c',script],cwd=root,env=_child_environment(),
+        result = subprocess.run([str(python),'-I', '-B','-c',script],cwd=root,env=_child_environment(),
                                 capture_output=True,text=True,timeout=180)
     except (OSError,subprocess.TimeoutExpired) as exc:
         raise RuntimeError('Apple GPU 探测无法完成；尚未下载模型权重，CPU / 云端没有自动启用。') from exc
@@ -366,7 +366,7 @@ def _bootstrap_interpreter(managed: Path, lock: dict, environment: dict, *, pyth
     if not base.is_file():
         raise RuntimeError('Verified Python archive has no native interpreter')
     verify_runtime_binaries(python_root)
-    run([base, '-I', '-c', 'import sys,platform; assert platform.machine()=="arm64"; assert platform.python_version()=="' + spec['version'] + '"'], cwd=managed, environment=environment)
+    run([base, '-I', '-B', '-c', 'import sys,platform; assert platform.machine()=="arm64"; assert platform.python_version()=="' + spec['version'] + '"'], cwd=managed, environment=environment)
     return uv, base
 
 
@@ -410,7 +410,7 @@ def ensure_main_runtime(root: Path, managed: Path, lock: dict, environment: dict
     report = runtime / 'pip-install.json'
     # Fresh reports include the critical wheels on retries too;
     # pip's verified cache can reuse completed downloads.
-    install = [runtime_python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install', '--force-reinstall',
+    install = [runtime_python, '-I', '-B', '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install', '--force-reinstall',
                '--report', report, '--only-binary=:all:', '--find-links', wheelhouse]
     # 2026-10-28: pip waited on files.pythonhosted.org for minutes in mainland
     # China ("Resuming download torch… 262 kB/80.5 MB"). The app fetches the
@@ -431,7 +431,7 @@ def ensure_main_runtime(root: Path, managed: Path, lock: dict, environment: dict
     from scripts.macos_dependency_contract import verify_native_wheels
     native_lock = root / 'packaging/macos/native-dependencies.lock.json'
     verified = verify_native_wheels(json.loads(report.read_text('utf8')), json.loads(native_lock.read_text('utf8')))
-    run([runtime_python, '-I', '-m', 'pip', '--isolated', 'check'], cwd=managed, environment=environment)
+    run([runtime_python, '-I', '-B', '-m', 'pip', '--isolated', 'check'], cwd=managed, environment=environment)
     proof = dict(native_wheels_verified=verified, lock_sha256=sha256(native_lock), install_report=str(report))
     proof_path = runtime / 'mac-native-wheels.json'
     pending_proof = proof_path.with_suffix('.pending')
@@ -476,10 +476,10 @@ def prepare(root: Path, *, models: Path, source: str, register: bool = True) -> 
             save_identity('installation-selected', dict(python=file_identity(runtime_python),
                 install_report=str(runtime_python.parent.parent/'pip-install.json'),
                 install_report_sha256=sha256(runtime_python.parent.parent/'pip-install.json')), diagnostics)
-            run([runtime_python, '-I', '-m', 'pip', '-V'], cwd=managed, environment=environment)
+            run([runtime_python, '-I', '-B', '-m', 'pip', '-V'], cwd=managed, environment=environment)
             # Reproduce the old resolver's entry->base transformation against
             # this actual installation, without importing/loading a model.
-            base_probe = subprocess.run([str(runtime_python.resolve()), '-I', '-c',
+            base_probe = subprocess.run([str(runtime_python.resolve()), '-I', '-B', '-c',
                 'import sys,json,importlib.util; s=importlib.util.find_spec("funasr"); '
                 'print(json.dumps(dict(executable=sys.executable,prefix=sys.prefix,base_prefix=sys.base_prefix,'
                 'funasr_spec=s.origin if s else None)))'], cwd=managed, env=environment,
@@ -489,16 +489,16 @@ def prepare(root: Path, *, models: Path, source: str, register: bool = True) -> 
                 stdout=base_probe.stdout,stderr=base_probe.stderr), diagnostics)
             # The actual production entrypoint imports FunASR before weights
             # are downloaded. Success here is import readiness, not inference.
-            run([runtime_python, '-I', root/'sensevoice_worker.py', '--probe-import',
+            run([runtime_python, '-I', '-B', root/'sensevoice_worker.py', '--probe-import',
                  '--expected-prefix', runtime_python.parent.parent, '--expected-funasr-version', '1.4.1',
                  '--diagnostics-dir', diagnostics], cwd=managed, environment=environment)
             state['phase'] = 'weights_downloading'
             emit(state['phase'], model='sensevoice')
-            run([runtime_python, '-I', root / 'scripts/macos_prepare_model.py', '--models', models,
+            run([runtime_python, '-I', '-B', root / 'scripts/macos_prepare_model.py', '--models', models,
                  '--source', source], cwd=managed, environment=environment)
             state['phase'] = 'model_loading'
             emit(state['phase'], model='sensevoice', device='cpu')
-            run([runtime_python, '-I', root / 'scripts/validate_prepared_model.py', '--root', root,
+            run([runtime_python, '-I', '-B', root / 'scripts/validate_prepared_model.py', '--root', root,
                  '--model', 'sensevoice'], cwd=managed, environment=environment)
             # Commit registration only after real model readiness succeeds;
             # failure preserves both valid weights and any older healthy role.
@@ -588,7 +588,7 @@ def check_moss_runtime(python: Path, root: Path) -> bool:
         'print(json.dumps(dict(python=platform.python_version(),mps=bool(mps and mps.is_available()))))'
     )
     try:
-        result = subprocess.run([str(python), '-I', '-c', probe], cwd=root, capture_output=True,
+        result = subprocess.run([str(python), '-I', '-B', '-c', probe], cwd=root, capture_output=True,
                                 text=True, timeout=300, env=_child_environment())
         if result.returncode:
             print('[运行库] MOSS 运行库检查未通过：' + (result.stderr or result.stdout)[-600:], flush=True)
@@ -638,11 +638,11 @@ def ensure_moss_runtime(root: Path, managed: Path, lock: dict, environment: dict
     run([uv, '--no-config', 'pip', 'install', '--python', runtime_python, pip_wheel], cwd=managed, environment=environment)
     report = runtime / 'pip-install.json'
     # Every requirement is hash-pinned: pip refuses any other file.
-    run_hashed_pip_install([runtime_python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install',
+    run_hashed_pip_install([runtime_python, '-I', '-B', '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install',
                             '--require-hashes', '--only-binary', ':all:', '--report', report, '-r', requirements.name],
                            cwd=requirements.parent, environment=environment,
                            house=fetch_locked_packages(root, managed, runtime_python, environment, 'moss|3.12'))
-    run([runtime_python, '-I', '-m', 'pip', '--isolated', 'check'], cwd=managed, environment=environment)
+    run([runtime_python, '-I', '-B', '-m', 'pip', '--isolated', 'check'], cwd=managed, environment=environment)
     source_digest = install_moss_source(root, runtime)
     verify_runtime_binaries(runtime)
     if not check_moss_runtime(runtime_python, root):
@@ -733,7 +733,7 @@ def prepare_local(root: Path, *, models: Path, source: str, keys, register: bool
             environment['TWOBYTEASR_MOSS_PYTHON'] = str(moss_python)
         for key in [item for item in _LOCAL_READINESS_ORDER if item in keys]:
             emit(state['phase'], model=key, device='mps')
-            run([main_python, '-I', root / 'scripts/validate_prepared_model.py', '--root', root,
+            run([main_python, '-I', '-B', root / 'scripts/validate_prepared_model.py', '--root', root,
                  '--model', key, '--force'], cwd=managed, environment=environment)
         # Registration only after every requested model ran on this Mac.
         if register:
@@ -765,7 +765,7 @@ def check_mlx_runtime(python: Path, root: Path) -> bool:
     if not python.is_file() or not mlx_binary_contract_matches(python):
         return False
     try:
-        result = subprocess.run([str(python), '-I', str(_mlx_worker(root)), '--mode', 'probe'], cwd=root,
+        result = subprocess.run([str(python), '-I', '-B', str(_mlx_worker(root)), '--mode', 'probe'], cwd=root,
                                 capture_output=True, text=True, timeout=180, env=_child_environment())
         if result.returncode:
             print('[MLX 探测] 子程序退出码 ' + str(result.returncode) + '：' + (result.stderr or result.stdout)[-600:],flush=True)
@@ -862,11 +862,11 @@ def prepare_mlx(root: Path, *, models: Path, source: str, keys, register: bool =
                     cwd=managed, environment=environment)
                 report = runtime / 'pip-install.json'
                 # Every requirement is hash-pinned: pip refuses any other file.
-                run_hashed_pip_install([runtime_python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check',
+                run_hashed_pip_install([runtime_python, '-I', '-B', '-m', 'pip', '--isolated', '--disable-pip-version-check',
                                         'install', '--require-hashes', '--only-binary', ':all:', '--report', report,
                                         '-r', requirements.name], cwd=requirements.parent, environment=environment,
                                        house=fetch_locked_packages(root, managed, runtime_python, environment, 'mlx|3.10'))
-                run([runtime_python, '-I', '-m', 'pip', '--isolated', 'check'], cwd=managed, environment=environment)
+                run([runtime_python, '-I', '-B', '-m', 'pip', '--isolated', 'check'], cwd=managed, environment=environment)
                 # MLX publishes distinct 14/15/26 wheels. The base App remains
                 # 14-compatible; this optional runtime must fit its real host.
                 verify_runtime_binaries(runtime,target=platform.mac_ver()[0])
