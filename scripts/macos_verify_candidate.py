@@ -63,7 +63,7 @@ def main(argv=None):
         run([sys.executable,ROOT/'scripts/macos_glossary_worker_smoke.py','--app',app,
              '--output',out/'glossary-worker'],timeout=150)
         result['glossary_worker']=json.loads((out/'glossary-worker/result.json').read_text('utf8'))['passed']
-        for scenario in ('stable-captions', 'bunny-scenes'):
+        for scenario in ('stable-captions', 'speaker-board', 'bunny-scenes'):
             run([sys.executable,ROOT/'scripts/macos_caption_policy_smoke.py','--app',app,
                  '--scenario',scenario,'--output',out/scenario],timeout=720)
         run([sys.executable,ROOT/'scripts/macos_edit_save_smoke.py','--app',app,'--output',out/'edit-save'],timeout=840)

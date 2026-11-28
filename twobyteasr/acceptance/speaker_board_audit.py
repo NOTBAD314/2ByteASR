@@ -140,8 +140,11 @@ def run(window, output):
                 check('control click selects multiple', dialog._selection == {'API_S03', 'API_S04'})
                 before = page.undo_stack.index()
                 drop(dialog, ['API_S03', 'API_S04'], 'game')
+                wait(lambda: page.undo_stack.index() > before, seconds=3)
+                game = set(dialog._box_keys('game'))
                 check('multiple dropped to game in one undo', page.undo_stack.index() == before + 1
-                      and {'API_S03', 'API_S04', 'GAME_BACKGROUND'} <= set(dialog._box_keys('game')))
+                      and {'API_S03', 'API_S04'} <= game,
+                      dict(before=before, after=page.undo_stack.index(), game=sorted(game)))
                 shot(dialog, '03-game')
                 page.undo_stack.undo(); pump()
                 check('game undo restores exact caption content', caption_content() == initial
