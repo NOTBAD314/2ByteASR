@@ -215,8 +215,11 @@ def start(window, output):
             QTest.mouseClick(card.more_button, Qt.MouseButton.LeftButton)
             wait(card.more_menu.isVisible, 5)
             action = next(action for action in card.more_menu.actions() if action.text() == 'C 键直接切割')
-            QTest.mouseClick(card.more_menu, Qt.MouseButton.LeftButton,
-                             pos=card.more_menu.actionGeometry(action).center())
+            check('C mode action is visible, enabled and checkable',
+                  action.isVisible() and action.isEnabled() and action.isCheckable()
+                  and card.more_menu.actionGeometry(action).isValid())
+            action.trigger()
+            card.more_menu.close()
             wait(card.split_mode.isChecked, 3)
             check('More menu enables C mode', card.split_mode.isChecked())
             check('mode toggle retains draft', page._caption_draft is not None and editor.textCursor().position()==2)

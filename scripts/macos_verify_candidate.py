@@ -59,7 +59,7 @@ def main(argv=None):
         if not all(result[label]['passed'] for label in ('direct','finder')):
             raise RuntimeError('Normal installed startup failed')
         run([sys.executable,ROOT/'scripts/verify_blank_project_macos.py','--app',app,'--output',out/'blank-project'],timeout=240)
-        run([sys.executable,ROOT/'scripts/macos_caret_split_smoke.py','--app',app,'--output',out/'caret-split'],timeout=660)
+        run([sys.executable,ROOT/'scripts/macos120_recheck_caret.py','--app',app,'--output',out/'caret-split'],timeout=660)
         run([sys.executable,ROOT/'scripts/macos_glossary_worker_smoke.py','--app',app,
              '--output',out/'glossary-worker'],timeout=150)
         result['glossary_worker']=json.loads((out/'glossary-worker/result.json').read_text('utf8'))['passed']
